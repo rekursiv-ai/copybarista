@@ -1,0 +1,261 @@
+"""Text transforms for staged export trees.
+
+Transforms mutate the staging directory after file selection and before the
+destination publisher runs. Each transform reports whether it changed content,
+how many edits it made, and which staged files were affected so manifests can
+describe the export without inspecting destination state.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from copybarista.config import Transform
+from copybarista.errors import TransformError
+from copybarista.globs import GlobSet
+from copybarista.manifest import ManifestEntry, TransformFileReport, TransformReport
+
+
+def apply_transforms(
+    root: Path,
+    transforms: tuple[Transform, ...],
+    files: tuple[ManifestEntry, ...] = (),
+) -> tuple[TransformReport, ...]:
+    """Apply transforms in config order.
+
+    Args:
+      root: Export staging root.
+      transforms: Transforms to apply.
+      files: Exported file mapping before transforms.
+
+    Returns:
+      reports: Per-transform execution reports.
+
+    """
+    sources_by_destination = {entry.destination: entry.source for entry in files}
+    return tuple(
+        apply_transform(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
+        for transform in transforms
+    )
+
+
+def apply_transform(
+    root: Path,
+    *,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+) -> TransformReport:
+    """Apply one configured transform and return its report.
+
+    Args:
+      root: Export staging root.
+      transform: Transform config entry.
+      sources_by_destination: Source paths keyed by staged destination path.
+
+    Returns:
+      report: Transform execution report.
+
+    """
+    if transform.type == "replace":
+        result = _replace(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
+    else:
+        result = _strip_block(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
+    return TransformReport(
+        id=transform.id,
+        type=transform.type,
+        path=transform.path,
+        changed=result.changed,
+        count=result.count,
+        files=result.files,
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _TransformResult:
+    """Internal transform outcome before adding config identity fields."""
+
+    changed: int
+    count: int
+    files: tuple[TransformFileReport, ...]
+
+
+def _replace(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Apply a literal replacement and return its change report."""
+    if not transform.before:
+        raise TransformError(
+            f"Transformation '{transform.id}' before must be non-empty"
+        )
+    paths = _matching_files(root=root, pattern=transform.path)
+    matched_files = 0
+    skipped_symlinks = 0
+    changed = 0
+    count = 0
+    files: list[TransformFileReport] = []
+    for path in paths:
+        if path.is_symlink():
+            skipped_symlinks += 1
+            continue
+        matched_files += 1
+        original = _read_text(path)
+        replacements = original.count(transform.before)
+        if replacements == 0:
+            continue
+        updated = original.replace(transform.before, transform.after)
+        if updated == original:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        changed += 1
+        count += replacements
+        files.append(
+            _file_report(
+                root=root,
+                path=path,
+                count=replacements,
+                sources_by_destination=sources_by_destination,
+            )
+        )
+    if changed == 0 and transform.required:
+        if skipped_symlinks and matched_files == 0:
+            reason = "only matched symlinks"
+        elif paths:
+            reason = "found files, but no replacement text"
+        else:
+            reason = "matched no files"
+        raise TransformError(
+            f"Transformation '{transform.id}' made no changes: {reason}"
+        )
+    return _TransformResult(changed=changed, count=count, files=tuple(files))
+
+
+def _strip_block(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Remove marker-delimited blocks from one file."""
+    path = root / transform.path
+    if not path.exists():
+        if transform.required:
+            raise TransformError(f"Transformation '{transform.id}' matched no files")
+        return _TransformResult(changed=0, count=0, files=())
+    original = _read_text(path)
+    updated, count = _strip_blocks(original, transform)
+    if count == 0:
+        if transform.required:
+            raise TransformError(
+                f"Transformation '{transform.id}' did not find start marker"
+            )
+        return _TransformResult(changed=0, count=0, files=())
+    if updated != original:
+        path.write_text(updated, encoding="utf-8")
+        return _TransformResult(
+            changed=1,
+            count=count,
+            files=(
+                _file_report(
+                    root=root,
+                    path=path,
+                    count=count,
+                    sources_by_destination=sources_by_destination,
+                ),
+            ),
+        )
+    if transform.required:
+        raise TransformError(f"Transformation '{transform.id}' was a no-op")
+    return _TransformResult(changed=0, count=0, files=())
+
+
+def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
+    """Remove every marker-delimited block from text."""
+    if not transform.start or not transform.end:
+        raise TransformError(
+            f"Transformation '{transform.id}' markers must be non-empty"
+        )
+    updated = text
+    search_from = 0
+    count = 0
+    while True:
+        start_idx = updated.find(transform.start, search_from)
+        if start_idx < 0:
+            return updated, count
+        first_end_idx = updated.find(transform.end, search_from)
+        if first_end_idx >= 0 and first_end_idx < start_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found end marker before start marker"
+            )
+        end_idx = updated.find(transform.end, start_idx + len(transform.start))
+        if end_idx < 0:
+            raise TransformError(
+                f"Transformation '{transform.id}' did not find end marker"
+            )
+        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
+        if 0 <= next_start_idx < end_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found nested start marker"
+            )
+        if transform.inclusive:
+            end_idx += len(transform.end)
+            updated = _collapse_removed_block_gap(
+                updated[:start_idx], updated[end_idx:]
+            )
+            search_from = start_idx
+        else:
+            updated = updated[:start_idx] + updated[end_idx:]
+            search_from = start_idx + len(transform.end)
+        count += 1
+
+
+def _file_report(
+    root: Path,
+    path: Path,
+    count: int,
+    sources_by_destination: dict[str, str],
+) -> TransformFileReport:
+    """Build the per-file transform report for a staged path."""
+    destination = path.relative_to(root).as_posix()
+    return TransformFileReport(
+        source=sources_by_destination.get(destination, destination),
+        destination=destination,
+        count=count,
+    )
+
+
+def _matching_files(root: Path, pattern: str) -> tuple[Path, ...]:
+    """Return staged files matched by one supported path glob."""
+    matcher = GlobSet(include=(pattern,))
+    return tuple(
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and matcher.matches(path.relative_to(root).as_posix())
+    )
+
+
+def _read_text(path: Path) -> str:
+    """Read UTF-8 text and turn decode failures into transform errors."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as err:
+        raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
+
+
+def _collapse_removed_block_gap(before: str, after: str) -> str:
+    """Avoid creating extra blank lines around an inclusive stripped block."""
+    if before.endswith("\n") and after.startswith("\n"):
+        # Marker-block stripping removes the selected block as a unit.
+        # Collapsing adjacent newlines keeps the surrounding paragraphs joined
+        # without creating a formatting artifact at the removal boundary.
+        return before + after.lstrip("\n")
+    return before + after

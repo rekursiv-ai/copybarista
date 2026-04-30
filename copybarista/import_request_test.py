@@ -1,0 +1,690 @@
+"""Tests for change-request imports from public trees."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import stat
+from pathlib import Path
+
+import pytest
+
+from copybarista.cli import main
+from copybarista.config import load_config
+from copybarista.errors import ImportRequestError
+from copybarista.import_request import (
+    ChangeRequestImporter,
+    ImportRequest,
+    PathMapper,
+    TreeSnapshot,
+    import_change_request,
+)
+
+
+def test_import_public_edit_maps_to_source_root_and_reverses_replace(
+    tmp_path: Path,
+):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+        )
+    )
+
+    assert [
+        (change.public, change.source, change.action) for change in result.changes
+    ] == [
+        (
+            "pkg/module.py",
+            "internal/demo/pkg/module.py",
+            "modified",
+        )
+    ]
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == ("from internal.demo import api\nVALUE = 'head'\n")
+
+
+def test_tree_snapshot_ignores_vcs_metadata(tmp_path: Path):
+    root = tmp_path / "checkout"
+    (root / ".git" / "objects").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (root / ".hg").mkdir()
+    (root / ".hg" / "requires").write_text("revlogv1\n", encoding="utf-8")
+    (root / "README.md").write_text("public\n", encoding="utf-8")
+
+    assert sorted(TreeSnapshot.from_root(root).entries) == ["README.md"]
+
+
+def test_import_no_verify_ignores_vcs_metadata_changes(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / ".git").mkdir()
+    (public_head / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            verify=False,
+        )
+    )
+
+    assert result.changes == ()
+    assert not (destination / ".git").exists()
+
+
+def test_import_root_source_root_keeps_paths_relative(tmp_path: Path):
+    paths = _fixture(tmp_path, source_root="")
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'root'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+        )
+    )
+
+    assert result.changes[0].source == "pkg/module.py"
+    assert (destination / "pkg/module.py").read_text(encoding="utf-8") == (
+        "from internal.demo import api\nVALUE = 'root'\n"
+    )
+
+
+def test_import_created_and_deleted_files(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    new_file = public_head / "pkg/new.py"
+    new_file.write_text("VALUE = 'new'\n", encoding="utf-8")
+    new_file.chmod(0o755)
+    (public_head / "README.md").unlink()
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+        )
+    )
+
+    assert [(change.public, change.action) for change in result.changes] == [
+        ("README.md", "deleted"),
+        ("pkg/new.py", "created"),
+    ]
+    assert not (destination / "internal/demo/README.md").exists()
+    imported = destination / "internal/demo/pkg/new.py"
+    assert imported.is_file()
+    assert stat.S_IMODE(imported.stat().st_mode) & stat.S_IXUSR
+
+
+def test_import_rolls_back_when_final_verification_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'changed'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    original = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
+
+    def fail_check(_self: ChangeRequestImporter) -> None:
+        raise ImportRequestError("forced verification failure")
+
+    monkeypatch.setattr(ChangeRequestImporter, "_check_public_head", fail_check)
+
+    with pytest.raises(ImportRequestError, match="forced"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+            )
+        )
+
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == original
+
+
+def test_import_rejects_symlink_ancestor_in_destination(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'changed'\n",
+        encoding="utf-8",
+    )
+    destination = tmp_path / "destination"
+    (destination / "internal").mkdir(parents=True)
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    (destination / "internal/demo").symlink_to(escape, target_is_directory=True)
+
+    with pytest.raises(ImportRequestError, match="escapes destination"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+            )
+        )
+
+    assert not (escape / "pkg/module.py").exists()
+
+
+def test_import_rejects_vcs_metadata_destination(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    destination = tmp_path / "repo" / ".git"
+    destination.mkdir(parents=True)
+
+    with pytest.raises(ImportRequestError, match="VCS metadata"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=paths.public_base,
+                source_base=paths.source_base,
+                destination=destination,
+            )
+        )
+
+
+def test_import_rejects_ambiguous_added_exported_text(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\n"
+        "MESSAGE = 'from copybarista.public appears in public docs'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportRequestError, match="adds exported replacement"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_rejects_source_base_with_natural_exported_text(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\n"
+        "MESSAGE = 'from copybarista.public appears naturally'\n",
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-natural")
+    (public_base / "pkg/module.py").write_text(
+        "from copybarista.public import api\n"
+        "MESSAGE = 'from copybarista.public appears naturally'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\n"
+        "MESSAGE = 'from copybarista.public still appears naturally'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportRequestError, match="already contains"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    config = tmp_path / "copy-explicit-reverse.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        exclude = ["private.txt"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from internal.demo"
+        after = "from copybarista.public"
+        reverse_before = "from copybarista.public import"
+        reverse_after = "from internal.demo import"
+        """,
+        encoding="utf-8",
+    )
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\n"
+        "MESSAGE = 'from copybarista.public appears naturally'\n",
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-natural")
+    (public_base / "pkg/module.py").write_text(
+        "from copybarista.public import api\n"
+        "MESSAGE = 'from copybarista.public appears naturally'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\n"
+        "MESSAGE = 'from copybarista.public still appears naturally'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            verify=False,
+        )
+    )
+
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == (
+        "from internal.demo import api\n"
+        "MESSAGE = 'from copybarista.public still appears naturally'\n"
+    )
+
+
+def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
+    paths = _fixture(tmp_path, with_transform=False)
+    config = tmp_path / "copy-empty-after.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        exclude = ["private.txt"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from internal.demo"
+        after = ""
+        """,
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-empty-after")
+    (public_base / "pkg/module.py").write_text(
+        " import api\nVALUE = 'base'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        " import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportRequestError, match="empty replacement"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_allows_relative_symlink_staying_inside(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/readme").symlink_to("../README.md")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+        )
+    )
+
+    assert [(change.public, change.action) for change in result.changes] == [
+        ("pkg/readme", "created")
+    ]
+    assert (destination / "internal/demo/pkg/readme").is_symlink()
+
+
+def test_import_rejects_relative_symlink_escaping_public_tree(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/readme").symlink_to("../../escape")
+
+    with pytest.raises(ImportRequestError, match="Symlink target escapes"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_rejects_excluded_public_path(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "private.txt").write_text("secret\n", encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match="excluded or unmapped"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_rejects_strip_block_paths(tmp_path: Path):
+    paths = _fixture(tmp_path, include_strip_block=True)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "README.md").write_text("public edit\n", encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match="non-reversible"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_import_rejects_public_base_mismatch(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    public_base = _copy_tree(paths.public_base, tmp_path / "bad-public-base")
+    (public_base / "README.md").write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match="public base"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=public_base,
+                public_head=paths.public_base,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_tree_snapshot_diff_reports_create_modify_delete(tmp_path: Path):
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "delete.txt").write_text("delete\n", encoding="utf-8")
+    (base / "modify.txt").write_text("old\n", encoding="utf-8")
+    (head / "modify.txt").write_text("new\n", encoding="utf-8")
+    (head / "create.txt").write_text("create\n", encoding="utf-8")
+
+    diff = TreeSnapshot.from_root(base).diff(TreeSnapshot.from_root(head))
+
+    assert [(change.path, change.action) for change in diff.changes] == [
+        ("create.txt", "created"),
+        ("delete.txt", "deleted"),
+        ("modify.txt", "modified"),
+    ]
+
+
+def test_path_mapper_rejects_excluded_path(tmp_path: Path):
+    config = load_config(_fixture(tmp_path).config)
+    mapper = PathMapper(config=config)
+
+    assert mapper.source_path("pkg/module.py") == ("internal/demo/pkg/module.py")
+    with pytest.raises(ImportRequestError, match="excluded or unmapped"):
+        mapper.source_path("private.txt")
+
+
+def test_cli_import_change_writes_json_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'cli'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    main(
+        [
+            "import-change",
+            str(paths.config),
+            "--public-base",
+            str(paths.public_base),
+            "--public-head",
+            str(public_head),
+            "--source-base",
+            str(paths.source_base),
+            "--destination",
+            str(destination),
+            "--json",
+        ]
+    )
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["changes"][0]["public"] == "pkg/module.py"
+    assert data["changes"][0]["source"] == "internal/demo/pkg/module.py"
+
+
+def test_cli_import_change_mismatch_exits_three(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    paths = _fixture(tmp_path)
+    bad_base = _copy_tree(paths.public_base, tmp_path / "bad-public-base")
+    (bad_base / "README.md").write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "import-change",
+                str(paths.config),
+                "--public-base",
+                str(bad_base),
+                "--public-head",
+                str(paths.public_base),
+                "--source-base",
+                str(paths.source_base),
+                "--destination",
+                str(_copy_tree(paths.source_base, tmp_path / "destination")),
+            ]
+        )
+
+    assert exc.value.code == 3
+    assert "public base" in capsys.readouterr().err
+
+
+def test_cli_import_change_no_verify_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    paths = _fixture(tmp_path)
+
+    main(
+        [
+            "import-change",
+            str(paths.config),
+            "--public-base",
+            str(paths.public_base),
+            "--public-head",
+            str(paths.public_base),
+            "--source-base",
+            str(paths.source_base),
+            "--destination",
+            str(_copy_tree(paths.source_base, tmp_path / "destination")),
+            "--no-verify",
+        ]
+    )
+
+    assert "--no-verify disables" in capsys.readouterr().err
+
+
+def test_importer_type_exposes_plan_boundary(tmp_path: Path):
+    paths = _fixture(tmp_path)
+    importer = ChangeRequestImporter(
+        config=load_config(paths.config),
+        public_base=paths.public_base,
+        public_head=paths.public_base,
+        source_base=paths.source_base,
+        destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+    )
+
+    assert importer.plan().changes == ()
+
+
+class _FixturePaths:
+    def __init__(
+        self,
+        *,
+        config: Path,
+        public_base: Path,
+        source_base: Path,
+    ) -> None:
+        self.config = config
+        self.public_base = public_base
+        self.source_base = source_base
+
+
+def _fixture(
+    tmp_path: Path,
+    *,
+    source_root: str = "internal/demo",
+    include_strip_block: bool = False,
+    with_transform: bool = True,
+) -> _FixturePaths:
+    source_base = tmp_path / "source-base"
+    source_project = source_base / source_root if source_root else source_base
+    source_project.mkdir(parents=True)
+    (source_project / "pkg").mkdir()
+    (source_project / "pkg/module.py").write_text(
+        "from internal.demo import api\nVALUE = 'base'\n",
+        encoding="utf-8",
+    )
+    readme = (
+        "public readme\n<!-- internal:start -->\nprivate\n<!-- internal:end -->\n"
+        if include_strip_block
+        else "public readme\n"
+    )
+    (source_project / "README.md").write_text(readme, encoding="utf-8")
+
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'base'\n",
+        encoding="utf-8",
+    )
+    (public_base / "README.md").write_text("public readme\n", encoding="utf-8")
+
+    config = tmp_path / "copy.barista.toml"
+    replace_transform = (
+        """
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from internal.demo"
+        after = "from copybarista.public"
+        """
+        if with_transform
+        else ""
+    )
+    strip_block = (
+        """
+        [[transform]]
+        type = "strip_block"
+        path = "README.md"
+        start = "<!-- internal:start -->"
+        end = "<!-- internal:end -->"
+        """
+        if include_strip_block
+        else ""
+    )
+    config.write_text(
+        f"""
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "{source_root}"
+
+        [files]
+        include = ["**"]
+        exclude = ["private.txt"]
+
+        {replace_transform}
+        {strip_block}
+        """,
+        encoding="utf-8",
+    )
+    return _FixturePaths(
+        config=config,
+        public_base=public_base,
+        source_base=source_base,
+    )
+
+
+def _copy_tree(source: Path, destination: Path) -> Path:
+    shutil.copytree(source, destination, symlinks=True)
+    return destination

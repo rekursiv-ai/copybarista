@@ -1,0 +1,43 @@
+[workflow]
+name = "widget"
+mode = "squash"
+source_root = "packages/widget"
+
+[destination.folder]
+path = "/tmp/widget-public"
+
+[files]
+include = ["**"]
+exclude = [
+  ".pytest_cache/**",
+  "**/.pytest_cache/**",
+  ".ruff_cache/**",
+  "**/.ruff_cache/**",
+  ".venv/**",
+  "**/__pycache__/**",
+  "*.pyc",
+  "**/*.pyc",
+  "build/**",
+  "dist/**",
+  "*.egg-info/**",
+  "**/*.egg-info/**",
+]
+
+[[transform]]
+type = "replace"
+path = "**/*.py"
+before = "from packages.widget.widget"
+after = "from widget"
+
+[[transform]]
+type = "replace"
+path = "**/*.py"
+before = "import packages.widget.widget"
+after = "import widget"
+
+[[transform]]
+type = "strip_block"
+path = "README.md"
+start = "<!-- copybarista:private:start -->"
+end = "<!-- copybarista:private:end -->"
+inclusive = true

@@ -1,0 +1,178 @@
+name: Public To Source
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      public_base_ref:
+        description: Public ref that represents the already-synced base tree.
+        default: main
+        required: true
+      public_head_ref:
+        description: Public ref to import. Defaults to this workflow run SHA.
+        required: false
+      branch:
+        description: Source import branch name.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copybarista-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'push' &&
+        github.event.before != '0000000000000000000000000000000000000000' &&
+        github.event.head_commit.author.email != (vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com') &&
+        !contains(github.event.head_commit.message, 'copybarista/export/')
+      ) ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        !startsWith(github.event.pull_request.head.ref, 'copybarista/export/')
+      )
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+      SOURCE_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}
+      PROJECT_PATH: ${{ vars.COPYBARISTA_SOURCE_PROJECT_PATH || '.' }}
+      SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
+      SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
+      IMPORT_BRANCH: ${{ inputs.branch || format('copybarista/import/sha-{0}', github.sha) }}
+
+    steps:
+      - name: Check settings
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set COPYBARISTA_IMPORT_TOKEN."
+            exit 1
+          fi
+          if [ -z "$SOURCE_REPO" ]; then
+            echo "::error::Set COPYBARISTA_SOURCE_REPO."
+            exit 1
+          fi
+
+      - id: refs
+        name: Resolve public refs
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_ref="${{ github.event.pull_request.base.sha }}"
+            head_ref="${{ github.event.pull_request.head.sha }}"
+            open_pr=false
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            base_ref="${{ inputs.public_base_ref }}"
+            head_ref="${{ inputs.public_head_ref }}"
+            if [ -z "$head_ref" ]; then
+              head_ref="${GITHUB_SHA}"
+            fi
+            open_pr=true
+          else
+            base_ref="${{ github.event.before }}"
+            head_ref="${GITHUB_SHA}"
+            open_pr=true
+          fi
+
+          if [ -z "$base_ref" ] || [ "$base_ref" = "0000000000000000000000000000000000000000" ]; then
+            echo "::error::Cannot resolve public base ref."
+            exit 1
+          fi
+
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+          echo "open_pr=$open_pr" >> "$GITHUB_OUTPUT"
+
+      - name: Check out public base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.refs.outputs.base_ref }}
+          path: public-base
+
+      - name: Check out public head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.refs.outputs.head_ref }}
+          path: public-head
+
+      - name: Check out source repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          ref: main
+          path: source
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Import public changes
+        run: |
+          uvx copybarista import-change "source/$PROJECT_PATH/copy.barista.toml" \
+            --public-base public-base \
+            --public-head public-head \
+            --source-base "source/$PROJECT_PATH" \
+            --destination "source/$PROJECT_PATH" \
+            --json > "$RUNNER_TEMP/copybarista-import-report.json"
+
+      - name: Validate source checkout
+        working-directory: source
+        run: |
+          test -f "$PROJECT_PATH/copy.barista.toml"
+          if [ -d "$PROJECT_PATH/packages/widget/tests" ]; then
+            PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPATH="$PWD/$PROJECT_PATH" \
+              uv run --with pytest pytest -q -p no:cacheprovider -o addopts= \
+                "$PROJECT_PATH/packages/widget/tests"
+          fi
+
+      - name: Open or update source PR
+        if: steps.refs.outputs.open_pr == 'true'
+        working-directory: source
+        run: |
+          if [ -z "$(git status --porcelain -- "$PROJECT_PATH")" ]; then
+            echo "No source changes to sync."
+            exit 0
+          fi
+
+          git config user.name "$SYNC_USER_NAME"
+          git config user.email "$SYNC_USER_EMAIL"
+          source_base_ref="$(git rev-parse HEAD)"
+          git fetch origin "$IMPORT_BRANCH:refs/remotes/origin/$IMPORT_BRANCH" || true
+          git switch -C "$IMPORT_BRANCH"
+          git add "$PROJECT_PATH"
+          git commit -m "Import public changes ${{ steps.refs.outputs.head_ref }}"
+          git push --force-with-lease origin "$IMPORT_BRANCH"
+
+          head_ref="${{ steps.refs.outputs.head_ref }}"
+          pr_title="Import public changes ${head_ref:0:12}"
+          cat > "$RUNNER_TEMP/copybarista-import-change-pr-body.md" <<EOF
+          Imports public changes from $GITHUB_REPOSITORY.
+
+          Public base: ${{ steps.refs.outputs.base_ref }}
+          Public head: ${{ steps.refs.outputs.head_ref }}
+          Source base: $source_base_ref
+
+          Regenerate this PR before merging if source \`main\` changes.
+          EOF
+
+          if gh pr view "$IMPORT_BRANCH" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
+            gh pr edit "$IMPORT_BRANCH" \
+              --repo "$SOURCE_REPO" \
+              --title "$pr_title" \
+              --body-file "$RUNNER_TEMP/copybarista-import-change-pr-body.md"
+          else
+            gh pr create \
+              --repo "$SOURCE_REPO" \
+              --base main \
+              --head "$IMPORT_BRANCH" \
+              --title "$pr_title" \
+              --body-file "$RUNNER_TEMP/copybarista-import-change-pr-body.md"
+          fi

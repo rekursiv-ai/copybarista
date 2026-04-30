@@ -1,0 +1,144 @@
+name: Source To Public
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_title:
+        description: Public pull request title.
+        required: true
+      pr_body:
+        description: Public pull request description.
+        required: true
+      branch:
+        description: Export branch name.
+        required: false
+      auto_merge:
+        description: Enable GitHub auto-merge after required checks pass.
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copybarista-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+      PUBLIC_REPO: ${{ vars.COPYBARISTA_PUBLIC_REPO }}
+      PROJECT_PATH: ${{ vars.COPYBARISTA_SOURCE_PROJECT_PATH || '.' }}
+      SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
+      SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
+      EXPORT_BRANCH: ${{ inputs.branch || vars.COPYBARISTA_EXPORT_BRANCH || format('copybarista/export/{0}', github.ref_name) }}
+
+    steps:
+      - name: Check settings
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set COPYBARISTA_SYNC_TOKEN."
+            exit 1
+          fi
+          if [ -z "$PUBLIC_REPO" ]; then
+            echo "::error::Set COPYBARISTA_PUBLIC_REPO."
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Check out public repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PUBLIC_REPO }}
+          token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+          ref: main
+          path: public
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Export public tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/public-export"
+          uvx copybarista export "source/$PROJECT_PATH/copy.barista.toml" \
+            "source/$PROJECT_PATH" \
+            --folder-dir "$RUNNER_TEMP/public-export" \
+            --force \
+            --json > "$RUNNER_TEMP/copybarista-export-manifest.json"
+
+      - name: Replace public checkout
+        run: |
+          rsync -a --delete --exclude .git \
+            --exclude .github/ \
+            "$RUNNER_TEMP/public-export/" \
+            public/
+
+      - name: Validate public checkout
+        working-directory: public
+        run: |
+          test -f README.md
+          if [ -d tests ]; then
+            PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPATH="$PWD" \
+              uv run --with pytest pytest -q -p no:cacheprovider -o addopts= tests
+          fi
+
+      - name: Open or update public PR
+        working-directory: public
+        env:
+          PR_BODY: ${{ inputs.pr_body }}
+          PR_TITLE: ${{ inputs.pr_title }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No public changes to sync."
+            exit 0
+          fi
+
+          git config user.name "$SYNC_USER_NAME"
+          git config user.email "$SYNC_USER_EMAIL"
+          git fetch origin "$EXPORT_BRANCH:refs/remotes/origin/$EXPORT_BRANCH" || true
+          git switch -C "$EXPORT_BRANCH"
+          git add -A
+          git commit \
+            -m "$PR_TITLE" \
+            -m "Copybarista export branch: $EXPORT_BRANCH"
+          git push --force-with-lease origin "$EXPORT_BRANCH"
+
+          printf '%s\n\n' "$PR_BODY" > "$RUNNER_TEMP/copybarista-pr-body.md"
+          cat >> "$RUNNER_TEMP/copybarista-pr-body.md" <<EOF
+          ---
+
+          Copybarista export branch: \`$EXPORT_BRANCH\`
+
+          Do not push manual commits to this generated branch. Change the
+          source repository, then rerun this workflow with the same branch to
+          update this PR.
+          EOF
+
+          if gh pr view "$EXPORT_BRANCH" --repo "$PUBLIC_REPO" >/dev/null 2>&1; then
+            gh pr edit "$EXPORT_BRANCH" \
+              --repo "$PUBLIC_REPO" \
+              --title "$PR_TITLE" \
+              --body-file "$RUNNER_TEMP/copybarista-pr-body.md"
+          else
+            gh pr create \
+              --repo "$PUBLIC_REPO" \
+              --base main \
+              --head "$EXPORT_BRANCH" \
+              --title "$PR_TITLE" \
+              --body-file "$RUNNER_TEMP/copybarista-pr-body.md"
+          fi
+
+          if [ "${{ inputs.auto_merge }}" = "true" ]; then
+            gh pr merge "$EXPORT_BRANCH" \
+              --repo "$PUBLIC_REPO" \
+              --squash \
+              --auto
+          fi
