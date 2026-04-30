@@ -132,7 +132,9 @@ CLI directly as shown in `examples/`:
   `copybarista import-change` against public base/head checkouts, validates the
   target checkout, then opens a source PR from
   `copybarista/import/sha-<public-sha>` with public base/head and source base
-  metadata when the event is allowed to write.
+  metadata when the event is allowed to write. GitHub workflows should run the
+  token-bearing PR phase from a trusted helper copy captured before import, not
+  from source files after public changes have been applied.
 
 Raw reverse tree copies are intentionally avoided because they bypass path
 mapping, reversible-transform checks, metadata filtering, and re-export

@@ -347,6 +347,33 @@ unless your project has a separate review policy for accepting public changes.
 For protected branches, required checks, bot-authored PRs, and token
 permissions, see [GitHub setup](docs/github-setup.md).
 
+## Security And Privacy Model
+
+Copybarista is designed for the case where the source repository may contain
+private code, names, paths, or workflows that must not appear in the public
+repository. The main protections are:
+
+- Explicit file selection: only configured paths under `source_root` are
+  exported, and source-only paths such as private docs, local config, caches,
+  build outputs, and release tooling can be excluded.
+- Deterministic transforms: private blocks, imports, and package names are
+  rewritten from checked-in config rather than ad hoc scripts.
+- Release-tree checks: public CI can reject private directories, source-only
+  config files, generated caches, bytecode, build artifacts, nested VCS
+  metadata, and unstripped private README markers before release.
+- PR-only sync: generated branches are reviewed through GitHub pull requests;
+  workflows should not push directly to protected default branches.
+- Token isolation: public-to-source validation runs without write tokens, and
+  token-bearing PR creation should run trusted workflow code captured before
+  imported public changes can modify source files.
+- Reverse verification: imports must reproduce the public base before applying
+  changes and re-export to the public head afterward. Ambiguous or unsafe
+  reverse mappings are rejected.
+
+Copybarista does not replace normal review. Treat `copy.barista.toml`, GitHub
+workflow files, and release-tree policy as part of the security boundary, and
+review them whenever the source/public sync scope changes.
+
 ## Compatibility
 
 Copybarista's native config format is TOML. The preferred filename is

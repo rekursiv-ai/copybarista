@@ -96,12 +96,10 @@ force-updated with `git push --force-with-lease`.
 
 ## Pull Request Text
 
-Copybarista's source-to-public sync helper uses generic PR text by default.
-Manual `pr_title` and `pr_body` inputs can provide public release text. If
-`use_commit_message_pr_text` or `COPYBARISTA_USE_COMMIT_MESSAGE_PR_TEXT=true`
-is enabled, the source commit's first line becomes the PR title and the
-remaining lines become the PR description. Treat both commit messages and
-manual inputs as public release text:
+The reusable source-to-public example workflow requires manual `pr_title` and
+`pr_body` inputs. For automatic exports, generate those values in trusted
+source-side code before calling the workflow or helper script. Treat both
+commit messages and manual inputs as public release text:
 
 - describe the public change, not the private source repository;
 - avoid private repository names, internal team names, private paths, and
@@ -124,7 +122,16 @@ branch unexpectedly.
 Keep write tokens out of validation steps that execute imported public changes.
 The public-to-source workflow should check out private/source repositories with
 `persist-credentials: false`, run import and validation without `GH_TOKEN`, and
-only expose the write token in the final PR creation step.
+only expose the write token in the final PR creation step. That token-bearing
+step should run trusted workflow code captured before import, or plain `git`
+and `gh` commands, so an imported public change cannot alter the code that runs
+with write credentials.
+
+Keep privacy checks close to the public repository too. The public CI should run
+the release-tree policy before build or publish steps so private paths,
+source-only config, caches, bytecode, nested VCS metadata, and unstripped
+private markers cannot silently ship. Treat changes to `copy.barista.toml`,
+workflow files, and release-tree policy as review-sensitive.
 
 Generated import PR titles and bodies should include the public base SHA,
 public head SHA, and source base SHA. If source `main` changes after an import
@@ -333,7 +340,6 @@ Set these in the source repository:
 | `COPYBARISTA_PUBLIC_REPO` | Variable | Public repository in `owner/name` form. |
 | `COPYBARISTA_SOURCE_PROJECT_PATH` | Variable | Source checkout directory that contains `copy.barista.toml`. Use `.` at repository root. |
 | `COPYBARISTA_EXPORT_BRANCH` | Variable | Optional stable generated export branch, for example `copybarista/export/widget`. |
-| `COPYBARISTA_USE_COMMIT_MESSAGE_PR_TEXT` | Variable | Optional `true`/`false` switch for deriving public PR text from the source commit message. Defaults to `false`. |
 | `COPYBARISTA_SYNC_USER_NAME` | Variable | Optional sync commit author name. |
 | `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional generated branch commit author email. |
 
