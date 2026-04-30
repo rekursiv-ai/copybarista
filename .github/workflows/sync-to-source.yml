@@ -58,8 +58,10 @@ jobs:
 
     steps:
       - name: Check token
+        env:
+          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
-          if [ -z "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" ]; then
+          if [ -z "$IMPORT_TOKEN" ]; then
             echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
             exit 1
           fi
@@ -75,6 +77,7 @@ jobs:
       - name: Set sync paths
         run: |
           echo "IMPORT_REPORT=$RUNNER_TEMP/copybarista-import-report.json" >> "$GITHUB_ENV"
+          echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/sync_import_change.py" >> "$GITHUB_ENV"
 
       - id: refs
         name: Resolve public refs
@@ -136,10 +139,16 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Capture trusted import helper
+        run: |
+          install -m 600 \
+            "target/$TARGET_PROJECT_PATH/scripts/sync_import_change.py" \
+            "$TRUSTED_IMPORT_SCRIPT"
+
       - name: Import public tree into target repository
         run: |
           uv --quiet --project "target/$TARGET_PROJECT_PATH" run python \
-            "target/$TARGET_PROJECT_PATH/scripts/sync_import_change.py" \
+            "$TRUSTED_IMPORT_SCRIPT" \
             --public-base public-base \
             --public-head public-head \
             --target-dir target \
@@ -158,8 +167,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
-          uv --quiet --project "target/$TARGET_PROJECT_PATH" run python \
-            "target/$TARGET_PROJECT_PATH/scripts/sync_import_change.py" \
+          python "$TRUSTED_IMPORT_SCRIPT" \
             --target-dir target \
             --target-repo "$TARGET_REPO" \
             --project-path "$TARGET_PROJECT_PATH" \

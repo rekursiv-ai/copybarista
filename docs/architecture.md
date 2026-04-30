@@ -1,4 +1,4 @@
-# Architecture
+# Architecture :coffee:
 
 Copybarista keeps the export pipeline small and explicit:
 

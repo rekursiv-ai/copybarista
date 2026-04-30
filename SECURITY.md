@@ -23,5 +23,9 @@ Copybarista can delete and rewrite destination trees. It includes safety
 checks for dangerous destination paths, but users should review export
 configs before running them.
 
+Interrupted folder exports can leave the destination tree partially rewritten.
+If that happens, inspect or clean the destination and rerun the export with
+`--force`.
+
 Copybarista shells out to `git` for Git destination exports. Commands are
 executed without a shell, and arguments are passed as argv lists.

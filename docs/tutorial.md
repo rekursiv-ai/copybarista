@@ -1,4 +1,4 @@
-# Tutorial
+# Tutorial :coffee:
 
 This tutorial creates a tiny source tree, exports one subdirectory to a clean
 folder, and inspects the manifest. It does not require Git.

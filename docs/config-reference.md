@@ -1,4 +1,4 @@
-# Config Reference
+# Config Reference :coffee:
 
 Copybarista configs are TOML files, preferably named `copy.barista.toml`. They
 describe one single-commit workflow: select files below a source root, apply

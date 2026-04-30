@@ -1,4 +1,4 @@
-# Examples
+# Examples :coffee:
 
 This directory contains one complete example: a tiny source repository plus the
 GitHub workflows that publish it to a standalone repository and import public
