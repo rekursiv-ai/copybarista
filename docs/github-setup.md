@@ -163,6 +163,100 @@ token owner. The important property is stability: changing the email without
 updating both repositories can make generated export merges look like public
 changes.
 
+## Automation Bot Setup
+
+Use a dedicated machine user or GitHub App when generated PRs and squash merges
+should appear from automation instead of a maintainer. Git commit authorship and
+GitHub UI authorship are different:
+
+- Git commit author and committer come from workflow `git config` and
+  `--author`.
+- Pull request author, auto-merge actor, and GitHub squash-merge author come
+  from the account or App behind the token.
+
+A typical machine-user setup is:
+
+1. Create a GitHub account such as `your-org-bot` using an organization-owned
+   email or mailing-list alias.
+2. Verify that email on the bot account.
+3. Enable 2FA and store recovery codes in the organization password manager.
+4. Add the bot to the organization as a member, not an owner.
+5. Put the bot in an `automation` or `bots` team.
+6. Give that team write access only to the source and public repositories that
+   Copybarista syncs.
+7. Do not add the bot to branch-protection bypass lists.
+
+Create a fine-grained personal access token while logged in as the bot. GitHub
+creates fine-grained PATs in the web UI; use the CLI only after the token
+exists. Scope the token to selected repositories:
+
+- source repository;
+- public repository;
+- any additional public repositories exported from the same source repository.
+
+Use the narrowest repository permissions that work:
+
+- `Contents: Read and write`
+- `Pull requests: Read and write`
+- `Workflows: Read and write` only when the sync writes
+  `.github/workflows/*`
+- `Metadata: Read`, which GitHub grants automatically
+
+Store the token as repository secrets:
+
+```bash
+SOURCE_REPO=your-org/source-repo
+PUBLIC_REPO=your-org/public-repo
+
+gh secret set COPYBARISTA_SYNC_TOKEN --repo "$SOURCE_REPO"
+gh secret set COPYBARISTA_IMPORT_TOKEN --repo "$PUBLIC_REPO"
+```
+
+Set generated commit identity variables in both repositories:
+
+```bash
+SYNC_AUTHOR_NAME=your-project
+SYNC_AUTHOR_EMAIL=your-org-bot@example.com
+
+gh variable set COPYBARISTA_SYNC_USER_NAME \
+  --repo "$SOURCE_REPO" \
+  --body "$SYNC_AUTHOR_NAME"
+gh variable set COPYBARISTA_SYNC_USER_EMAIL \
+  --repo "$SOURCE_REPO" \
+  --body "$SYNC_AUTHOR_EMAIL"
+
+gh variable set COPYBARISTA_SYNC_USER_NAME \
+  --repo "$PUBLIC_REPO" \
+  --body "$SYNC_AUTHOR_NAME"
+gh variable set COPYBARISTA_SYNC_USER_EMAIL \
+  --repo "$PUBLIC_REPO" \
+  --body "$SYNC_AUTHOR_EMAIL"
+```
+
+Then verify a generated public PR:
+
+```bash
+gh pr list \
+  --repo "$PUBLIC_REPO" \
+  --state open \
+  --json number,title,author,headRefName,url
+```
+
+The PR author should be the bot account. The generated branch commit should
+show `SYNC_AUTHOR_NAME <SYNC_AUTHOR_EMAIL>` as its Git author and should link
+to the bot account in GitHub:
+
+```bash
+PR_NUMBER=1
+HEAD_SHA="$(gh pr view "$PR_NUMBER" \
+  --repo "$PUBLIC_REPO" \
+  --json commits \
+  --jq '.commits[-1].oid')"
+
+gh api "repos/$PUBLIC_REPO/commits/$HEAD_SHA" \
+  --jq '{author:.commit.author, committer:.commit.committer, github_author:.author.login, github_committer:.committer.login}'
+```
+
 ## Multiple Exports From One Monorepo
 
 One source repository can export multiple projects to separate public

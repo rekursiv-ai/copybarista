@@ -21,6 +21,8 @@
   <a href="docs/tutorial.md">Tutorial</a>
   ·
   <a href="examples/README.md">Examples</a>
+  ·
+  <a href="docs/github-setup.md">GitHub setup</a>
 </p>
 
 ## Why should I use this?
@@ -336,6 +338,8 @@ re-export source and resolve the PR diff explicitly.
 Source-to-public auto-merge is safe only as PR auto-merge after required checks
 pass, not as direct default-branch pushes. Keep public-to-source imports manual
 unless your project has a separate review policy for accepting public changes.
+For protected branches, required checks, bot-authored PRs, and token
+permissions, see [GitHub setup](docs/github-setup.md).
 
 ## Compatibility
 
