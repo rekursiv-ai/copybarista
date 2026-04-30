@@ -223,7 +223,7 @@ Set these in the source repository:
 | `COPYBARISTA_SOURCE_PROJECT_PATH` | Variable | Source checkout directory that contains `copy.barista.toml`. Use `.` at repository root. |
 | `COPYBARISTA_EXPORT_BRANCH` | Variable | Optional stable generated export branch, for example `copybarista/export/widget`. |
 | `COPYBARISTA_SYNC_USER_NAME` | Variable | Optional sync commit author name. |
-| `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional sync commit author email. Use the same value in both repositories if reverse sync skips generated export merges by author. |
+| `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional generated branch commit author email. |
 
 Set these in the public repository:
 
@@ -233,7 +233,7 @@ Set these in the public repository:
 | `COPYBARISTA_SOURCE_REPO` | Variable | Source repository in `owner/name` form. |
 | `COPYBARISTA_SOURCE_PROJECT_PATH` | Variable | Source checkout directory that contains `copy.barista.toml`. |
 | `COPYBARISTA_SYNC_USER_NAME` | Variable | Optional sync commit author name. |
-| `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional sync commit author email. Use the same value in both repositories if reverse sync skips generated export merges by author. |
+| `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional generated branch commit author email. |
 
 Use fine-grained tokens with the narrowest repository access that works:
 
