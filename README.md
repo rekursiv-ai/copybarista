@@ -69,22 +69,15 @@ the exported tree and syncing through GitHub pull requests. Our team at [rekursi
 built this tool as a way to easily manage syncing code between repositories
 while seamlessly plugging in with our ML-focused Python+GitHub toolchain.
 
-The main comparison of features is listed below.
+Short version:
 
 | Need | Copybarista | Copybara | Git subtree / `git-filter-repo` |
 | --- | --- | --- | --- |
-| Python packaging ecosystem | :white_check_mark: Yes: Python package, installable with `uv`, `pipx`, or `pip` | :x: No: Java-based toolchain | :warning: Partial: Git-first workflow with optional Python `git-filter-repo` install |
-| Python project ergonomics | :white_check_mark: Yes: TOML config, pytest-friendly helper scripts, Python CI fit | :warning: Partial: powerful, but configured through Starlark and a separate runtime | :warning: Partial: easy to shell out, but project-specific behavior becomes custom scripts |
-| GitHub ecosystem fit | :white_check_mark: Yes: example workflows open export/import PRs for review | :warning: Possible, but requires workflow glue | :x: No built-in PR workflow |
-| Select a subtree and publish it as a standalone repository | :white_check_mark: Yes: selected files land at repository root | :white_check_mark: Yes: broader repository migration model | :white_check_mark: Yes: this is the core Git subtree / filtering use case |
-| Assemble a public tree from selected files and directories | :white_check_mark: Yes: include/exclude globs select the exported tree | :white_check_mark: Yes: broader file-selection model | :warning: Partial: possible with path filters, but awkward for multiple locations |
-| Keep full source history | :x: No: squash-style export is the focus | :white_check_mark: Yes | :white_check_mark: Yes: this is where Git subtree and `git-filter-repo` fit best |
-| Rewrite absolute Python imports for the public package | :white_check_mark: Yes: supported literal replacements | :white_check_mark: Yes: broader transform model | :x: No: Git leaves file contents unchanged |
-| Strip private README sections, generated blocks, or internal names | :white_check_mark: Yes: block stripping and release-tree checks | :white_check_mark: Yes: broader transform model | :x: No: requires custom scripts and leak checks |
-| Leave private files out of the public repo | :white_check_mark: Yes: explicit include/exclude globs plus export validation | :white_check_mark: Yes: broader file-selection model | :warning: Partial: path filtering helps, but deeper cleanup is custom |
-| Import public fixes back into the source checkout | :white_check_mark: Yes: reverse import verifies by re-exporting | :white_check_mark: Yes: supports bidirectional repository movement | :warning: Partial: subtree can move history, but not verify semantic rewrites |
-| Fail loudly on unsupported rewrites | :white_check_mark: Yes: unsupported config is rejected | :white_check_mark: Yes: full config parser and migration engine | :x: No transform model to validate |
-| Full migration engine | :x: No: intentionally scoped to package sync | :white_check_mark: Yes | :x: No |
+| Python package workflow | :white_check_mark: Built for Python repos, TOML config, Python CI | :warning: Powerful, but Java/Starlark-based | :warning: Git-first; project behavior becomes scripts |
+| Rewrite imports/docs/private blocks | :white_check_mark: Built in | :white_check_mark: Broad transform model | :x: Requires custom scripts |
+| GitHub PR sync in both directions | :white_check_mark: Example export/import workflows | :warning: Requires workflow glue | :x: No built-in PR workflow |
+| Preserve full history | :x: Squash-style export focus | :white_check_mark: Yes | :white_check_mark: Yes |
+| General migration engine | :x: Intentionally scoped | :white_check_mark: Yes | :x: No |
 
 - Use Copybarista when the hard part is not splitting history, but producing a
   clean OSS package repository with deterministic rewrites, private-name
@@ -93,6 +86,9 @@ The main comparison of features is listed below.
   engine.
 - Use Git subtree or `git-filter-repo` when history preservation is the
   main goal and the subtree is already self-contained.
+
+The [detailed comparison](#detailed-comparison) below lists the specific
+workflow capabilities.
 
 ## Install
 
@@ -369,6 +365,23 @@ Supported `copy.bara.sky` forms include `authoring.pass_thru(default=...)`,
 positional `git.destination("url", push="main")`, omitted `origin_files` and
 `destination_files`, `core.transform([...])`, explicit replace reversal, and
 `core.reverse([...])` for literal replacements.
+
+## Detailed Comparison
+
+| Need | Copybarista | Copybara | Git subtree / `git-filter-repo` |
+| --- | --- | --- | --- |
+| Python packaging ecosystem | :white_check_mark: Yes: Python package, installable with `uv`, `pipx`, or `pip` | :x: No: Java-based toolchain | :warning: Partial: Git-first workflow with optional Python `git-filter-repo` install |
+| Python project ergonomics | :white_check_mark: Yes: TOML config, pytest-friendly helper scripts, Python CI fit | :warning: Partial: powerful, but configured through Starlark and a separate runtime | :warning: Partial: easy to shell out, but project-specific behavior becomes custom scripts |
+| GitHub ecosystem fit | :white_check_mark: Yes: example workflows open export/import PRs for review | :warning: Possible, but requires workflow glue | :x: No built-in PR workflow |
+| Select a subtree and publish it as a standalone repository | :white_check_mark: Yes: selected files land at repository root | :white_check_mark: Yes: broader repository migration model | :white_check_mark: Yes: this is the core Git subtree / filtering use case |
+| Assemble a public tree from selected files and directories | :white_check_mark: Yes: include/exclude globs select the exported tree | :white_check_mark: Yes: broader file-selection model | :warning: Partial: possible with path filters, but awkward for multiple locations |
+| Keep full source history | :x: No: squash-style export is the focus | :white_check_mark: Yes | :white_check_mark: Yes: this is where Git subtree and `git-filter-repo` fit best |
+| Rewrite absolute Python imports for the public package | :white_check_mark: Yes: supported literal replacements | :white_check_mark: Yes: broader transform model | :x: No: Git leaves file contents unchanged |
+| Strip private README sections, generated blocks, or internal names | :white_check_mark: Yes: block stripping and release-tree checks | :white_check_mark: Yes: broader transform model | :x: No: requires custom scripts and leak checks |
+| Leave private files out of the public repo | :white_check_mark: Yes: explicit include/exclude globs plus export validation | :white_check_mark: Yes: broader file-selection model | :warning: Partial: path filtering helps, but deeper cleanup is custom |
+| Import public fixes back into the source checkout | :white_check_mark: Yes: reverse import verifies by re-exporting | :white_check_mark: Yes: supports bidirectional repository movement | :warning: Partial: subtree can move history, but not verify semantic rewrites |
+| Fail loudly on unsupported rewrites | :white_check_mark: Yes: unsupported config is rejected | :white_check_mark: Yes: full config parser and migration engine | :x: No transform model to validate |
+| Full migration engine | :x: No: intentionally scoped to package sync | :white_check_mark: Yes | :x: No |
 
 ## Intentional Scope
 
