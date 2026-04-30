@@ -262,7 +262,7 @@ def _replace_tree(*, source: Path, destination: Path) -> None:
     for path in source.iterdir():
         target = destination / path.name
         if path.is_dir() and not path.is_symlink():
-            shutil.copytree(path, target, symlinks=True)
+            shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())
         else:
             shutil.copy2(path, target, follow_symlinks=False)
 
@@ -431,14 +431,25 @@ def _git_has_changes(path: Path) -> bool:
 
 
 def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
-    """Return whether GitHub already has a PR for a branch."""
+    """Return whether GitHub has an open PR for a branch."""
     result = _run(
-        ["gh", "pr", "view", branch, "--repo", repo],
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
         cwd=cwd,
-        check=False,
         capture=True,
     )
-    return result.returncode == 0
+    return bool(json.loads(result.stdout))
 
 
 def _fetch_branch(*, branch: str, cwd: Path) -> None:

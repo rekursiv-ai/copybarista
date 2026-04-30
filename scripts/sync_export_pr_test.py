@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from scripts import sync_export_pr
 from scripts.sync_export_pr import (
     _commit_author,
+    _gh_pr_exists,
     _public_pr_text,
     _replace_tree,
     export_branch_name,
@@ -81,9 +84,30 @@ def test_commit_author_uses_sync_identity():
     )
 
 
+def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert argv[0:4] == ["gh", "pr", "list", "--repo"]
+        assert "--state" in argv
+        assert "open" in argv
+        return subprocess.CompletedProcess(argv, 0, stdout="[]")
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    assert not _gh_pr_exists(
+        branch="copybarista/export/main",
+        repo="rekursiv-ai/copybarista",
+        cwd=Path.cwd(),
+    )
+
+
 def test_replace_tree_preserves_git_and_removes_stale_files(tmp_path: Path):
     source = tmp_path / "source"
     destination = tmp_path / "destination"
+    (source / ".github/workflows").mkdir(parents=True)
+    (source / ".github/workflows/ci.yml").write_text(
+        "name: CI\n",
+        encoding="utf-8",
+    )
     (source / "pkg").mkdir(parents=True)
     (source / "pkg/module.py").write_text("new\n", encoding="utf-8")
     (destination / ".git").mkdir(parents=True)
@@ -101,6 +125,7 @@ def test_replace_tree_preserves_git_and_removes_stale_files(tmp_path: Path):
 
     assert (destination / ".git/HEAD").read_text(encoding="utf-8")
     assert (destination / ".github/workflows/import.yml").read_text(encoding="utf-8")
+    assert (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert not (destination / "stale.txt").exists()
     assert not (destination / "pkg/old.py").exists()
     assert (destination / "pkg/module.py").read_text(encoding="utf-8") == "new\n"
