@@ -15,6 +15,7 @@ from scripts.sync_export_pr import (
     _replace_tree,
     export_branch_name,
     export_pr_body,
+    export_pr_text,
 )
 
 
@@ -22,17 +23,38 @@ def test_export_pr_body_contains_review_context():
     body = export_pr_body(
         description="Publish the latest sync changes.",
         branch="copybarista/export/main",
-        source_sha="abcdef1234567890",
-        workflow="Copybarista Export",
-        file_count=58,
     )
 
     assert "Publish the latest sync changes." in body
-    assert "- Export branch: `copybarista/export/main`" in body
-    assert "- Source commit: `abcdef1234567890`" in body
-    assert "- Exported files: `58`" in body
-    assert "- Workflow: `Copybarista Export`" in body
+    assert "Copybarista export branch: `copybarista/export/main`" in body
+    assert "Source commit" not in body
+    assert "Exported files" not in body
+    assert "Workflow:" not in body
     assert "Do not push manual commits to this generated branch." in body
+
+
+def test_export_pr_text_uses_commit_title_and_description():
+    text = export_pr_text(
+        title="",
+        body="",
+        source_message="Improve README image\n\nRestore the exported mascot asset.",
+        forbidden_text=("private-source",),
+    )
+
+    assert text.title == "Improve README image"
+    assert text.body == "Restore the exported mascot asset."
+
+
+def test_export_pr_text_accepts_manual_title_and_body():
+    text = export_pr_text(
+        title="Public sync update",
+        body="Prepare release docs.",
+        source_message="Private implementation detail",
+        forbidden_text=("private",),
+    )
+
+    assert text.title == "Public sync update"
+    assert text.body == "Prepare release docs."
 
 
 def test_public_pr_text_rejects_private_source_names():

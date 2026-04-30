@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scripts import sync_import_change
+
+if TYPE_CHECKING:
+    import pytest
 from scripts.sync_import_change import (
     _commit_author,
     _gh_pr_exists,
@@ -70,7 +73,7 @@ def test_commit_author_uses_sync_identity():
     )
 
 
-def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
+def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         assert argv[0:4] == ["gh", "pr", "list", "--repo"]
         assert "--state" in argv
