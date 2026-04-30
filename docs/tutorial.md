@@ -3,6 +3,12 @@
 This tutorial creates a tiny source tree, exports one subdirectory to a clean
 folder, and inspects the manifest. It does not require Git.
 
+For a complete runnable package example and two-way GitHub pull-request sync,
+use [Examples](../examples/README.md). For protected branches, GitHub Actions,
+automation bot identity, and token setup, use
+[GitHub repository setup](github-setup.md). This tutorial intentionally stays
+local so the basic config and transform behavior are easy to inspect.
+
 Copybarista's native config format is TOML, preferably in a file named
 `copy.barista.toml`. If you already have a supported `copy.bara.sky` workflow,
 Copybarista can accept that file directly and auto-translate it internally. You
@@ -147,7 +153,22 @@ uv run copybarista export /tmp/copybarista-demo/copy.barista.toml \
 This is the usual pattern for CI jobs that export to a temporary directory
 before running package checks.
 
-## 6. Use a Supported `copy.bara.sky` Directly
+## 6. Connect GitHub Workflows
+
+The maintained GitHub workflow example lives in
+[`examples/python-package`](../examples/README.md). It uses the same concepts as
+this tutorial, but adds:
+
+- a runnable Python package under `packages/widget`;
+- source-to-public export through a generated pull request;
+- public-to-source import validation and generated source pull requests;
+- branch protection, required checks, and optional auto-merge;
+- automation bot setup guidance for generated PR authorship.
+
+Start there when setting up a real repository pair. The example is kept in sync
+with CI and is a better template than copying this `/tmp` tutorial.
+
+## 7. Use a Supported `copy.bara.sky` Directly
 
 For supported `copy.bara.sky` workflows, pass the config file in
 place of `copy.barista.toml`:
