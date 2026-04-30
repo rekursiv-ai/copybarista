@@ -114,10 +114,32 @@ def test_export_branch_name_allows_explicit_branch():
     )
 
 
+def test_export_branch_name_rejects_non_generated_explicit_branch():
+    with pytest.raises(SystemExit) as error:
+        export_branch_name(
+            explicit="main",
+            source_branch="main",
+            source_sha="abcdef",
+        )
+
+    assert error.value.code == 2
+
+
+def test_export_branch_name_rejects_malformed_explicit_branch():
+    with pytest.raises(SystemExit) as error:
+        export_branch_name(
+            explicit="copybarista/export/../main",
+            source_branch="main",
+            source_sha="abcdef",
+        )
+
+    assert error.value.code == 2
+
+
 def test_commit_author_uses_sync_identity():
     assert (
-        _commit_author("copybarista", "copybarista@rekursiv.ai")
-        == "copybarista <copybarista@rekursiv.ai>"
+        _commit_author("copybarista", "copybarista@example.com")
+        == "copybarista <copybarista@example.com>"
     )
 
 

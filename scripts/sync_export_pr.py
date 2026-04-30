@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import TextIO
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_USER_EMAIL = "copybarista@rekursiv.ai"
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
 DEFAULT_EXPORT_TITLE = "Update Copybarista export"
 DEFAULT_EXPORT_DESCRIPTION = (
     "Updates the generated Copybarista public repository export."
 )
+CONTROL_CHAR_BOUND = 32
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> None:
         sync_user_email=args.sync_user_email,
         pr_title=pr_text.title,
         pr_body=pr_text.body,
+        auto_merge=_string_bool(args.auto_merge),
         runner_temp=Path(args.runner_temp),
     )
     run_export_sync(request)
@@ -75,6 +77,7 @@ class ExportRequest:
     sync_user_email: str
     pr_title: str
     pr_body: str
+    auto_merge: bool
     runner_temp: Path
 
 
@@ -110,6 +113,8 @@ def run_export_sync(request: ExportRequest) -> None:
     _validate_public(public_dir=request.public_dir, dist_dir=dist_dir)
     _log("Opening or updating export PR.")
     _open_or_update_export_pr(request=request)
+    if request.auto_merge:
+        _enable_export_pr_auto_merge(request=request)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -160,6 +165,11 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Comma- or newline-separated private terms forbidden in public PR text.",
+    )
+    parser.add_argument(
+        "--auto-merge",
+        default=os.environ.get("COPYBARISTA_AUTO_MERGE", "false"),
+        help="Enable GitHub PR auto-merge for the generated export branch.",
     )
     parser.add_argument(
         "--workflow",
@@ -404,6 +414,27 @@ def _open_or_update_export_pr(*, request: ExportRequest) -> None:
     )
 
 
+def _enable_export_pr_auto_merge(*, request: ExportRequest) -> None:
+    """Enable squash auto-merge for the generated public export PR."""
+    _run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            request.branch,
+            "--repo",
+            request.target_repo,
+            "--squash",
+            "--subject",
+            request.pr_title,
+            "--body",
+            f"Copybarista export branch: {request.branch}",
+            "--auto",
+        ],
+        cwd=request.public_dir,
+    )
+
+
 def export_pr_text(
     *,
     title: str,
@@ -455,10 +486,15 @@ def _split_commit_message(message: str) -> tuple[str, str]:
 def export_branch_name(*, explicit: str, source_branch: str, source_sha: str) -> str:
     """Return the source-to-public sync branch name."""
     if explicit.strip():
-        return explicit.strip()
+        return _validated_generated_branch(
+            branch=explicit.strip(),
+            prefix="copybarista/export/",
+        )
     if source_branch.strip():
-        return f"copybarista/export/{_branch_component(source_branch)}"
-    return f"copybarista/export/sha-{_branch_component(source_sha[:12])}"
+        branch = f"copybarista/export/{_branch_component(source_branch)}"
+    else:
+        branch = f"copybarista/export/sha-{_branch_component(source_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix="copybarista/export/")
 
 
 def _commit_author(name: str, email: str) -> str:
@@ -548,9 +584,39 @@ def _env_bool(name: str) -> bool:
     return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _string_bool(value: str) -> bool:
+    """Return whether a CLI or environment string is truthy."""
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def _branch_component(value: str) -> str:
     """Sanitize arbitrary run metadata for use in a Git branch name."""
     return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
+
+
+def _validated_generated_branch(*, branch: str, prefix: str) -> str:
+    """Return a safe generated branch name or exit with a usage error."""
+    if not branch.startswith(prefix):
+        sys.stderr.write(f"Branch must start with {prefix}\n")
+        raise SystemExit(2)
+    if not _valid_git_branch_name(branch):
+        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
+        raise SystemExit(2)
+    return branch
+
+
+def _valid_git_branch_name(branch: str) -> bool:
+    """Return whether a branch name is safe for force-updated sync branches."""
+    if branch in {"main", "master"} or branch.startswith(("-", "/")):
+        return False
+    if branch.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in branch or "//" in branch or "@{" in branch:
+        return False
+    forbidden = set(" ~^:?*[\\")
+    return not any(
+        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
+    )
 
 
 def _run(

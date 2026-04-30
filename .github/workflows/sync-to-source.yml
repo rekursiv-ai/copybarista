@@ -1,4 +1,4 @@
-name: Sync to Source
+name: Import public changes
 
 on:
   pull_request:
@@ -31,6 +31,7 @@ concurrency:
 
 jobs:
   import-change:
+    name: Import public changes to source
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
@@ -41,23 +42,24 @@ jobs:
       (
         github.event_name == 'push' &&
         github.event.before != '0000000000000000000000000000000000000000' &&
-        github.event.head_commit.author.email != (vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@rekursiv.ai') &&
+        github.event.head_commit.author.email != (vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com') &&
         !contains(github.event.head_commit.message, 'copybarista/export/') &&
         !contains(github.event.head_commit.message, 'Copybarista export branch:')
       )
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
       TARGET_REPO: ${{ inputs.target_repo || vars.COPYBARISTA_IMPORT_TARGET_REPO }}
       TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_IMPORT_PROJECT_PATH }}
       BASE_BRANCH: ${{ inputs.base_branch || 'main' }}
       COPYBARISTA_SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
-      COPYBARISTA_SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@rekursiv.ai' }}
+      COPYBARISTA_SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
+      DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
+      DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
 
     steps:
       - name: Check token
         run: |
-          if [ -z "$GH_TOKEN" ]; then
+          if [ -z "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" ]; then
             echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
             exit 1
           fi
@@ -81,8 +83,8 @@ jobs:
             base_ref="${{ github.event.pull_request.base.sha }}"
             head_ref="${{ github.event.pull_request.head.sha }}"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            base_ref="${{ inputs.public_base_ref }}"
-            head_ref="${{ inputs.public_head_ref }}"
+            base_ref="$DISPATCH_PUBLIC_BASE_REF"
+            head_ref="$DISPATCH_PUBLIC_HEAD_REF"
             if [ -z "$head_ref" ]; then
               head_ref="${GITHUB_SHA}"
             fi
@@ -95,6 +97,12 @@ jobs:
             echo "::error::Cannot resolve public base ref for import."
             exit 1
           fi
+          for ref in "$base_ref" "$head_ref"; do
+            if ! git check-ref-format --allow-onelevel "$ref"; then
+              echo "::error::Invalid public ref: $ref"
+              exit 1
+            fi
+          done
 
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
@@ -118,6 +126,7 @@ jobs:
           token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
           ref: ${{ env.BASE_BRANCH }}
           path: target
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -142,7 +151,26 @@ jobs:
             --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
             --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
             --report "$IMPORT_REPORT" \
-            --open-pr "${{ github.event_name != 'pull_request' }}"
+            --open-pr false
+
+      - name: Open or update target import PR
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+        run: |
+          uv --quiet --project "target/$TARGET_PROJECT_PATH" run python \
+            "target/$TARGET_PROJECT_PATH/scripts/sync_import_change.py" \
+            --target-dir target \
+            --target-repo "$TARGET_REPO" \
+            --project-path "$TARGET_PROJECT_PATH" \
+            --base-branch "$BASE_BRANCH" \
+            --public-repo "$GITHUB_REPOSITORY" \
+            --public-sha "$GITHUB_SHA" \
+            --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
+            --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
+            --report "$IMPORT_REPORT" \
+            --open-pr true \
+            --open-pr-only
 
       - name: Upload import report
         if: always()

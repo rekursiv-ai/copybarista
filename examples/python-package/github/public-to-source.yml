@@ -1,4 +1,4 @@
-name: Public To Source
+name: Import public changes
 
 on:
   pull_request:
@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   import:
+    name: Import public changes and update source PR
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
@@ -43,17 +44,18 @@ jobs:
       )
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
       SOURCE_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}
       PROJECT_PATH: ${{ vars.COPYBARISTA_SOURCE_PROJECT_PATH || '.' }}
       SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
       SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
       IMPORT_BRANCH: ${{ inputs.branch || format('copybarista/import/sha-{0}', github.sha) }}
+      DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
+      DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
 
     steps:
       - name: Check settings
         run: |
-          if [ -z "$GH_TOKEN" ]; then
+          if [ -z "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" ]; then
             echo "::error::Set COPYBARISTA_IMPORT_TOKEN."
             exit 1
           fi
@@ -70,8 +72,8 @@ jobs:
             head_ref="${{ github.event.pull_request.head.sha }}"
             open_pr=false
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            base_ref="${{ inputs.public_base_ref }}"
-            head_ref="${{ inputs.public_head_ref }}"
+            base_ref="$DISPATCH_PUBLIC_BASE_REF"
+            head_ref="$DISPATCH_PUBLIC_HEAD_REF"
             if [ -z "$head_ref" ]; then
               head_ref="${GITHUB_SHA}"
             fi
@@ -86,6 +88,12 @@ jobs:
             echo "::error::Cannot resolve public base ref."
             exit 1
           fi
+          for ref in "$base_ref" "$head_ref"; do
+            if ! git check-ref-format --allow-onelevel "$ref"; then
+              echo "::error::Invalid public ref: $ref"
+              exit 1
+            fi
+          done
 
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
@@ -110,6 +118,7 @@ jobs:
           token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
           ref: main
           path: source
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -137,10 +146,23 @@ jobs:
       - name: Open or update source PR
         if: steps.refs.outputs.open_pr == 'true'
         working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
           if [ -z "$(git status --porcelain -- "$PROJECT_PATH")" ]; then
             echo "No source changes to sync."
             exit 0
+          fi
+          case "$IMPORT_BRANCH" in
+            copybarista/import/*) ;;
+            *)
+              echo "::error::Import branch must start with copybarista/import/."
+              exit 1
+              ;;
+          esac
+          if [[ "$IMPORT_BRANCH" == *..* || "$IMPORT_BRANCH" == *"@{"* || "$IMPORT_BRANCH" == *"//"* || "$IMPORT_BRANCH" == */ || "$IMPORT_BRANCH" == *.lock ]]; then
+            echo "::error::Invalid import branch name."
+            exit 1
           fi
 
           git config user.name "$SYNC_USER_NAME"

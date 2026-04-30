@@ -10,7 +10,7 @@ dist/
 htmlcov/
 
 # Private parity fixtures intentionally contain generated-looking paths.
-!examples/github/protect-main-ruleset.json
+!examples/python-package/github/protect-main-ruleset.json
 !private/github/protect-main-ruleset.json
 !private/fixtures/**/.venv/
 !private/fixtures/**/.venv/**

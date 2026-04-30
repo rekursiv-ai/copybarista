@@ -1,4 +1,4 @@
-name: Source To Public
+name: Export public repository
 
 on:
   workflow_dispatch:
@@ -27,9 +27,9 @@ concurrency:
 
 jobs:
   export:
+    name: Export package tree and update public PR
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
       PUBLIC_REPO: ${{ vars.COPYBARISTA_PUBLIC_REPO }}
       PROJECT_PATH: ${{ vars.COPYBARISTA_SOURCE_PROJECT_PATH || '.' }}
       SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
@@ -39,7 +39,7 @@ jobs:
     steps:
       - name: Check settings
         run: |
-          if [ -z "$GH_TOKEN" ]; then
+          if [ -z "${{ secrets.COPYBARISTA_SYNC_TOKEN }}" ]; then
             echo "::error::Set COPYBARISTA_SYNC_TOKEN."
             exit 1
           fi
@@ -60,6 +60,7 @@ jobs:
           token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
           ref: main
           path: public
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -93,12 +94,24 @@ jobs:
       - name: Open or update public PR
         working-directory: public
         env:
+          GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
           PR_BODY: ${{ inputs.pr_body }}
           PR_TITLE: ${{ inputs.pr_title }}
         run: |
           if [ -z "$(git status --porcelain)" ]; then
             echo "No public changes to sync."
             exit 0
+          fi
+          case "$EXPORT_BRANCH" in
+            copybarista/export/*) ;;
+            *)
+              echo "::error::Export branch must start with copybarista/export/."
+              exit 1
+              ;;
+          esac
+          if [[ "$EXPORT_BRANCH" == *..* || "$EXPORT_BRANCH" == *"@{"* || "$EXPORT_BRANCH" == *"//"* || "$EXPORT_BRANCH" == */ || "$EXPORT_BRANCH" == *.lock ]]; then
+            echo "::error::Invalid export branch name."
+            exit 1
           fi
 
           git config user.name "$SYNC_USER_NAME"

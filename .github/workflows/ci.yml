@@ -1,4 +1,4 @@
-name: CI
+name: Package validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   validate:
-    name: Python 3.12
+    name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
 
     steps:

@@ -19,8 +19,9 @@ from pathlib import Path
 from typing import TextIO
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_USER_EMAIL = "copybarista@rekursiv.ai"
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
+CONTROL_CHAR_BOUND = 32
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> None:
         sync_user_email=args.sync_user_email,
         report=Path(args.report),
         open_pr=_string_bool(args.open_pr),
+        open_pr_only=args.open_pr_only,
         runner_temp=Path(args.runner_temp),
     )
     run_import_sync(request)
@@ -66,12 +68,17 @@ class ImportRequest:
     sync_user_email: str
     report: Path
     open_pr: bool
+    open_pr_only: bool
     runner_temp: Path
 
 
 def run_import_sync(request: ImportRequest) -> None:
     """Import public changes into source, validate, and optionally open a PR."""
     project = request.target_dir / request.project_path
+    if request.open_pr_only:
+        _log("Opening or updating target import PR.")
+        _open_or_update_target_pr(request=request)
+        return
     _log("Preparing target source environment.")
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _log("Importing public changes into target source.")
@@ -118,6 +125,11 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("IMPORT_REPORT", "import-report.json"),
     )
     parser.add_argument("--open-pr", default="false")
+    parser.add_argument(
+        "--open-pr-only",
+        action="store_true",
+        help="Only create or update the source PR for already-imported changes.",
+    )
     parser.add_argument(
         "--runner-temp",
         default=os.environ.get("RUNNER_TEMP", str(DEFAULT_RUNNER_TEMP)),
@@ -319,8 +331,12 @@ def import_change_pr_body(
 def import_branch_name(*, explicit: str, public_sha: str) -> str:
     """Return the public-to-source sync branch name."""
     if explicit.strip():
-        return explicit.strip()
-    return f"copybarista/import/sha-{_branch_component(public_sha[:12])}"
+        return _validated_generated_branch(
+            branch=explicit.strip(),
+            prefix="copybarista/import/",
+        )
+    branch = f"copybarista/import/sha-{_branch_component(public_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix="copybarista/import/")
 
 
 def _commit_author(name: str, email: str) -> str:
@@ -388,6 +404,31 @@ def _string_bool(value: str) -> bool:
 def _branch_component(value: str) -> str:
     """Sanitize arbitrary run metadata for use in a Git branch name."""
     return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
+
+
+def _validated_generated_branch(*, branch: str, prefix: str) -> str:
+    """Return a safe generated branch name or exit with a usage error."""
+    if not branch.startswith(prefix):
+        sys.stderr.write(f"Branch must start with {prefix}\n")
+        raise SystemExit(2)
+    if not _valid_git_branch_name(branch):
+        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
+        raise SystemExit(2)
+    return branch
+
+
+def _valid_git_branch_name(branch: str) -> bool:
+    """Return whether a branch name is safe for force-updated sync branches."""
+    if branch in {"main", "master"} or branch.startswith(("-", "/")):
+        return False
+    if branch.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in branch or "//" in branch or "@{" in branch:
+        return False
+    forbidden = set(" ~^:?*[\\")
+    return not any(
+        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
+    )
 
 
 def _run(

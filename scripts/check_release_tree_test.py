@@ -31,6 +31,10 @@ def test_check_tree_rejects_private_generated_and_vcs_paths(tmp_path: Path):
     _write_required_tree(tmp_path)
     for path in (
         tmp_path / "private/SPEC.md",
+        tmp_path / "site/index.html",
+        tmp_path / "copy.bara.sky",
+        tmp_path / "copy.barista.toml",
+        tmp_path / ".github/workflows/pages.yml",
         tmp_path / ".pytest_cache/v/cache/nodeids",
         tmp_path / "copybarista/__pycache__/config.pyc",
         tmp_path / "copybarista.egg-info/PKG-INFO",
@@ -46,6 +50,21 @@ def test_check_tree_rejects_private_generated_and_vcs_paths(tmp_path: Path):
     assert any("Python bytecode" in error for error in errors)
     assert any("Build metadata" in error for error in errors)
     assert any("VCS metadata" in error for error in errors)
+    assert any("Source-only release file" in error for error in errors)
+
+
+def test_check_tree_rejects_private_sync_readme_markers(tmp_path: Path):
+    _write_required_tree(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "<!-- copybarista:private-sync:start -->\n"
+        "Private notes.\n"
+        "<!-- copybarista:private-sync:end -->\n",
+        encoding="utf-8",
+    )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any("Private sync README block" in error for error in errors)
 
 
 def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):

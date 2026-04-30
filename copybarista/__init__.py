@@ -1,8 +1,8 @@
-"""Copybarista repository export tooling.
+"""Copybarista CLI-first repository export tooling.
 
-The package provides a small CLI and library surface for selecting a source
-subtree, applying deterministic text transforms, and publishing the result to
-a folder or single-commit Git destination.
+The supported public interface is the `copybarista` command. Internal modules
+are importable for tests and local automation, but their Python API is not
+stable until Copybarista explicitly documents one.
 """
 
 __all__ = ["__version__"]

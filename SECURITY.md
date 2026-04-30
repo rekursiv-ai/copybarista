@@ -6,9 +6,9 @@ Copybarista is pre-1.0. Security fixes apply to the current `main` branch.
 
 ## Reporting a Vulnerability
 
-Report security issues privately through the repository's security advisory
-channel once the public repository is created. Until then, contact the
-maintainers directly.
+Report security issues privately through GitHub Security Advisories for this
+repository. If advisories are unavailable, contact the maintainers directly
+instead of opening a public issue.
 
 Please include:
 
