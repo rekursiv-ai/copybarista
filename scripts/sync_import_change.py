@@ -9,6 +9,7 @@ coverage for the behavior that changes over time.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -344,14 +345,25 @@ def _git_head(*, cwd: Path) -> str:
 
 
 def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
-    """Return whether GitHub already has a PR for a branch."""
+    """Return whether GitHub has an open PR for a branch."""
     result = _run(
-        ["gh", "pr", "view", branch, "--repo", repo],
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
         cwd=cwd,
-        check=False,
         capture=True,
     )
-    return result.returncode == 0
+    return bool(json.loads(result.stdout))
 
 
 def _fetch_branch(*, branch: str, cwd: Path) -> None:

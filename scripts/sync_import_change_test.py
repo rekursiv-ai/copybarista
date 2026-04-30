@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from scripts import sync_import_change
 from scripts.sync_import_change import (
     _commit_author,
+    _gh_pr_exists,
     _string_bool,
     import_branch_name,
     import_change_pr_body,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_import_change_pr_body_contains_review_context():
@@ -58,4 +67,20 @@ def test_commit_author_uses_sync_identity():
     assert (
         _commit_author("copybarista", "copybarista@rekursiv.ai")
         == "copybarista <copybarista@rekursiv.ai>"
+    )
+
+
+def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert argv[0:4] == ["gh", "pr", "list", "--repo"]
+        assert "--state" in argv
+        assert "open" in argv
+        return subprocess.CompletedProcess(argv, 0, stdout="[]")
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    assert not _gh_pr_exists(
+        branch="copybarista/import/sha-abcdef123456",
+        repo="rekursiv-ai/source",
+        cwd=Path.cwd(),
     )

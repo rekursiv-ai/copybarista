@@ -5,6 +5,10 @@
 </p>
 
 <p align="center">
+  <img src="assets/copybarista-splash.webp" alt="Copybarista mascot" width="520">
+</p>
+
+<p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue.svg">
   <a href="https://pypi.org/project/copybarista/"><img alt="PyPI" src="https://img.shields.io/pypi/v/copybarista.svg"></a>
   <a href=".github/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
