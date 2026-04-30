@@ -83,10 +83,10 @@ repository export. Direct public edits and manually dispatched imports still
 flow back through `copybarista import-change`.
 
 Merged generated export PRs should also be skipped on public `main` pushes.
-The example workflow detects them by sync author email or a
-`copybarista/export/` marker in the merge commit message, so use the same
-`COPYBARISTA_SYNC_USER_EMAIL` in both repositories or keep that marker in the
-generated export PR squash-merge title/body.
+The example workflow detects them by sync author email or a generated export
+branch marker in the merge commit message. Auto-merge writes
+`Copybarista export branch: ...` into the squash body; manual squash merges
+should keep that marker or a `copybarista/export/` marker in the title/body.
 
 ## Pull Request Text
 
