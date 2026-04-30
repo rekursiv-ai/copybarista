@@ -88,6 +88,12 @@ branch marker in the merge commit message. Auto-merge writes
 `Copybarista export branch: ...` into the squash body; manual squash merges
 should keep that marker or a `copybarista/export/` marker in the title/body.
 
+Generated sync branches must stay under Copybarista-owned namespaces:
+`copybarista/export/*` for source-to-public branches and
+`copybarista/import/*` for public-to-source branches. The helper scripts reject
+explicit branch names outside those namespaces because generated branches are
+force-updated with `git push --force-with-lease`.
+
 ## Pull Request Text
 
 Copybarista's source-to-public sync helper uses generic PR text by default.
@@ -114,6 +120,11 @@ Manual changes belong in the source repository followed by another export run.
 The example workflows use `git push --force-with-lease` for generated branches
 so reruns can replace generated commits but fail if someone changed the remote
 branch unexpectedly.
+
+Keep write tokens out of validation steps that execute imported public changes.
+The public-to-source workflow should check out private/source repositories with
+`persist-credentials: false`, run import and validation without `GH_TOKEN`, and
+only expose the write token in the final PR creation step.
 
 Generated import PR titles and bodies should include the public base SHA,
 public head SHA, and source base SHA. If source `main` changes after an import
@@ -433,7 +444,7 @@ The example ruleset requires:
 - Last-pusher approval by someone else.
 - Resolved review threads.
 - Fresh required checks.
-- Passing `Python 3.12`.
+- Passing `Lint, type-check, test, and build`.
 - Linear history.
 - No force pushes to `main`.
 - No `main` deletion.
@@ -494,3 +505,8 @@ uv build --out-dir /tmp/copybarista-dist-check
 
 Run `scripts/check_release_tree.py` before dependency tools create local
 artifacts such as `.venv` or package metadata.
+
+For Copybarista itself, build PyPI releases from the exported public tree or the
+synced public repository, not directly from the monorepo subtree. The raw source
+subtree contains private documentation blocks that are removed only during
+export.

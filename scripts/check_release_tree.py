@@ -27,6 +27,18 @@ BLOCKED_DIR_NAMES = frozenset(
         "htmlcov",
     )
 )
+BLOCKED_ROOT_PATHS = frozenset(
+    (
+        "copy.bara.sky",
+        "copy.barista.toml",
+        "site",
+    )
+)
+BLOCKED_EXACT_PATHS = frozenset((".github/workflows/pages.yml",))
+PRIVATE_SYNC_MARKERS = (
+    "<!-- copybarista:private-sync:start -->",
+    "<!-- copybarista:private-sync:end -->",
+)
 REQUIRED_PATHS = (
     ".github/workflows/ci.yml",
     ".github/workflows/sync-to-source.yml",
@@ -66,6 +78,7 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
         for required in REQUIRED_PATHS
         if not (root / required).exists()
     ]
+    errors.extend(_content_errors(root))
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         errors.extend(_path_errors(rel=rel, allow_root_git=allow_root_git))
@@ -90,10 +103,7 @@ def _path_errors(*, rel: str, allow_root_git: bool) -> tuple[str, ...]:
         return ()
     if ".git" in parts:
         errors.append(f"VCS metadata must not be exported: {rel}")
-    if parts and parts[0] == "private":
-        errors.append(f"Private implementation files must not be exported: {rel}")
-    if parts and parts[0] == ".coverage":
-        errors.append(f"Coverage data must not be exported: {rel}")
+    errors.extend(_root_path_errors(rel=rel, parts=parts))
     for part in parts:
         if part in BLOCKED_DIR_NAMES:
             errors.append(f"Generated directory must not be exported: {rel}")
@@ -104,6 +114,31 @@ def _path_errors(*, rel: str, allow_root_git: bool) -> tuple[str, ...]:
     if rel.endswith(".pyc"):
         errors.append(f"Python bytecode must not be exported: {rel}")
     return tuple(errors)
+
+
+def _root_path_errors(*, rel: str, parts: tuple[str, ...]) -> tuple[str, ...]:
+    """Return release-policy errors for root-owned files and directories."""
+    errors: list[str] = []
+    if parts and parts[0] == "private":
+        errors.append(f"Private implementation files must not be exported: {rel}")
+    if parts and parts[0] in BLOCKED_ROOT_PATHS:
+        errors.append(f"Source-only release file must not be exported: {rel}")
+    if rel in BLOCKED_EXACT_PATHS:
+        errors.append(f"Source-only release file must not be exported: {rel}")
+    if parts and parts[0] == ".coverage":
+        errors.append(f"Coverage data must not be exported: {rel}")
+    return tuple(errors)
+
+
+def _content_errors(root: Path) -> tuple[str, ...]:
+    """Return release-policy errors that require reading file contents."""
+    readme = root / "README.md"
+    if not readme.is_file():
+        return ()
+    text = readme.read_text(encoding="utf-8", errors="replace")
+    if any(marker in text for marker in PRIVATE_SYNC_MARKERS):
+        return ("Private sync README block must not be exported",)
+    return ()
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue.svg">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue.svg">
   <a href="https://pypi.org/project/copybarista/"><img alt="PyPI" src="https://img.shields.io/pypi/v/copybarista.svg"></a>
   <a href=".github/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
@@ -75,9 +75,9 @@ We recommend starting with the two above approaches first if it matches your req
 
 Copybarista is intentionally narrowly scoped: it's a Python program which
 publishes clean OSS packages from private or monorepo sources while rewriting
-the exported tree and syncing through GitHub pull requests. Our team at [rekursiv.ai](https://rekursiv.ai)
-built this tool as a way to easily manage syncing code between repositories
-while seamlessly plugging in with our ML-focused Python+GitHub toolchain.
+the exported tree and syncing through GitHub pull requests. Built and
+maintained by [rekursiv.ai](https://rekursiv.ai), it manages syncs between
+repositories while fitting a Python and GitHub toolchain.
 
 Short version:
 
@@ -115,7 +115,7 @@ pipx install copybarista
 pip install copybarista
 ```
 
-Copybarista requires Python 3.12 or newer. Git exports also require the system
+Copybarista requires Python 3.12. Git exports also require the system
 `git` executable.
 
 ## Quick Start

@@ -128,7 +128,7 @@ def load_config(path: Path, *, workflow_name: str = "export") -> WorkflowConfig:
         )
         return load_copy_bara_sky_config(path, workflow_name=workflow_name)
     try:
-        raw = tomllib.loads(path.read_text())
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as err:
         raise ConfigError(f"Cannot read config: {path}") from err
     except tomllib.TOMLDecodeError as err:

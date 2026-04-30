@@ -119,7 +119,8 @@ Use the contents of
 `examples/python-package/github/source-to-public.yml`.
 
 Expected result: the source repository has the source package, the
-Copybarista config, and a manually dispatched `Source To Public` workflow.
+Copybarista config, and a manually dispatched `Export public repository`
+workflow.
 
 ### 2. Prepare The Public Repository
 
@@ -135,8 +136,8 @@ Copy the public-to-source workflow into the public repository:
 Use the contents of
 `examples/python-package/github/public-to-source.yml`.
 
-Expected result: the public repository has a `Public To Source` workflow, even
-before it has package source files.
+Expected result: the public repository has an `Import public changes` workflow,
+even before it has package source files.
 The first push that creates this workflow has no previous public commit to
 compare against, so the import job is skipped.
 
@@ -165,8 +166,9 @@ COPYBARISTA_SYNC_USER_EMAIL=copybarista@example.com
 but using the same values in both repositories lets reverse sync skip generated
 export merges reliably.
 
-Expected result: manually running `Source To Public` has enough information to
-check out the public repository, push an export branch, and open a PR.
+Expected result: manually running `Export public repository` has enough
+information to check out the public repository, push an export branch, and open
+a PR.
 
 ### 4. Configure Public Repository Settings
 
@@ -189,12 +191,12 @@ COPYBARISTA_SYNC_USER_NAME=copybarista
 COPYBARISTA_SYNC_USER_EMAIL=copybarista@example.com
 ```
 
-Expected result: `Public To Source` can check out the source repository, run
-`copybarista import-change`, push an import branch, and open a source PR.
+Expected result: `Import public changes` can check out the source repository,
+run `copybarista import-change`, push an import branch, and open a source PR.
 
 ### 5. Run The First Export
 
-In the source repository, run `Source To Public` manually.
+In the source repository, run `Export public repository` manually.
 
 Use a public-safe title and body, for example:
 
@@ -263,7 +265,7 @@ gh api \
 ```
 
 Edit required check names in the JSON first if your CI does not emit
-`Python 3.12`.
+`Lint, type-check, test, and build`.
 
 Expected result: future public changes go through pull requests with the checks
 and review rules your repository requires.
@@ -279,7 +281,7 @@ export-only.
 
 Expected result on the public PR:
 
-- `Public To Source` checks out the public base and head.
+- `Import public changes` checks out the public base and head.
 - It runs `copybarista import-change`.
 - It validates that the imported source re-exports to the public PR head.
 - It does not open a source PR yet.
@@ -288,7 +290,7 @@ Merge the public PR after checks pass.
 
 Expected result after merge:
 
-- The public `push` trigger reruns `Public To Source`.
+- The public `push` trigger reruns `Import public changes`.
 - The workflow imports the public change into the source checkout.
 - A PR opens in the source repository from
   `copybarista/import/sha-<public-sha>`.
@@ -298,8 +300,8 @@ Merge the source PR after source-side review and checks.
 
 ### 9. Continue The Sync Loop
 
-For source-owned changes, run `Source To Public` again and merge the generated
-public PR.
+For source-owned changes, run `Export public repository` again and merge the
+generated public PR.
 
 For public-owned fixes, merge the public PR first, then merge the generated
 source PR. The import PR title and body include the public base SHA, public
@@ -343,8 +345,9 @@ branch marker in the merge commit message. Auto-merge writes
 should keep that marker or a `copybarista/export/` marker in the title/body.
 
 Do not manually edit generated `copybarista/export/*` branches. Treat them as
-workflow output. Change the source repository and rerun `Source To Public` with
-the same branch instead. The workflow uses `git push --force-with-lease` so it
+workflow output. Change the source repository and rerun
+`Export public repository` with the same branch instead. The workflow uses
+`git push --force-with-lease` so it
 can replace generated commits without overwriting unexpected manual updates.
 
 If both repositories change the same exported file, merge order matters. Import

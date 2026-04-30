@@ -46,7 +46,7 @@
         "do_not_enforce_on_create": true,
         "required_status_checks": [
           {
-            "context": "Python 3.12"
+            "context": "Lint, type-check, test, and build"
           }
         ],
         "strict_required_status_checks_policy": true

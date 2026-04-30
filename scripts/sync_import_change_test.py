@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from scripts import sync_import_change
-
-if TYPE_CHECKING:
-    import pytest
 from scripts.sync_import_change import (
     _commit_author,
     _gh_pr_exists,
@@ -17,9 +15,6 @@ from scripts.sync_import_change import (
     import_branch_name,
     import_change_pr_body,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_import_change_pr_body_contains_review_context():
@@ -66,10 +61,27 @@ def test_import_branch_name_allows_explicit_branch():
     )
 
 
+def test_import_branch_name_rejects_non_generated_explicit_branch():
+    with pytest.raises(SystemExit) as error:
+        import_branch_name(explicit="main", public_sha="abcdef1234567890")
+
+    assert error.value.code == 2
+
+
+def test_import_branch_name_rejects_malformed_explicit_branch():
+    with pytest.raises(SystemExit) as error:
+        import_branch_name(
+            explicit="copybarista/import/../main",
+            public_sha="abcdef1234567890",
+        )
+
+    assert error.value.code == 2
+
+
 def test_commit_author_uses_sync_identity():
     assert (
-        _commit_author("copybarista", "copybarista@rekursiv.ai")
-        == "copybarista <copybarista@rekursiv.ai>"
+        _commit_author("copybarista", "copybarista@example.com")
+        == "copybarista <copybarista@example.com>"
     )
 
 
