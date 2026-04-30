@@ -138,7 +138,11 @@ checks and branch protection are installed.
 
 If branch protection requires human approval, auto-merge waits for that approval
 and then merges after checks pass. For unattended source-to-public sync, require
-status checks but do not require reviews for generated export PRs.
+status checks but do not require reviews for generated export PRs. The example
+ruleset requires one review by default; set
+`required_approving_review_count` to `0` and
+`require_last_push_approval` to `false` before installing it if generated
+export PRs should merge without human approval.
 
 Keep public-to-source imports manual by default. Public changes are proposals
 that can carry semantic decisions, so source maintainers should review the

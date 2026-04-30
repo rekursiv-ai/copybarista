@@ -1,7 +1,7 @@
 <h1 align="center">Copybarista</h1>
 
 <p align="center">
-  Publish clean standalone repositories from private or monorepo source trees.
+  Publish and sync clean standalone repositories from private or monorepo source trees.
 </p>
 
 <p align="center">
