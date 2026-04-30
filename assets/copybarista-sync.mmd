@@ -1,0 +1,38 @@
+%% Source for assets/copybarista-sync.webp.
+%% Regenerate with: uv run python scripts/render_diagram.py assets/copybarista-sync.mmd
+flowchart TD
+  classDef repo fill:#e2e8f0,stroke:#334155,stroke-width:2.5px,color:#0f172a
+  classDef forward fill:#dbeafe,stroke:#1e40af,stroke-width:2.5px,color:#0c1f4a
+  classDef reverse fill:#fed7aa,stroke:#c2410c,stroke-width:2.5px,color:#3a1207
+
+  subgraph SRC["Source repository"]
+    direction LR
+    source_pr["<b>Source import PR</b><br/><code>import/sha-*</code>"]
+    source[("<b>Private / monorepo source</b><br/><code>copy.barista.toml</code>")]
+    export_action(["<b>copybarista export</b><br/><code>source-to-public.yml</code>"])
+  end
+
+  subgraph PUB["Public repository"]
+    direction LR
+    export_pr["<b>Export PR</b><br/><code>copybarista/export/*</code>"]
+    public_main[("<b>Standalone package</b>")]
+    public_pr["<b>Public PR</b><br/>docs · fixes · tests"]
+    import_action(["<b>copybarista import-change</b><br/><code>public-to-source.yml</code>"])
+  end
+
+  source ==>|push or dispatch| export_action ==>|export + validate| export_pr
+  export_pr ==>|CI + auto-merge| public_main
+  public_main -.->|merged change| import_action
+  public_pr ==>|validate import| import_action
+  import_action ==>|verified patch| source_pr ==>|review + merge| source
+
+  class source,public_main repo
+  class export_action,export_pr forward
+  class import_action,public_pr,source_pr reverse
+
+  style SRC fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,color:#0f172a
+  style PUB fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,color:#0f172a
+
+  linkStyle 0,1,2 stroke:#1e40af,stroke-width:2.5px
+  linkStyle 3 stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:4 4
+  linkStyle 4,5,6 stroke:#c2410c,stroke-width:2.5px

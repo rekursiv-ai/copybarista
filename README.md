@@ -56,12 +56,22 @@ Copybarista can map and verify them safely.
 - Reject unsupported config instead of guessing and producing a surprising
   export.
 
+<p align="center">
+  <img src="assets/copybarista-sync.webp" alt="Copybarista bidirectional sync: source repository exports through copybarista export to an Export PR that auto-merges into the standalone package; public PRs and merged public changes flow back through copybarista import-change as a verified Source import PR." width="480">
+</p>
+
+Generated export PRs are workflow-owned and can auto-merge after required
+checks. Public changes flow back through separate source PRs so maintainers can
+review what enters the private or monorepo source of truth.
+
 ## Why not just use an Alternative Tool?
 
-There are mainly two other approaches that most closely can solve the problem:
+There are mainly two other approaches that we found most closely can solve the problem:
 
 - Git subtree and `git-filter-repo` with custom tooling for code transformations
-- Copybara, which is a broad migration engine which uses a Java-based runtime
+- Copybara, which is a very powerful, mature tool for broad migration, using a Java-based runtime
+
+We recommend starting with the two above approaches first if it matches your requirements (see table below).
 
 Copybarista is intentionally narrowly scoped: it's a Python program which
 publishes clean OSS packages from private or monorepo sources while rewriting
@@ -452,8 +462,14 @@ Copybarista is intentionally conservative. When adding behavior, document the
 config surface, add focused tests, keep exports deterministic, and reject
 unsupported config instead of guessing.
 
-## Disclaimer
+## Acknowledgements
 
-Copybarista is an independent project. It does not vendor, copy, or adapt
-Copybara source, documentation, logos, or test data in the public package.
-Copybara is referenced only to describe behavioral compatibility as described above.
+Copybarista's repository-sync model is inspired by
+[Copybara](https://github.com/google/copybara), Google's open-source tool for
+transforming and moving code between repositories. Copybara is licensed under
+the Apache License 2.0.
+
+Copybarista is an independent Python implementation focused on
+package-oriented GitHub PR workflows. It does not vendor or copy Copybara
+source code, documentation, logos, or test data, and it is not affiliated with
+or endorsed by Google or the Copybara project.
