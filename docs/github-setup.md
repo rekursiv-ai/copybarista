@@ -90,13 +90,16 @@ generated export PR squash-merge title/body.
 
 ## Pull Request Text
 
-The source-to-public workflow requires a manual `pr_title` and `pr_body` by
-default. Treat those fields as public release text:
+Copybarista's source-to-public sync helper can derive PR text from the source
+commit message: the first line becomes the PR title and the remaining lines
+become the PR description. Manual `pr_title` and `pr_body` inputs can override
+that text. Treat both commit messages and manual inputs as public release text:
 
 - describe the public change, not the private source repository;
 - avoid private repository names, internal team names, private paths, and
   internal issue links;
-- keep generated sync metadata in the PR body only when it is safe to expose;
+- keep generated sync metadata generic and avoid source repository SHAs, file
+  counts, workflow names, or private source paths;
 - review the generated public PR before merging it.
 
 For automatic exports, replace the manual inputs with a project-specific script
@@ -130,6 +133,10 @@ true:
 The example source-to-public workflow exposes this as the `auto_merge` manual
 input. Leave it disabled for the first export, then enable it once required
 checks and branch protection are installed.
+
+If branch protection requires human approval, auto-merge waits for that approval
+and then merges after checks pass. For unattended source-to-public sync, require
+status checks but do not require reviews for generated export PRs.
 
 Keep public-to-source imports manual by default. Public changes are proposals
 that can carry semantic decisions, so source maintainers should review the
@@ -318,7 +325,7 @@ The example ruleset requires:
 - Last-pusher approval by someone else.
 - Resolved review threads.
 - Fresh required checks.
-- Passing `Python 3.12` and `Python 3.13`.
+- Passing `Python 3.12`.
 - Linear history.
 - No force pushes to `main`.
 - No `main` deletion.

@@ -22,12 +22,21 @@ from typing import TextIO
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@rekursiv.ai"
 DEFAULT_SYNC_USER_NAME = "copybarista"
+DEFAULT_EXPORT_DESCRIPTION = (
+    "Updates the generated Copybarista public repository export."
+)
 
 
 def main(argv: list[str] | None = None) -> None:
     """Run source-to-public export validation and PR creation."""
     args = _parser().parse_args(argv)
     forbidden_pr_text = _split_forbidden_text(args.forbidden_pr_text)
+    pr_text = export_pr_text(
+        title=args.pr_title,
+        body=args.pr_body,
+        source_message=args.source_message,
+        forbidden_text=forbidden_pr_text,
+    )
     request = ExportRequest(
         source_dir=Path(args.source_dir),
         project_path=Path(args.project_path),
@@ -35,7 +44,6 @@ def main(argv: list[str] | None = None) -> None:
         target_repo=args.target_repo,
         base_branch=args.base_branch,
         source_sha=args.source_sha,
-        workflow=args.workflow,
         branch=export_branch_name(
             explicit=args.branch,
             source_branch=args.source_branch,
@@ -43,16 +51,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
-        pr_title=_public_pr_text(
-            value=args.pr_title,
-            name="--pr-title",
-            forbidden_text=forbidden_pr_text,
-        ),
-        pr_body=_public_pr_text(
-            value=args.pr_body,
-            name="--pr-body",
-            forbidden_text=forbidden_pr_text,
-        ),
+        pr_title=pr_text.title,
+        pr_body=pr_text.body,
         runner_temp=Path(args.runner_temp),
     )
     run_export_sync(request)
@@ -68,13 +68,20 @@ class ExportRequest:
     target_repo: str
     base_branch: str
     source_sha: str
-    workflow: str
     branch: str
     sync_user_name: str
     sync_user_email: str
     pr_title: str
     pr_body: str
     runner_temp: Path
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExportPrText:
+    """Resolved public PR title and body text."""
+
+    title: str
+    body: str
 
 
 def run_export_sync(request: ExportRequest) -> None:
@@ -100,7 +107,7 @@ def run_export_sync(request: ExportRequest) -> None:
     _log("Validating public checkout.")
     _validate_public(public_dir=request.public_dir, dist_dir=dist_dir)
     _log("Opening or updating export PR.")
-    _open_or_update_export_pr(request=request, manifest=manifest)
+    _open_or_update_export_pr(request=request)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -135,6 +142,11 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("COPYBARISTA_PR_TITLE", ""),
     )
     parser.add_argument("--pr-body", default=os.environ.get("COPYBARISTA_PR_BODY", ""))
+    parser.add_argument(
+        "--source-message",
+        default=os.environ.get("COPYBARISTA_SOURCE_MESSAGE", ""),
+        help="Source commit message used when PR title/body are not supplied.",
+    )
     parser.add_argument(
         "--forbidden-pr-text",
         action="append",
@@ -309,7 +321,7 @@ def _validate_public(*, public_dir: Path, dist_dir: Path) -> None:
     )
 
 
-def _open_or_update_export_pr(*, request: ExportRequest, manifest: Path) -> None:
+def _open_or_update_export_pr(*, request: ExportRequest) -> None:
     """Commit exported changes and create or update the public PR."""
     if not _git_has_changes(request.public_dir):
         _log("Export produced no target repository changes.")
@@ -319,9 +331,6 @@ def _open_or_update_export_pr(*, request: ExportRequest, manifest: Path) -> None
     body = export_pr_body(
         description=request.pr_body,
         branch=branch,
-        source_sha=request.source_sha,
-        workflow=request.workflow,
-        file_count=_manifest_file_count(manifest),
     )
     body_file = request.runner_temp / "copybarista-pr-body.md"
     body_file.write_text(body, encoding="utf-8")
@@ -387,21 +396,44 @@ def _open_or_update_export_pr(*, request: ExportRequest, manifest: Path) -> None
     )
 
 
-def export_pr_body(
-    *, description: str, branch: str, source_sha: str, workflow: str, file_count: int
-) -> str:
+def export_pr_text(
+    *, title: str, body: str, source_message: str, forbidden_text: tuple[str, ...]
+) -> ExportPrText:
+    """Return public export PR text from manual inputs or source commit text."""
+    message_title, message_body = _split_commit_message(source_message)
+    resolved_title = title.strip() or message_title
+    resolved_body = body.strip() or message_body or DEFAULT_EXPORT_DESCRIPTION
+    return ExportPrText(
+        title=_public_pr_text(
+            value=resolved_title,
+            name="--pr-title",
+            forbidden_text=forbidden_text,
+        ),
+        body=_public_pr_text(
+            value=resolved_body,
+            name="--pr-body",
+            forbidden_text=forbidden_text,
+        ),
+    )
+
+
+def export_pr_body(*, description: str, branch: str) -> str:
     """Return the public export PR body."""
     return (
         f"{description.strip()}\n\n"
         "----\n"
-        f"- Export branch: `{branch}`\n"
-        f"- Source commit: `{source_sha}`\n"
-        f"- Exported files: `{file_count}`\n"
-        f"- Workflow: `{workflow}`\n"
-        "\n"
+        f"Copybarista export branch: `{branch}`\n\n"
         "Do not push manual commits to this generated branch. Change the source "
         "repository, then rerun the export workflow with the same branch.\n"
     )
+
+
+def _split_commit_message(message: str) -> tuple[str, str]:
+    """Split a commit message into title and description."""
+    title, separator, description = message.strip().partition("\n")
+    if not title.strip():
+        raise SystemExit("--source-message or --pr-title is required.\n")
+    return title.strip(), description.strip() if separator else ""
 
 
 def export_branch_name(*, explicit: str, source_branch: str, source_sha: str) -> str:
@@ -416,12 +448,6 @@ def export_branch_name(*, explicit: str, source_branch: str, source_sha: str) ->
 def _commit_author(name: str, email: str) -> str:
     """Return the Git author identity for a generated sync commit."""
     return f"{name} <{email}>"
-
-
-def _manifest_file_count(path: Path) -> int:
-    """Return the number of exported files recorded in a manifest."""
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return len(data["files"])
 
 
 def _git_has_changes(path: Path) -> bool:

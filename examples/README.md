@@ -263,7 +263,7 @@ gh api \
 ```
 
 Edit required check names in the JSON first if your CI does not emit
-`Python 3.12` and `Python 3.13`.
+`Python 3.12`.
 
 Expected result: future public changes go through pull requests with the checks
 and review rules your repository requires.
