@@ -22,6 +22,7 @@ from typing import TextIO
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@rekursiv.ai"
 DEFAULT_SYNC_USER_NAME = "copybarista"
+DEFAULT_EXPORT_TITLE = "Update Copybarista export"
 DEFAULT_EXPORT_DESCRIPTION = (
     "Updates the generated Copybarista public repository export."
 )
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> None:
         title=args.pr_title,
         body=args.pr_body,
         source_message=args.source_message,
+        use_source_message=args.use_source_message_pr_text,
         forbidden_text=forbidden_pr_text,
     )
     request = ExportRequest(
@@ -145,7 +147,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source-message",
         default=os.environ.get("COPYBARISTA_SOURCE_MESSAGE", ""),
-        help="Source commit message used when PR title/body are not supplied.",
+        help="Source commit message used when commit-message PR text is enabled.",
+    )
+    parser.add_argument(
+        "--use-source-message-pr-text",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("COPYBARISTA_USE_SOURCE_MESSAGE_PR_TEXT"),
+        help="Use the source commit first line and body as generated PR text.",
     )
     parser.add_argument(
         "--forbidden-pr-text",
@@ -397,11 +405,19 @@ def _open_or_update_export_pr(*, request: ExportRequest) -> None:
 
 
 def export_pr_text(
-    *, title: str, body: str, source_message: str, forbidden_text: tuple[str, ...]
+    *,
+    title: str,
+    body: str,
+    source_message: str,
+    use_source_message: bool,
+    forbidden_text: tuple[str, ...],
 ) -> ExportPrText:
-    """Return public export PR text from manual inputs or source commit text."""
-    message_title, message_body = _split_commit_message(source_message)
-    resolved_title = title.strip() or message_title
+    """Return public export PR text from manual inputs, commit text, or defaults."""
+    message_title = ""
+    message_body = ""
+    if use_source_message and (not title.strip() or not body.strip()):
+        message_title, message_body = _split_commit_message(source_message)
+    resolved_title = title.strip() or message_title or DEFAULT_EXPORT_TITLE
     resolved_body = body.strip() or message_body or DEFAULT_EXPORT_DESCRIPTION
     return ExportPrText(
         title=_public_pr_text(
@@ -525,6 +541,11 @@ def _split_forbidden_text(values: list[str]) -> tuple[str, ...]:
         for line in value.splitlines():
             terms.extend(part.strip() for part in line.split(",") if part.strip())
     return tuple(terms)
+
+
+def _env_bool(name: str) -> bool:
+    """Return whether an environment variable is truthy."""
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _branch_component(value: str) -> str:

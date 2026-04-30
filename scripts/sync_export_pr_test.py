@@ -33,11 +33,25 @@ def test_export_pr_body_contains_review_context():
     assert "Do not push manual commits to this generated branch." in body
 
 
-def test_export_pr_text_uses_commit_title_and_description():
+def test_export_pr_text_uses_defaults_without_commit_message_opt_in():
     text = export_pr_text(
         title="",
         body="",
         source_message="Improve README image\n\nRestore the exported mascot asset.",
+        use_source_message=False,
+        forbidden_text=("private-source",),
+    )
+
+    assert text.title == "Update Copybarista export"
+    assert text.body == "Updates the generated Copybarista public repository export."
+
+
+def test_export_pr_text_can_use_commit_title_and_description():
+    text = export_pr_text(
+        title="",
+        body="",
+        source_message="Improve README image\n\nRestore the exported mascot asset.",
+        use_source_message=True,
         forbidden_text=("private-source",),
     )
 
@@ -50,6 +64,7 @@ def test_export_pr_text_accepts_manual_title_and_body():
         title="Public sync update",
         body="Prepare release docs.",
         source_message="Private implementation detail",
+        use_source_message=True,
         forbidden_text=("private",),
     )
 

@@ -90,10 +90,12 @@ should keep that marker or a `copybarista/export/` marker in the title/body.
 
 ## Pull Request Text
 
-Copybarista's source-to-public sync helper can derive PR text from the source
-commit message: the first line becomes the PR title and the remaining lines
-become the PR description. Manual `pr_title` and `pr_body` inputs can override
-that text. Treat both commit messages and manual inputs as public release text:
+Copybarista's source-to-public sync helper uses generic PR text by default.
+Manual `pr_title` and `pr_body` inputs can provide public release text. If
+`use_commit_message_pr_text` or `COPYBARISTA_USE_COMMIT_MESSAGE_PR_TEXT=true`
+is enabled, the source commit's first line becomes the PR title and the
+remaining lines become the PR description. Treat both commit messages and
+manual inputs as public release text:
 
 - describe the public change, not the private source repository;
 - avoid private repository names, internal team names, private paths, and
@@ -222,6 +224,7 @@ Set these in the source repository:
 | `COPYBARISTA_PUBLIC_REPO` | Variable | Public repository in `owner/name` form. |
 | `COPYBARISTA_SOURCE_PROJECT_PATH` | Variable | Source checkout directory that contains `copy.barista.toml`. Use `.` at repository root. |
 | `COPYBARISTA_EXPORT_BRANCH` | Variable | Optional stable generated export branch, for example `copybarista/export/widget`. |
+| `COPYBARISTA_USE_COMMIT_MESSAGE_PR_TEXT` | Variable | Optional `true`/`false` switch for deriving public PR text from the source commit message. Defaults to `false`. |
 | `COPYBARISTA_SYNC_USER_NAME` | Variable | Optional sync commit author name. |
 | `COPYBARISTA_SYNC_USER_EMAIL` | Variable | Optional generated branch commit author email. |
 
@@ -245,6 +248,13 @@ Use fine-grained tokens with the narrowest repository access that works:
   creates or updates workflow files under `.github/workflows`.
 - Add public repository `Contents: read` to the public-to-source token while
   the public repository is still private.
+
+Git commit authorship and GitHub UI authorship are separate. The sync workflow
+sets the generated branch commit author from `COPYBARISTA_SYNC_USER_NAME` and
+`COPYBARISTA_SYNC_USER_EMAIL`. The PR author, auto-merge actor, and GitHub
+squash-merge author come from the account or GitHub App behind the token. Use a
+machine-user token or GitHub App token if generated PRs and squash commits
+should appear from a bot identity instead of a maintainer account.
 
 The example source-to-public workflow preserves the public repository's
 `.github/` directory, so the reverse-sync workflow remains public-repo-owned.
