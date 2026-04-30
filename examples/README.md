@@ -337,10 +337,10 @@ that can read and write the private/source repository.
 The first push to a new public repository is skipped because GitHub reports an
 all-zero `before` SHA and there is no public base tree to import from.
 
-Generated export merges are skipped by author email or by a
-`copybarista/export/` marker in the merge commit message. Use the same
-`COPYBARISTA_SYNC_USER_EMAIL` in both repositories, or keep that marker in the
-squash-merge title/body for generated export PRs.
+Generated export merges are skipped by author email or by a generated export
+branch marker in the merge commit message. Auto-merge writes
+`Copybarista export branch: ...` into the squash body; manual squash merges
+should keep that marker or a `copybarista/export/` marker in the title/body.
 
 Do not manually edit generated `copybarista/export/*` branches. Treat them as
 workflow output. Change the source repository and rerun `Source To Public` with
@@ -442,7 +442,7 @@ GitHub documents fine-grained token repository permissions at
 | Public PR opens with private files or wrong imports. | `copy.barista.toml` include/exclude or transforms are incomplete. | Run the local export first, inspect `/tmp/widget-public`, and update the config before running the workflow. |
 | Initial public push does not open a source PR. | GitHub reports an all-zero `before` SHA for the first push. | This is expected; merge or push a real public change after the first export. |
 | `Cannot resolve public base ref.` appears on initial public setup. | The public repository is using an older workflow that did not skip all-zero first-push events. | Update `public-to-source.yml` from this example. |
-| Public `push` opens a source PR after merging a generated export PR. | Generated export merge was not recognized. | Use the same `COPYBARISTA_SYNC_USER_EMAIL` in both repositories, or keep `copybarista/export/` in the squash-merge title/body. |
+| Public `push` opens a source PR after merging a generated export PR. | Generated export merge was not recognized. | Use the same `COPYBARISTA_SYNC_USER_EMAIL` in both repositories, or keep `Copybarista export branch: ...` or `copybarista/export/` in the squash-merge title/body. |
 | Public PR validation fails with an unmapped or non-reversible path. | The public PR changed a path that Copybarista cannot safely map back. | Change a reversible file, add explicit reverse transforms, or keep that path source-owned. |
 | `auto_merge` fails or leaves the PR waiting. | The public repository has not enabled auto-merge, required checks are missing, or branch protection does not require the expected checks. | Leave `auto_merge` disabled until branch protection and required checks are installed. |
 | Ruleset install succeeds but PRs are blocked forever. | Required check names in the ruleset do not match your CI. | Edit `required_status_checks` in `protect-main-ruleset.json` before installing or updating it. |

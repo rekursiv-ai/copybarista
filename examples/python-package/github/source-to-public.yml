@@ -140,5 +140,7 @@ jobs:
             gh pr merge "$EXPORT_BRANCH" \
               --repo "$PUBLIC_REPO" \
               --squash \
+              --subject "$PR_TITLE" \
+              --body "Copybarista export branch: $EXPORT_BRANCH" \
               --auto
           fi
