@@ -1,4 +1,4 @@
-# GitHub Repository Setup
+# GitHub Repository Setup :coffee:
 
 Copybarista works best when the exported repository is protected like a normal
 open-source project: changes land through pull requests, checks run before

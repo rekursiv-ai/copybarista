@@ -1,4 +1,4 @@
-# Contributing
+# Contributing :coffee:
 
 Copybarista is a small Python project for publishing clean standalone
 repositories from source trees. Keep the implementation Pythonic and scoped to

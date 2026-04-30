@@ -1,4 +1,4 @@
-<h1 align="center">Copybarista</h1>
+# Copybarista :coffee:
 
 <p align="center">
   Publish and sync clean standalone repositories from private or monorepo source trees.

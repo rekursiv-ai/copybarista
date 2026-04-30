@@ -54,8 +54,10 @@ jobs:
 
     steps:
       - name: Check settings
+        env:
+          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
-          if [ -z "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" ]; then
+          if [ -z "$IMPORT_TOKEN" ]; then
             echo "::error::Set COPYBARISTA_IMPORT_TOKEN."
             exit 1
           fi

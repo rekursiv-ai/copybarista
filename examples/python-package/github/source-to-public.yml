@@ -38,8 +38,10 @@ jobs:
 
     steps:
       - name: Check settings
+        env:
+          SYNC_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
         run: |
-          if [ -z "${{ secrets.COPYBARISTA_SYNC_TOKEN }}" ]; then
+          if [ -z "$SYNC_TOKEN" ]; then
             echo "::error::Set COPYBARISTA_SYNC_TOKEN."
             exit 1
           fi
