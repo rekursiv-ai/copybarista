@@ -1,0 +1,206 @@
+[project]
+name = "copybarista"
+version = "0.1.0"
+description = "Python-first repository subtree export tool."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [
+    {name = "rekursiv.ai"},
+]
+dependencies = []
+keywords = [
+    "export",
+    "git",
+    "monorepo",
+    "release",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Utilities",
+]
+license-files = ["LICENSE"]
+
+[project.urls]
+Homepage = "https://github.com/rekursiv-ai/copybarista"
+Documentation = "https://github.com/rekursiv-ai/copybarista/tree/main/docs"
+Source = "https://github.com/rekursiv-ai/copybarista"
+Issues = "https://github.com/rekursiv-ai/copybarista/issues"
+Changelog = "https://github.com/rekursiv-ai/copybarista/releases"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-cov>=7",
+]
+
+[dependency-groups]
+lint = [
+    "ruff",
+]
+test = [
+    "pytest>=8",
+    "pytest-cov>=7",
+]
+typing = [
+    "basedpyright>=1.10",
+]
+
+[project.scripts]
+copybarista = "copybarista.cli:main"
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["copybarista*"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--durations=20",
+    "-m",
+    "not integration and not performance",
+    "--cov=copybarista",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+python_files = "*_test.py"
+pythonpath = ["."]
+markers = [
+    "integration: tests that require Git remotes or external CLIs",
+    "performance: timing-sensitive tests",
+]
+filterwarnings = [
+    "error",
+]
+norecursedirs = [
+    ".venv",
+    "__pycache__",
+    "*.egg-info",
+    "build",
+    "dist",
+]
+
+[tool.coverage.run]
+source = ["copybarista"]
+omit = [
+    "*_test.py",
+    "*/__main__.py",
+    "*/tests/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+fix = true
+show-fixes = true
+line-length = 88
+output-format = "concise"
+target-version = "py312"
+exclude = [
+    ".venv/",
+    "*.egg-info/",
+    ".pytest_cache/",
+    "build/",
+    "dist/",
+]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN",     # Pyright owns type checking.
+    "COM812",  # Conflicts with formatter.
+    "D203",    # Conflicts with D211.
+    "D213",    # Conflicts with D212.
+    "EM101",   # Raw strings in exceptions keep simple errors readable.
+    "EM102",   # F-strings in exceptions keep simple errors readable.
+    "FBT001",  # Boolean CLI flags are idiomatic.
+    "FBT002",  # Boolean CLI flags are idiomatic.
+    "FBT003",  # Boolean CLI flags are idiomatic.
+    "TC001",   # Runtime imports are clearer for this small package.
+    "TC003",   # Runtime imports are clearer for this small package.
+    "TRY003",  # Custom exception types already provide context.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [
+    "F401",
+]
+"*_test.py" = [
+    "D103",
+    "INP001",
+    "PLR2004",
+    "S101",
+    "S603",
+]
+"private/fixtures/**/*.py" = [
+    "D100",
+    "INP001",
+]
+
+[tool.ruff.lint.isort]
+case-sensitive = false
+combine-as-imports = true
+force-wrap-aliases = true
+split-on-trailing-comma = true
+default-section = "third-party"
+detect-same-package = true
+force-single-line = false
+force-sort-within-sections = false
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+extraPaths = ["."]
+exclude = [
+    "**/.venv/",
+    "*.egg-info/",
+    ".pytest_cache/",
+    "build/",
+    "dist/",
+]
+ignore = [
+    "**/.venv/",
+    "*.egg-info/",
+    ".pytest_cache/",
+    "build/",
+    "dist/",
+]
+pythonPlatform = "All"
+pythonVersion = "3.12"
+reportAny = false
+reportExplicitAny = false
+reportImplicitStringConcatenation = false
+reportInvalidCast = false
+reportPrivateUsage = false
+reportUnannotatedClassAttribute = false
+reportUnusedCallResult = false
+reportUnusedImport = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "."
+extraPaths = ["."]
+reportPrivateUsage = false
+reportPrivateLocalImportUsage = false
+
+[tool.uv]
+package = true
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]

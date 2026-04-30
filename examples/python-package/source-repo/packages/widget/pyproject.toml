@@ -1,0 +1,8 @@
+[project]
+name = "widget"
+version = "0.1.0"
+description = "Tiny Copybarista example package."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
