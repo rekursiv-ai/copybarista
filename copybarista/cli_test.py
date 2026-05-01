@@ -195,7 +195,42 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
     assert (tmp_path / "copy.barista.toml").exists()
     assert (tmp_path / "copybarista.sync.toml").exists()
     assert (tmp_path / ".github/workflows/sync-to-source.yml").exists()
+    assert (tmp_path / ".github/workflows/package-validation.yml").exists()
     assert not (tmp_path / "private").exists()
+
+
+def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "loop/lib/configgle",
+            "--public-repo",
+            "rekursiv-ai/configgle",
+            "--source-repo",
+            "rekursiv-ai/loop",
+            "--copybarista-project-path",
+            "loop/experimental/copybarista",
+            "--smoke-import",
+            "configgle",
+            "--validation-python-version",
+            "3.13",
+            "--validation-command",
+            "uv sync --all-groups",
+            "--validation-command",
+            "uv run pytest",
+        ]
+    )
+
+    workflow = (tmp_path / ".github/workflows/package-validation.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'python-version: ["3.13"]' in workflow
+    assert "uv sync --all-groups" in workflow
+    assert "uv run pytest" in workflow
 
 
 def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):

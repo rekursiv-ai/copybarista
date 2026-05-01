@@ -198,11 +198,26 @@ copybarista init-sync . \
   --type-check-target tests
 ```
 
-This writes `copy.barista.toml`, `copybarista.sync.toml`, and the public import
-workflow `.github/workflows/sync-to-source.yml`. The package name lives in
-`copybarista.sync.toml`; script and workflow names stay stable so new packages
-do not need `sync_<package>.py` files or package-specific environment names. Use
-`init-sync --overwrite` only when intentionally regenerating existing sync files.
+This writes `copy.barista.toml`, `copybarista.sync.toml`, the public import
+workflow `.github/workflows/sync-to-source.yml`, and the public package
+validation workflow `.github/workflows/package-validation.yml`. The package name
+lives in `copybarista.sync.toml`; script and workflow names stay stable so new
+packages do not need `sync_<package>.py` files or package-specific environment
+names. Use `init-sync --overwrite` only when intentionally regenerating existing
+sync files.
+
+The validation workflow runs package-owned commands from `copybarista.sync.toml`.
+By default it syncs dependencies, runs Ruff, basedpyright, pytest, a smoke import,
+and `uv build`. Override it at setup time when a package needs different public
+correctness gates:
+
+```bash
+copybarista init-sync . \
+  ... \
+  --validation-python-version 3.12 \
+  --validation-command 'uv sync --all-groups' \
+  --validation-command 'uv run pytest'
+```
 
 Validate the scaffolding before wiring GitHub Actions:
 
