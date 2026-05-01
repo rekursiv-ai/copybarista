@@ -9,12 +9,45 @@ import pytest
 
 from scripts import sync_import_change
 from scripts.sync_import_change import (
+    ImportRequest,
     _commit_author,
     _gh_pr_exists,
     _string_bool,
     import_branch_name,
     import_change_pr_body,
 )
+
+
+def test_main_accepts_generic_project_validation_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ImportRequest] = []
+
+    def fake_run_import_sync(request: ImportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
+
+    sync_import_change.main(
+        [
+            "--project-path",
+            "loop/lib/configgle",
+            "--copybarista-project-path",
+            "loop/experimental/copybarista",
+            "--public-base-ref",
+            "base",
+            "--public-head-ref",
+            "head",
+            "--type-check-target",
+            "configgle",
+            "--type-check-target",
+            "tests",
+        ]
+    )
+
+    assert captured[0].project_path == Path("loop/lib/configgle")
+    assert captured[0].copybarista_project_path == Path("loop/experimental/copybarista")
+    assert captured[0].type_check_targets == ("configgle", "tests")
 
 
 def test_import_change_pr_body_contains_review_context():

@@ -2,8 +2,8 @@
 
 GitHub Actions should stay as a thin wrapper: check out repositories, set up
 Python and uv, pass credentials through `GH_TOKEN`, then call this script. The
-script owns the sync behavior so branch naming, validation, PR body generation,
-and no-diff handling can be tested outside Actions.
+script owns the sync behavior so branch naming, validation, project checks, PR
+body generation, and no-diff handling can be tested outside Actions.
 """
 
 from __future__ import annotations
@@ -23,11 +23,10 @@ from typing import TextIO
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
-DEFAULT_EXPORT_TITLE = "Update Copybarista export"
-DEFAULT_EXPORT_DESCRIPTION = (
-    "Updates the generated Copybarista public repository export."
-)
+DEFAULT_EXPORT_TITLE = "Update public export"
+DEFAULT_EXPORT_DESCRIPTION = "Updates the generated public repository export."
 CONTROL_CHAR_BOUND = 32
+DEFAULT_TYPE_CHECK_TARGETS = (".",)
 GITHUB_RETRY_ATTEMPTS = 3
 GITHUB_RETRY_DELAY_SEC = 2
 
@@ -61,6 +60,11 @@ def main(argv: list[str] | None = None) -> None:
         pr_body=pr_text.body,
         auto_merge=_string_bool(args.auto_merge),
         runner_temp=Path(args.runner_temp),
+        release_check_script=Path(args.release_check_script)
+        if args.release_check_script
+        else None,
+        type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
+        smoke_import=args.smoke_import,
     )
     run_export_sync(request)
 
@@ -82,6 +86,9 @@ class ExportRequest:
     pr_body: str
     auto_merge: bool
     runner_temp: Path
+    release_check_script: Path | None
+    type_check_targets: tuple[str, ...]
+    smoke_import: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -100,20 +107,31 @@ def run_export_sync(request: ExportRequest) -> None:
     dist_dir = request.runner_temp / "copybarista-dist"
 
     _log("Validating source checkout.")
-    _validate_source(project=project)
-    _log("Exporting public Copybarista tree.")
+    _validate_source(project=project, type_check_targets=request.type_check_targets)
+    _log("Exporting public tree.")
     _export_public_tree(
         project=project,
         source_dir=request.source_dir,
         export_dir=export_dir,
         manifest=manifest,
     )
-    _log("Checking exported release tree.")
-    _check_release_tree(project=project, root=export_dir)
+    if request.release_check_script:
+        _log("Checking exported release tree.")
+        _check_release_tree(
+            project=project,
+            root=export_dir,
+            script=request.release_check_script,
+        )
     _log("Replacing public checkout contents.")
     _replace_tree(source=export_dir, destination=request.public_dir)
     _log("Validating public checkout.")
-    _validate_public(public_dir=request.public_dir, dist_dir=dist_dir)
+    _validate_public(
+        public_dir=request.public_dir,
+        dist_dir=dist_dir,
+        release_check_script=request.release_check_script,
+        type_check_targets=request.type_check_targets,
+        smoke_import=request.smoke_import,
+    )
     _log("Opening or updating export PR.")
     _open_or_update_export_pr(request=request)
     if request.auto_merge:
@@ -182,10 +200,26 @@ def _parser() -> argparse.ArgumentParser:
         "--runner-temp",
         default=os.environ.get("RUNNER_TEMP", str(DEFAULT_RUNNER_TEMP)),
     )
+    parser.add_argument(
+        "--release-check-script",
+        default=os.environ.get("COPYBARISTA_RELEASE_CHECK_SCRIPT", ""),
+        help="Optional project-relative release-tree checker script.",
+    )
+    parser.add_argument(
+        "--type-check-target",
+        action="append",
+        default=[],
+        help="Path passed to basedpyright. Repeat for multiple targets.",
+    )
+    parser.add_argument(
+        "--smoke-import",
+        default=os.environ.get("COPYBARISTA_SMOKE_IMPORT", ""),
+        help="Optional module imported from the built wheel as a smoke test.",
+    )
     return parser
 
 
-def _validate_source(*, project: Path) -> None:
+def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> None:
     """Run source checkout checks before creating a public export."""
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _run(
@@ -215,20 +249,7 @@ def _validate_source(*, project: Path) -> None:
         ],
         cwd=project,
     )
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "basedpyright",
-            "copybarista",
-            "scripts",
-            "tests",
-        ],
-        cwd=project,
-    )
+    _run_basedpyright(project=project, targets=type_check_targets)
     _run(
         [
             "uv",
@@ -270,7 +291,7 @@ def _export_public_tree(
         )
 
 
-def _check_release_tree(*, project: Path, root: Path) -> None:
+def _check_release_tree(*, project: Path, root: Path, script: Path) -> None:
     """Run release-tree policy validation against one tree."""
     _run(
         [
@@ -280,7 +301,7 @@ def _check_release_tree(*, project: Path, root: Path) -> None:
             str(project),
             "run",
             "python",
-            str(project / "scripts/check_release_tree.py"),
+            str(project / script),
             str(root),
         ]
     )
@@ -300,33 +321,32 @@ def _replace_tree(*, source: Path, destination: Path) -> None:
             shutil.copy2(path, target, follow_symlinks=False)
 
 
-def _validate_public(*, public_dir: Path, dist_dir: Path) -> None:
+def _validate_public(
+    *,
+    public_dir: Path,
+    dist_dir: Path,
+    release_check_script: Path | None,
+    type_check_targets: tuple[str, ...],
+    smoke_import: str,
+) -> None:
     """Run public checkout checks that a contributor would run locally."""
-    _run(
-        ["python", "scripts/check_release_tree.py", ".", "--allow-root-git"],
-        cwd=public_dir,
-    )
+    if release_check_script:
+        _run(
+            ["python", str(release_check_script), ".", "--allow-root-git"],
+            cwd=public_dir,
+        )
     _run(["uv", "sync", "--all-groups"], cwd=public_dir)
     _run(["uv", "run", "--all-groups", "ruff", "check", "."], cwd=public_dir)
     _run(
         ["uv", "run", "--all-groups", "ruff", "format", "--check", "."],
         cwd=public_dir,
     )
-    _run(
-        [
-            "uv",
-            "run",
-            "--all-groups",
-            "basedpyright",
-            "copybarista",
-            "scripts",
-            "tests",
-        ],
-        cwd=public_dir,
-    )
+    _run_basedpyright_public(public_dir=public_dir, targets=type_check_targets)
     _run(["uv", "run", "--all-groups", "pytest", "-q"], cwd=public_dir)
     _run(["uv", "build", "--out-dir", str(dist_dir)], cwd=public_dir)
-    wheel = sorted(dist_dir.glob("copybarista-*.whl"))[0]
+    if not smoke_import:
+        return
+    wheel = sorted(dist_dir.glob("*.whl"))[0]
     _run(
         [
             "uv",
@@ -336,8 +356,32 @@ def _validate_public(*, public_dir: Path, dist_dir: Path) -> None:
             str(wheel),
             "python",
             "-c",
-            "import copybarista; from copybarista.cli import main; print('ok')",
+            f"import importlib; importlib.import_module({smoke_import!r}); print('ok')",
         ],
+        cwd=public_dir,
+    )
+
+
+def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
+    """Run basedpyright for one source checkout."""
+    _run(
+        [
+            "uv",
+            "--quiet",
+            "--project",
+            str(project),
+            "run",
+            "basedpyright",
+            *targets,
+        ],
+        cwd=project,
+    )
+
+
+def _run_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
+    """Run basedpyright for one public checkout."""
+    _run(
+        ["uv", "run", "--all-groups", "basedpyright", *targets],
         cwd=public_dir,
     )
 

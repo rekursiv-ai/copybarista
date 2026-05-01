@@ -1,0 +1,47 @@
+%% Source for assets/copybarista-sync-social.webp.
+%% Regenerate with: uv --quiet --project ~/loop run python scripts/render_diagram.py assets/copybarista-sync-social.mmd --width 1100
+%% Social-friendly summary of the Copybarista sync loop.
+flowchart TB
+  classDef source fill:#e2e8f0,stroke:#334155,stroke-width:3px,color:#0f172a
+  classDef export fill:#dbeafe,stroke:#1e40af,stroke-width:3px,color:#0c1f4a
+  classDef public fill:#dcfce7,stroke:#15803d,stroke-width:3px,color:#052e16
+  classDef import fill:#fed7aa,stroke:#c2410c,stroke-width:3px,color:#3a1207
+  classDef note fill:#f8fafc,stroke:#94a3b8,stroke-width:2px,color:#334155
+
+  subgraph top[" "]
+    direction LR
+    source[("<b>Private monorepo</b><br/>source of truth")]
+    export["<b>Export PR</b><br/>rewrite + validate"]
+    public[("<b>Clean OSS package</b><br/>installable Python repo")]
+  end
+
+  subgraph bottom[" "]
+    direction RL
+    source_pr["<b>Verified import PR</b><br/>reverse map or reject"]
+    import["<b>Import check</b><br/>re-export must match"]
+    public_pr["<b>Public PR</b><br/>docs · fixes · tests"]
+  end
+
+  invariant["<b>Main rule</b><br/>public changes come back only when the mapping is provably safe"]
+
+  source ==>|copybarista export| export
+  export ==>|review + merge| public
+  public -.->|community changes| public_pr
+  public_pr ==>|copybarista import-change| import
+  import ==>|verified patch| source_pr
+  source_pr ==>|review + merge| source
+  import -.-> invariant
+
+  class source source
+  class export export
+  class public public
+  class public_pr,import,source_pr import
+  class invariant note
+
+  style top fill:#ffffff,stroke:#ffffff,color:#ffffff
+  style bottom fill:#ffffff,stroke:#ffffff,color:#ffffff
+
+  linkStyle 0,1 stroke:#1e40af,stroke-width:3px
+  linkStyle 2 stroke:#15803d,stroke-width:2px,stroke-dasharray:5 5
+  linkStyle 3,4,5 stroke:#c2410c,stroke-width:3px
+  linkStyle 6 stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5

@@ -160,6 +160,9 @@ jobs:
             --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
             --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
             --report "$IMPORT_REPORT" \
+            --type-check-target copybarista \
+            --type-check-target scripts \
+            --type-check-target tests \
             --open-pr false
 
       - name: Open or update target import PR
