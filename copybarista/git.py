@@ -9,16 +9,17 @@ convenience behavior.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Protocol
+from urllib.parse import unquote, urlparse
+
 import contextlib
 import hashlib
 import re
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Protocol
-from urllib.parse import unquote, urlparse
 
 from copybarista.commands import CommandResult, CommandRunner, resolve_executable
 from copybarista.config import GitDestination, WorkflowConfig
@@ -26,6 +27,7 @@ from copybarista.destinations import DestinationResult, validate_staged_symlinks
 from copybarista.errors import ExportError
 from copybarista.manifest import ExportManifest
 from copybarista.workflow import StagedTree, WorkflowRunner
+
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")
 LS_REMOTE_NO_MATCH = 2

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
 from copybarista.cli import main
+
 
 pytestmark = pytest.mark.integration
 
@@ -152,7 +154,8 @@ def _run_pytest(*, root: Path, tests: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    subprocess.run(
+    # The test invokes the current Python interpreter with a fixed argv list.
+    subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-m",

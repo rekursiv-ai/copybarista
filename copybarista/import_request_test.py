@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import shutil
 import stat
-from pathlib import Path
 
 import pytest
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 import argparse
 import json
 import sys
-from collections.abc import Callable
-from pathlib import Path
 
 from copybarista.config import load_config
 from copybarista.copy_bara_sky import translate_copy_bara_sky_to_toml

@@ -8,6 +8,10 @@ body generation, and no-diff handling can be tested outside Actions.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO
+
 import argparse
 import json
 import os
@@ -16,9 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TextIO
+
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"

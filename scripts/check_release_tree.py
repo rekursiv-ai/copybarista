@@ -10,9 +10,11 @@ public checkout, and run it again in the public repository with
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import argparse
 import sys
-from pathlib import Path
+
 
 BLOCKED_DIR_NAMES = frozenset(
     (
@@ -73,7 +75,7 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
     """
     if not root.is_dir():
         return (f"Release tree root does not exist: {root}",)
-    errors = [
+    errors: list[str] = [
         f"Missing required release path: {required}"
         for required in REQUIRED_PATHS
         if not (root / required).exists()

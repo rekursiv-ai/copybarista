@@ -7,13 +7,15 @@ destinations can replace large directory trees.
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import shutil
+
 from copybarista.errors import ExportError
 from copybarista.workflow import StagedTree
+
 
 DestinationStatus = Literal["created", "updated", "noop"]
 

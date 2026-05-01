@@ -8,11 +8,12 @@ without re-reading the source checkout.
 
 from __future__ import annotations
 
-import shutil
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+import shutil
+import time
 
 from copybarista.config import WorkflowConfig
 from copybarista.errors import ExportError

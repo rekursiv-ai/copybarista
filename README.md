@@ -463,8 +463,12 @@ The following are intentional non-goals until a real workflow needs them:
 ```bash
 python scripts/check_release_tree.py . --allow-root-git
 uv sync --all-groups
+uv run --all-groups pre-commit install
+uv run --all-groups pre-commit run --all-files
 uv run --all-groups ruff check .
 uv run --all-groups ruff format --check .
+uv run --all-groups codespell .
+uv run --all-groups ty check
 uv run --all-groups basedpyright copybarista tests scripts
 uv run --all-groups pytest
 uv build --out-dir /tmp/copybarista-dist-check
