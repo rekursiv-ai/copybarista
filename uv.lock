@@ -44,6 +44,9 @@ wheels = [
 name = "copybarista"
 version = "0.1.1"
 source = { editable = "." }
+dependencies = [
+    { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
 
 [package.optional-dependencies]
 test = [
@@ -70,6 +73,7 @@ typing = [
 requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=7" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 provides-extras = ["test"]
 

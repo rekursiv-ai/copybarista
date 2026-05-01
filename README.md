@@ -201,7 +201,8 @@ copybarista init-sync . \
 This writes `copy.barista.toml`, `copybarista.sync.toml`, and the public import
 workflow `.github/workflows/sync-to-source.yml`. The package name lives in
 `copybarista.sync.toml`; script and workflow names stay stable so new packages
-do not need `sync_<package>.py` files or package-specific environment names.
+do not need `sync_<package>.py` files or package-specific environment names. Use
+`init-sync --overwrite` only when intentionally regenerating existing sync files.
 
 Validate the scaffolding before wiring GitHub Actions:
 
@@ -347,21 +348,23 @@ Copybarista sync is PR-based in both directions:
 
 - Source to public: the source workflow exports the configured source root into
   a temporary tree, validates the exported checkout, and opens a PR in
-  the public repository from a generated `copybarista/export/*` branch. Reruns
-  can update the same branch so there is one active export PR per project
-  branch. The generated branch is replaced with `git push --force-with-lease`.
+  the public repository from a generated package export branch, e.g.
+  `configgle/export/main`. Reruns can update the same branch so there is one
+  active export PR per project branch. The generated branch is replaced with
+  `git push --force-with-lease`.
 - Public to source: the public workflow checks out a public base and public
   head, runs `copybarista import-change`, validates the target checkout, and
-  opens a source PR from `copybarista/import/sha-<public-sha>`. Regenerating
-  that import branch also uses `git push --force-with-lease`.
+  opens a source PR from a generated package import branch, e.g.
+  `configgle/import/sha-<public-sha>`. Regenerating that import branch also
+  uses `git push --force-with-lease`.
 
 The public repository CI checks release-tree policy, lint, formatting, types,
 unit tests, package build, and installed-wheel import. The reverse-sync
 workflow also runs on trusted public PRs as an import validation check, except
-for generated `copybarista/export/*` PRs whose source of truth is the export
-workflow. Public `main` pushes from merged generated export PRs are skipped for
-the same reason when the push commit is authored by `copybarista` or the
-commit message identifies a generated export branch. Reverse sync only opens a
+for generated export PRs whose source of truth is the export workflow. Public
+`main` pushes from merged generated export PRs are skipped for the same reason
+when the push commit is authored by `copybarista` or the commit message
+identifies a generated export branch. Reverse sync only opens a
 source PR for direct public changes or manual-dispatch runs.
 
 No workflow should push directly to a protected default branch. Generated sync

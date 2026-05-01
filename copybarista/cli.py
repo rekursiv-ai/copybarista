@@ -103,7 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     init_sync.add_argument("--forbidden-pr-text", action="append", default=[])
     init_sync.add_argument("--sync-user-name", default="copybarista")
     init_sync.add_argument("--sync-user-email", default="copybarista@example.com")
-    init_sync.add_argument("--force", action="store_true")
+    init_sync.add_argument("--overwrite", action="store_true")
 
     check_sync = sub.add_parser(
         "check-sync-config",
@@ -217,7 +217,7 @@ def _run_init_sync(args: argparse.Namespace) -> None:
     for path in write_sync_scaffold(
         root=Path(args.root),
         settings=settings,
-        force=args.force,
+        force=args.overwrite,
     ):
         sys.stdout.write(f"wrote {path}\n")
 

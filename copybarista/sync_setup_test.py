@@ -73,12 +73,76 @@ def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
     workflow = tmp_path / ".github/workflows/sync-to-source.yml"
     workflow.write_text(
-        workflow.read_text(encoding="utf-8").replace("rekursiv-ai/loop", "wrong/repo"),
+        workflow.read_text(encoding="utf-8").replace(
+            'TARGET_REPO: "rekursiv-ai/loop"',
+            'TARGET_REPO: "wrong/repo"',
+        ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="rekursiv-ai/loop"):
+    with pytest.raises(ConfigError, match="TARGET_REPO"):
         check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_reports_malformed_workflow_yaml(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    (tmp_path / ".github/workflows/sync-to-source.yml").write_text(
+        "jobs: [\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Cannot read sync workflow"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_import_command_drift(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            '--project-path "$TARGET_PROJECT_PATH"',
+            "--project-path wrong/path",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="--project-path"):
+        check_sync_config(root=tmp_path)
+
+
+def test_load_sync_settings_reports_malformed_toml(tmp_path: Path):
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text("[sync\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Cannot read sync config"):
+        load_sync_settings(config)
+
+
+def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        """
+        [sync]
+        package_name = "configgle"
+        sync_label = "Configgle"
+        source_root = "loop/lib/configgle"
+        public_repo = "rekursiv-ai/configgle"
+        source_repo = "rekursiv-ai/loop"
+        copybarista_project_path = "loop/experimental/copybarista"
+        smoke_import = "configgle"
+        type_check_targets = ["configgle"]
+        forbidden_pr_text = []
+        """,
+        encoding="utf-8",
+    )
+
+    settings = load_sync_settings(config)
+
+    assert settings.sync_user_name == "copybarista"
+    assert settings.sync_user_email == "copybarista@example.com"
+    assert settings.export_prefix == "configgle/export/"
+    assert settings.import_prefix == "configgle/import/"
 
 
 def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
@@ -143,16 +207,20 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     assert (
         "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     )
-    assert (
-        "!startsWith(github.event.pull_request.head.ref, 'configgle/export/')"
-        in workflow
-    )
+    assert "github.event.pull_request.head.ref != 'configgle/export/main'" in workflow
     assert (
         "github.event.head_commit.author.email != 'copybarista@example.com'" in workflow
     )
     assert "--open-pr false" in workflow
     assert "--open-pr-only" in workflow
     assert "GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" in workflow
+
+
+def test_import_workflow_escapes_github_expression_strings():
+    workflow = import_workflow(_settings(sync_label="Configgle's Core"))
+
+    assert "Configgle''s Core export branch:" in workflow
+    assert "Configgle's Core export branch:" not in workflow
 
 
 def test_export_workflow_watches_source_and_sync_helpers():
