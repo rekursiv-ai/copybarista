@@ -11,8 +11,9 @@ release environments to your project.
 
 For repeatable package onboarding, start with `init-sync` in
 [Package Sync Scaffolding](#package-sync-scaffolding). It writes the package
-metadata and public import workflow, then `write-export-workflow` generates the
-matching source export workflow from the same metadata.
+metadata, public import workflow, and public package validation workflow.
+Then `write-export-workflow` generates the matching source export workflow from
+the same metadata.
 
 Copybarista also ships a lower-level two-way GitHub setup under
 `examples/python-package/`:
@@ -56,8 +57,11 @@ The generated public files are:
 
 - `copy.barista.toml` -- the deterministic export config.
 - `copybarista.sync.toml` -- package metadata such as package name, source path,
-  public repo, branch prefixes, smoke import, and type-check targets.
+  public repo, branch prefixes, smoke import, type-check targets, and public
+  validation commands.
 - `.github/workflows/sync-to-source.yml` -- public-to-source import workflow.
+- `.github/workflows/package-validation.yml` -- public package correctness
+  workflow.
 
 Package identity is data in `copybarista.sync.toml`; file names and workflow
 names stay stable across packages. This avoids `sync_<package>.py` wrappers and
@@ -80,10 +84,20 @@ copybarista write-export-workflow copybarista.sync.toml \
 Review the generated workflow before committing it; it is intentionally plain
 YAML so teams can adjust triggers, required checks, or token names if their
 repository policy differs. Run `init-sync --overwrite` only when intentionally
-regenerating existing sync files. The public import workflow deliberately
-separates validation from PR creation: import verification runs without
-`GH_TOKEN`, then a second `--open-pr-only` step receives the token only after
-trusted helper code is captured from the source checkout.
+regenerating existing sync files.
+
+The generated package validation workflow runs package-owned commands from
+`copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
+basedpyright over `type_check_targets`, pytest, a smoke import, and `uv build`.
+Use repeated `--validation-python-version` and `--validation-command` flags when
+a package needs a different public correctness contract. `check-sync-config`
+validates that `.github/workflows/package-validation.yml` still matches those
+commands.
+
+The public import workflow deliberately separates validation from PR creation:
+import verification runs without `GH_TOKEN`, then a second `--open-pr-only` step
+receives the token only after trusted helper code is captured from the source
+checkout.
 
 ## Repository Setup Checklist
 

@@ -34,6 +34,7 @@ DEFAULT_EXCLUDES = (
 CONTROL_CHAR_BOUND = 32
 DEFAULT_SYNC_USER_NAME = "copybarista"
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
+DEFAULT_VALIDATION_PYTHON_VERSIONS = ("3.12",)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -50,6 +51,8 @@ class SyncSettings:
       smoke_import: Import target used to validate the exported package.
       type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
+      validation_python_versions: Python versions used by public package validation.
+      validation_commands: Commands run by public package validation.
       sync_user_name: Commit author name for generated sync commits.
       sync_user_email: Commit author email for generated sync commits.
       export_branch_prefix: Optional source-to-public branch prefix.
@@ -66,10 +69,25 @@ class SyncSettings:
     smoke_import: str
     type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
+    validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
+    validation_commands: tuple[str, ...] = ()
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
     export_branch_prefix: str = ""
     import_branch_prefix: str = ""
+
+    def __post_init__(self) -> None:
+        """Fill derived validation defaults."""
+        if self.validation_commands:
+            return
+        object.__setattr__(
+            self,
+            "validation_commands",
+            _default_validation_commands(
+                smoke_import=self.smoke_import,
+                type_check_targets=self.type_check_targets,
+            ),
+        )
 
     @property
     def branch_slug(self) -> str:
@@ -118,6 +136,19 @@ def load_sync_settings(path: Path) -> SyncSettings:
         smoke_import=_required_str(sync, "smoke_import"),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
+        validation_python_versions=_optional_str_tuple(
+            sync,
+            "validation_python_versions",
+            default=DEFAULT_VALIDATION_PYTHON_VERSIONS,
+        ),
+        validation_commands=_optional_str_tuple(
+            sync,
+            "validation_commands",
+            default=_default_validation_commands(
+                smoke_import=_required_str(sync, "smoke_import"),
+                type_check_targets=_required_str_tuple(sync, "type_check_targets"),
+            ),
+        ),
         sync_user_name=_optional_str(
             sync, "sync_user_name", default=DEFAULT_SYNC_USER_NAME
         ),
@@ -154,6 +185,9 @@ def write_sync_scaffold(
         root / "copybarista.sync.toml": sync_toml(settings),
         root / ".github" / "workflows" / "sync-to-source.yml": import_workflow(
             settings
+        ),
+        root / ".github" / "workflows" / "package-validation.yml": (
+            package_validation_workflow(settings)
         ),
     }
     existing = [str(path.relative_to(root)) for path in files if path.exists()]
@@ -195,6 +229,12 @@ def check_sync_config(*, root: Path) -> None:
         if path not in config.files.exclude:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
+    _validate_package_validation_workflow_yaml(
+        workflow_text=(
+            root / ".github" / "workflows" / "package-validation.yml"
+        ).read_text(encoding="utf-8"),
+        settings=settings,
+    )
 
 
 def copy_barista_toml(settings: SyncSettings) -> str:
@@ -241,6 +281,12 @@ def sync_toml(settings: SyncSettings) -> str:
     forbidden = "\n".join(
         f"  {_toml_str(term)}," for term in settings.forbidden_pr_text
     )
+    python_versions = "\n".join(
+        f"  {_toml_str(version)}," for version in settings.validation_python_versions
+    )
+    commands = "\n".join(
+        f"  {_toml_str(command)}," for command in settings.validation_commands
+    )
     return f"""[sync]
 package_name = {_toml_str(settings.package_name)}
 sync_label = {_toml_str(settings.sync_label)}
@@ -259,6 +305,59 @@ type_check_targets = [
 forbidden_pr_text = [
 {forbidden}
 ]
+validation_python_versions = [
+{python_versions}
+]
+validation_commands = [
+{commands}
+]
+"""
+
+
+def package_validation_workflow(settings: SyncSettings) -> str:
+    """Return the public package validation workflow.
+
+    Args:
+      settings: Sync settings used to render validation commands.
+
+    Returns:
+      yaml_text: Rendered GitHub Actions workflow contents.
+
+    Raises:
+      ConfigError: If settings are invalid.
+
+    """
+    _validate_settings(settings)
+    commands = _shell_script(settings.validation_commands, indent="          ")
+    python_versions = ", ".join(
+        _yaml_str(version) for version in settings.validation_python_versions
+    )
+    return f"""name: Package validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [{python_versions}]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{{{ matrix.python-version }}}}
+      - uses: astral-sh/setup-uv@v5
+      - name: Validate package
+        run: |
+{commands}
 """
 
 
@@ -543,6 +642,7 @@ def _required_paths(root: Path) -> tuple[Path, ...]:
         root / "copy.barista.toml",
         root / "copybarista.sync.toml",
         root / ".github" / "workflows" / "sync-to-source.yml",
+        root / ".github" / "workflows" / "package-validation.yml",
     )
 
 
@@ -621,6 +721,37 @@ def _validate_import_workflow_yaml(
             raise ConfigError(f"sync-to-source.yml must reference {text}.")
 
 
+def _validate_package_validation_workflow_yaml(
+    *, workflow_text: str, settings: SyncSettings
+) -> None:
+    try:
+        parsed: object = yaml.safe_load(workflow_text)
+    except yaml.YAMLError as err:
+        raise ConfigError(f"Cannot read package validation workflow: {err}") from err
+    if not isinstance(parsed, dict):
+        raise ConfigError("package-validation.yml must be a YAML mapping.")
+    workflow = cast("dict[str, object]", parsed)
+    jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
+    job = _yaml_mapping(jobs.get("validate"), "jobs.validate")
+    matrix = _yaml_mapping(
+        _yaml_mapping(job.get("strategy"), "jobs.validate.strategy").get("matrix"),
+        "jobs.validate.strategy.matrix",
+    )
+    if matrix.get("python-version") != list(settings.validation_python_versions):
+        raise ConfigError(
+            "package-validation.yml jobs.validate.strategy.matrix.python-version "
+            "must match validation_python_versions."
+        )
+    steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
+    run = _workflow_step_run(steps, "Validate package")
+    commands = tuple(line.strip() for line in run.splitlines() if line.strip())
+    if commands != settings.validation_commands:
+        raise ConfigError(
+            "package-validation.yml Validate package commands must match "
+            "validation_commands."
+        )
+
+
 def _workflow_step_run(steps: list[object], name: str) -> str:
     for step in steps:
         step_map = _yaml_mapping(step, f"jobs.import-change.steps.{name}")
@@ -658,6 +789,14 @@ def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
     return value
 
 
+def _optional_str_tuple(
+    sync: dict[str, object], key: str, *, default: tuple[str, ...]
+) -> tuple[str, ...]:
+    if key not in sync:
+        return default
+    return _required_str_tuple(sync, key)
+
+
 def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
     value = sync.get(key, [])
     if not isinstance(value, list):
@@ -677,6 +816,20 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _default_validation_commands(
+    *, smoke_import: str, type_check_targets: tuple[str, ...]
+) -> tuple[str, ...]:
+    type_targets = " ".join(shlex.quote(target) for target in type_check_targets)
+    return (
+        "uv sync --all-groups",
+        "uv run ruff check .",
+        f"uv run basedpyright {type_targets}",
+        "uv run pytest",
+        f'uv run python -c "import {smoke_import}"',
+        "uv build",
+    )
+
+
 def _validate_settings(settings: SyncSettings) -> None:
     for name, value in (
         ("package_name", settings.package_name),
@@ -693,6 +846,13 @@ def _validate_settings(settings: SyncSettings) -> None:
             raise ConfigError(f"sync.{name} cannot be empty.")
     if not settings.type_check_targets:
         raise ConfigError("sync.type_check_targets cannot be empty.")
+    if not settings.validation_python_versions:
+        raise ConfigError("sync.validation_python_versions cannot be empty.")
+    if not settings.validation_commands:
+        raise ConfigError("sync.validation_commands cannot be empty.")
+    for command in settings.validation_commands:
+        if "\n" in command or not command.strip():
+            raise ConfigError("sync.validation_commands must contain shell commands.")
     _validate_branch_prefix(settings.export_prefix, name="export_branch_prefix")
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
 
@@ -724,6 +884,10 @@ def _shell_lines(args: list[str], *, indent: str) -> str:
         for idx in range(0, len(args), 2)
     ]
     return " \\\n".join(pairs)
+
+
+def _shell_script(commands: tuple[str, ...], *, indent: str) -> str:
+    return "\n".join(f"{indent}{command}" for command in commands)
 
 
 def _toml_str(value: str) -> str:

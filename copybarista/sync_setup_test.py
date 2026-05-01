@@ -14,6 +14,7 @@ from copybarista.sync_setup import (
     export_workflow,
     import_workflow,
     load_sync_settings,
+    package_validation_workflow,
     write_sync_scaffold,
 )
 
@@ -40,6 +41,7 @@ def test_write_sync_scaffold_uses_stable_public_file_names(tmp_path: Path):
     assert tmp_path / "copy.barista.toml" in written
     assert tmp_path / "copybarista.sync.toml" in written
     assert tmp_path / ".github/workflows/sync-to-source.yml" in written
+    assert tmp_path / ".github/workflows/package-validation.yml" in written
     assert not (tmp_path / "private").exists()
     assert not (tmp_path / "scripts/sync_configgle_export.py").exists()
 
@@ -73,6 +75,16 @@ def test_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
 def test_check_sync_config_rejects_missing_public_import_workflow(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
     (tmp_path / ".github/workflows/sync-to-source.yml").unlink()
+
+    with pytest.raises(ConfigError, match="Missing sync files"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_missing_package_validation_workflow(
+    tmp_path: Path,
+):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    (tmp_path / ".github/workflows/package-validation.yml").unlink()
 
     with pytest.raises(ConfigError, match="Missing sync files"):
         check_sync_config(root=tmp_path)
@@ -152,6 +164,15 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.sync_user_email == "copybarista@example.com"
     assert settings.export_prefix == "configgle/export/"
     assert settings.import_prefix == "configgle/import/"
+    assert settings.validation_python_versions == ("3.12",)
+    assert settings.validation_commands == (
+        "uv sync --all-groups",
+        "uv run ruff check .",
+        "uv run basedpyright configgle",
+        "uv run pytest",
+        'uv run python -c "import configgle"',
+        "uv build",
+    )
 
 
 def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
@@ -188,6 +209,37 @@ def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="import_branch_prefix"):
         load_sync_settings(config)
+
+
+def test_package_validation_workflow_runs_configured_commands():
+    workflow = package_validation_workflow(
+        _settings(
+            validation_python_versions=("3.12", "3.13"),
+            validation_commands=(
+                "uv sync --all-groups",
+                "uv run pytest",
+            ),
+        )
+    )
+
+    assert 'python-version: ["3.12", "3.13"]' in workflow
+    assert "uv sync --all-groups" in workflow
+    assert "uv run pytest" in workflow
+
+
+def test_check_sync_config_rejects_package_validation_drift(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/package-validation.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "uv run pytest",
+            "uv run pytest tests/test_one.py",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="validation_commands"):
+        check_sync_config(root=tmp_path)
 
 
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
