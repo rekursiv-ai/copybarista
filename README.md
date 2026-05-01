@@ -5,24 +5,26 @@
 </p>
 
 <p align="center">
-  <img src="assets/copybarista-splash.webp" alt="Copybarista mascot" width="520">
+  <img src="https://raw.githubusercontent.com/rekursiv-ai/copybarista/main/assets/copybarista-splash.webp" alt="Copybarista mascot" width="520">
 </p>
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue.svg">
   <a href="https://pypi.org/project/copybarista/"><img alt="PyPI" src="https://img.shields.io/pypi/v/copybarista.svg"></a>
-  <a href=".github/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="https://github.com/rekursiv-ai/copybarista/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
+  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
 <p align="center">
-  <a href="docs/config-reference.md">Config reference</a>
+  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/docs/config-reference.md">Config reference</a>
   ·
-  <a href="docs/tutorial.md">Tutorial</a>
+  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/docs/tutorial.md">Tutorial</a>
   ·
-  <a href="examples/README.md">Examples</a>
+  <a href="https://github.com/rekursiv-ai/copybarista/tree/main/examples">Examples</a>
   ·
-  <a href="docs/github-setup.md">GitHub setup</a>
+  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md">GitHub setup</a>
+  ·
+  <a href="https://rekursiv.ai/blog/i-built-copybarista-in-a-day/">Blog post</a>
 </p>
 
 ## Why should I use this?
@@ -57,7 +59,7 @@ Copybarista can map and verify them safely.
   export.
 
 <p align="center">
-  <img src="assets/copybarista-sync.webp" alt="Copybarista bidirectional sync: source repository exports through copybarista export to an Export PR that auto-merges into the standalone package; public PRs and merged public changes flow back through copybarista import-change as a verified Source import PR." width="480">
+  <img src="https://raw.githubusercontent.com/rekursiv-ai/copybarista/main/assets/copybarista-sync.webp" alt="Copybarista bidirectional sync: source repository exports through copybarista export to an Export PR that auto-merges into the standalone package; public PRs and merged public changes flow back through copybarista import-change as a verified Source import PR." width="480">
 </p>
 
 Generated export PRs are workflow-owned and can auto-merge after required
@@ -345,7 +347,8 @@ Source-to-public auto-merge is safe only as PR auto-merge after required checks
 pass, not as direct default-branch pushes. Keep public-to-source imports manual
 unless your project has a separate review policy for accepting public changes.
 For protected branches, required checks, bot-authored PRs, and token
-permissions, see [GitHub setup](docs/github-setup.md).
+permissions, see
+[GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md).
 
 ## Security And Privacy Model
 
@@ -442,15 +445,18 @@ The following are intentional non-goals until a real workflow needs them:
 
 ## Documentation
 
-- [Tutorial](docs/tutorial.md): build and run a minimal folder export.
-- [Examples](examples/README.md): set up a full source-to-public and
+- [Tutorial](https://github.com/rekursiv-ai/copybarista/blob/main/docs/tutorial.md):
+  build and run a minimal folder export.
+- [Examples](https://github.com/rekursiv-ai/copybarista/tree/main/examples):
+  set up a full source-to-public and
   public-to-source GitHub PR workflow.
-- [Config reference](docs/config-reference.md): TOML fields, transforms, CLI
-  behavior, and manifest shape.
-- [Architecture](docs/architecture.md): implementation boundaries and internal
-  APIs.
-- [GitHub setup](docs/github-setup.md): recommended repository rules,
-  branch protection, and release publishing defaults.
+- [Config reference](https://github.com/rekursiv-ai/copybarista/blob/main/docs/config-reference.md):
+  TOML fields, transforms, CLI behavior, and manifest shape.
+- [Architecture](https://github.com/rekursiv-ai/copybarista/blob/main/docs/architecture.md):
+  implementation boundaries and internal APIs.
+- [GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md):
+  recommended repository rules, branch protection, and release publishing
+  defaults.
 
 ## Development
 
