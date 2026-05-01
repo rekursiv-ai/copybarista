@@ -9,6 +9,7 @@ import pytest
 
 from scripts import sync_export_pr
 from scripts.sync_export_pr import (
+    ExportRequest,
     _commit_author,
     _gh_pr_exists,
     _public_pr_text,
@@ -17,6 +18,37 @@ from scripts.sync_export_pr import (
     export_pr_body,
     export_pr_text,
 )
+
+
+def test_main_accepts_generic_project_validation_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "loop/lib/configgle",
+            "--release-check-script",
+            "scripts/check_release_tree.py",
+            "--type-check-target",
+            "configgle",
+            "--type-check-target",
+            "tests",
+            "--smoke-import",
+            "configgle",
+        ]
+    )
+
+    assert captured[0].project_path == Path("loop/lib/configgle")
+    assert captured[0].release_check_script == Path("scripts/check_release_tree.py")
+    assert captured[0].type_check_targets == ("configgle", "tests")
+    assert captured[0].smoke_import == "configgle"
 
 
 def test_export_pr_body_contains_review_context():
@@ -42,8 +74,8 @@ def test_export_pr_text_uses_defaults_without_commit_message_opt_in():
         forbidden_text=("private-source",),
     )
 
-    assert text.title == "Update Copybarista export"
-    assert text.body == "Updates the generated Copybarista public repository export."
+    assert text.title == "Update public export"
+    assert text.body == "Updates the generated public repository export."
 
 
 def test_export_pr_text_can_use_commit_title_and_description():

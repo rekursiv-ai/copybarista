@@ -23,6 +23,7 @@ DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
 CONTROL_CHAR_BOUND = 32
+DEFAULT_TYPE_CHECK_TARGETS = (".",)
 GITHUB_RETRY_ATTEMPTS = 3
 GITHUB_RETRY_DELAY_SEC = 2
 
@@ -36,6 +37,9 @@ def main(argv: list[str] | None = None) -> None:
         target_dir=Path(args.target_dir),
         target_repo=args.target_repo,
         project_path=Path(args.project_path),
+        copybarista_project_path=Path(args.copybarista_project_path)
+        if args.copybarista_project_path
+        else Path(args.project_path),
         base_branch=args.base_branch,
         public_repo=args.public_repo,
         public_sha=args.public_sha,
@@ -48,6 +52,7 @@ def main(argv: list[str] | None = None) -> None:
         open_pr=_string_bool(args.open_pr),
         open_pr_only=args.open_pr_only,
         runner_temp=Path(args.runner_temp),
+        type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
     )
     run_import_sync(request)
 
@@ -61,6 +66,7 @@ class ImportRequest:
     target_dir: Path
     target_repo: str
     project_path: Path
+    copybarista_project_path: Path
     base_branch: str
     public_repo: str
     public_sha: str
@@ -73,6 +79,7 @@ class ImportRequest:
     open_pr: bool
     open_pr_only: bool
     runner_temp: Path
+    type_check_targets: tuple[str, ...]
 
 
 def run_import_sync(request: ImportRequest) -> None:
@@ -87,7 +94,7 @@ def run_import_sync(request: ImportRequest) -> None:
     _log("Importing public changes into target source.")
     _run_import_change(request=request, project=project)
     _log("Validating target checkout.")
-    _validate_target(project=project)
+    _validate_target(project=project, type_check_targets=request.type_check_targets)
     if request.open_pr:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
@@ -103,6 +110,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-dir", default="target")
     parser.add_argument("--target-repo", default=os.environ.get("TARGET_REPO", ""))
     parser.add_argument("--project-path", required=True)
+    parser.add_argument(
+        "--copybarista-project-path",
+        default=os.environ.get("COPYBARISTA_TOOL_PROJECT_PATH", ""),
+        help="Source checkout path for the project that provides copybarista.",
+    )
     parser.add_argument("--base-branch", default=os.environ.get("BASE_BRANCH", "main"))
     parser.add_argument(
         "--public-repo",
@@ -137,11 +149,18 @@ def _parser() -> argparse.ArgumentParser:
         "--runner-temp",
         default=os.environ.get("RUNNER_TEMP", str(DEFAULT_RUNNER_TEMP)),
     )
+    parser.add_argument(
+        "--type-check-target",
+        action="append",
+        default=[],
+        help="Path passed to basedpyright. Repeat for multiple targets.",
+    )
     return parser
 
 
 def _run_import_change(*, request: ImportRequest, project: Path) -> None:
     """Run `copybarista import-change` and capture its JSON report."""
+    copybarista_project = request.target_dir / request.copybarista_project_path
     request.report.parent.mkdir(parents=True, exist_ok=True)
     with request.report.open("w", encoding="utf-8") as output:
         _run(
@@ -149,7 +168,7 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
                 "uv",
                 "--quiet",
                 "--project",
-                str(project),
+                str(copybarista_project),
                 "run",
                 "copybarista",
                 "import-change",
@@ -168,7 +187,7 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
         )
 
 
-def _validate_target(*, project: Path) -> None:
+def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> None:
     """Run source checkout checks after importing public changes."""
     _run(
         [
@@ -197,20 +216,7 @@ def _validate_target(*, project: Path) -> None:
         ],
         cwd=project,
     )
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "basedpyright",
-            "copybarista",
-            "scripts",
-            "tests",
-        ],
-        cwd=project,
-    )
+    _run_basedpyright(project=project, targets=type_check_targets)
     _run(
         [
             "uv",
@@ -222,6 +228,22 @@ def _validate_target(*, project: Path) -> None:
             "-q",
             "-m",
             "not integration",
+        ],
+        cwd=project,
+    )
+
+
+def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
+    """Run basedpyright for one target source checkout."""
+    _run(
+        [
+            "uv",
+            "--quiet",
+            "--project",
+            str(project),
+            "run",
+            "basedpyright",
+            *targets,
         ],
         cwd=project,
     )
