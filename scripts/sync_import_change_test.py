@@ -99,3 +99,68 @@ def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch) -> N
         repo="rekursiv-ai/source",
         cwd=Path.cwd(),
     )
+
+
+def test_gh_pr_exists_retries_transient_github_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(
+                argv,
+                1,
+                stdout="",
+                stderr="HTTP 504: try resubmitting your request",
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change.time, "sleep", no_sleep)
+
+    assert not _gh_pr_exists(
+        branch="copybarista/import/sha-abcdef123456",
+        repo="rekursiv-ai/source",
+        cwd=Path.cwd(),
+    )
+    assert calls == 2
+
+
+def test_gh_pr_exists_fails_loudly_after_retry_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = 0
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="",
+            stderr="HTTP 504: try resubmitting your request",
+        )
+
+    def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change.time, "sleep", no_sleep)
+
+    with pytest.raises(SystemExit) as error:
+        _gh_pr_exists(
+            branch="copybarista/import/sha-abcdef123456",
+            repo="rekursiv-ai/source",
+            cwd=Path.cwd(),
+        )
+
+    assert error.value.code == 1
+    assert calls == sync_import_change.GITHUB_RETRY_ATTEMPTS
+    assert "HTTP 504" in capsys.readouterr().err
