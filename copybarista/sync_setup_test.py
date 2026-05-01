@@ -55,6 +55,15 @@ def test_sync_metadata_stores_package_name_as_data(tmp_path: Path):
     assert 'import_branch_prefix = "configgle/import/"' in text
 
 
+def test_generated_export_config_keeps_public_sync_files(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+
+    text = (tmp_path / "copy.barista.toml").read_text(encoding="utf-8")
+
+    assert '"copy.barista.toml"' not in text
+    assert '"copybarista.sync.toml"' not in text
+
+
 def test_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
@@ -186,6 +195,7 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
 
     assert "configgle/export/main" in workflow
     assert '--sync-label "$SYNC_LABEL"' in workflow
+    assert '--auto-merge="$COPYBARISTA_AUTO_MERGE"' in workflow
     assert "CONFIGGLE" not in workflow
     assert "sync_configgle" not in workflow
     assert "source/loop/experimental/copybarista/scripts/sync_export_pr.py" in workflow
