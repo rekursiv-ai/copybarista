@@ -23,8 +23,10 @@ import time
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
+DEFAULT_SYNC_LABEL = "Copybarista"
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
+DEFAULT_EXPORT_BRANCH_PREFIX = "copybarista/export/"
 DEFAULT_EXPORT_TITLE = "Update public export"
 DEFAULT_EXPORT_DESCRIPTION = "Updates the generated public repository export."
 CONTROL_CHAR_BOUND = 32
@@ -55,7 +57,9 @@ def main(argv: list[str] | None = None) -> None:
             explicit=args.branch,
             source_branch=args.source_branch,
             source_sha=args.source_sha,
+            prefix=args.branch_prefix,
         ),
+        sync_label=args.sync_label,
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
         pr_title=pr_text.title,
@@ -82,6 +86,7 @@ class ExportRequest:
     base_branch: str
     source_sha: str
     branch: str
+    sync_label: str
     sync_user_name: str
     sync_user_email: str
     pr_title: str
@@ -166,6 +171,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--branch",
         default=os.environ.get("COPYBARISTA_EXPORT_BRANCH", ""),
+    )
+    parser.add_argument(
+        "--branch-prefix",
+        default=os.environ.get(
+            "COPYBARISTA_EXPORT_BRANCH_PREFIX",
+            DEFAULT_EXPORT_BRANCH_PREFIX,
+        ),
+    )
+    parser.add_argument(
+        "--sync-label",
+        default=os.environ.get("COPYBARISTA_SYNC_LABEL", DEFAULT_SYNC_LABEL),
     )
     parser.add_argument(
         "--pr-title",
@@ -334,7 +350,7 @@ def _validate_public(
     """Run public checkout checks that a contributor would run locally."""
     if release_check_script:
         _run(
-            ["python", str(release_check_script), ".", "--allow-root-git"],
+            ["python", "-B", str(release_check_script), ".", "--allow-root-git"],
             cwd=public_dir,
         )
     _run(["uv", "sync", "--all-groups"], cwd=public_dir)
@@ -398,6 +414,7 @@ def _open_or_update_export_pr(*, request: ExportRequest) -> None:
     body = export_pr_body(
         description=request.pr_body,
         branch=branch,
+        sync_label=request.sync_label,
     )
     body_file = request.runner_temp / "copybarista-pr-body.md"
     body_file.write_text(body, encoding="utf-8")
@@ -477,7 +494,7 @@ def _enable_export_pr_auto_merge(*, request: ExportRequest) -> None:
             "--subject",
             request.pr_title,
             "--body",
-            f"Copybarista export branch: {request.branch}",
+            f"{request.sync_label} export branch: {request.branch}",
             "--auto",
         ],
         cwd=request.public_dir,
@@ -513,12 +530,12 @@ def export_pr_text(
     )
 
 
-def export_pr_body(*, description: str, branch: str) -> str:
+def export_pr_body(*, description: str, branch: str, sync_label: str) -> str:
     """Return the public export PR body."""
     return (
         f"{description.strip()}\n\n"
         "----\n"
-        f"Copybarista export branch: `{branch}`\n\n"
+        f"{sync_label} export branch: `{branch}`\n\n"
         "Do not push manual commits to this generated branch. Change the source "
         "repository, then rerun the export workflow with the same branch.\n"
     )
@@ -532,18 +549,17 @@ def _split_commit_message(message: str) -> tuple[str, str]:
     return title.strip(), description.strip() if separator else ""
 
 
-def export_branch_name(*, explicit: str, source_branch: str, source_sha: str) -> str:
+def export_branch_name(
+    *, explicit: str, source_branch: str, source_sha: str, prefix: str
+) -> str:
     """Return the source-to-public sync branch name."""
     if explicit.strip():
-        return _validated_generated_branch(
-            branch=explicit.strip(),
-            prefix="copybarista/export/",
-        )
+        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
     if source_branch.strip():
-        branch = f"copybarista/export/{_branch_component(source_branch)}"
+        branch = f"{prefix}{_branch_component(source_branch)}"
     else:
-        branch = f"copybarista/export/sha-{_branch_component(source_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix="copybarista/export/")
+        branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix=prefix)
 
 
 def _commit_author(name: str, email: str) -> str:

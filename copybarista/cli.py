@@ -23,6 +23,13 @@ from copybarista.errors import (
 from copybarista.export import export_folder
 from copybarista.git import export_git
 from copybarista.import_request import ImportRequest, import_change_request
+from copybarista.sync_setup import (
+    SyncSettings,
+    check_sync_config,
+    export_workflow,
+    load_sync_settings,
+    write_sync_scaffold,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -83,6 +90,34 @@ def _parser() -> argparse.ArgumentParser:
     import_change.add_argument("--no-verify", action="store_true")
     import_change.add_argument("--json", action="store_true")
 
+    init_sync = sub.add_parser("init-sync", help="Write package sync scaffolding")
+    init_sync.add_argument("root")
+    init_sync.add_argument("--package-name", required=True)
+    init_sync.add_argument("--sync-label", default="")
+    init_sync.add_argument("--source-root", required=True)
+    init_sync.add_argument("--public-repo", required=True)
+    init_sync.add_argument("--source-repo", required=True)
+    init_sync.add_argument("--copybarista-project-path", required=True)
+    init_sync.add_argument("--smoke-import", required=True)
+    init_sync.add_argument("--type-check-target", action="append", default=[])
+    init_sync.add_argument("--forbidden-pr-text", action="append", default=[])
+    init_sync.add_argument("--sync-user-name", default="copybarista")
+    init_sync.add_argument("--sync-user-email", default="copybarista@example.com")
+    init_sync.add_argument("--force", action="store_true")
+
+    check_sync = sub.add_parser(
+        "check-sync-config",
+        help="Validate package sync scaffolding",
+    )
+    check_sync.add_argument("root")
+
+    export_sync = sub.add_parser(
+        "write-export-workflow",
+        help="Write a source-repository export workflow to stdout or a file",
+    )
+    export_sync.add_argument("sync_config")
+    export_sync.add_argument("--output", default="")
+
     return parser
 
 
@@ -94,6 +129,9 @@ def _command_handlers() -> dict[str, Callable[[argparse.Namespace], None]]:
         "export": _run_export,
         "publish-git": _run_publish_git,
         "import-change": _run_import_change,
+        "init-sync": _run_init_sync,
+        "check-sync-config": _run_check_sync_config,
+        "write-export-workflow": _run_write_export_workflow,
     }
 
 
@@ -158,6 +196,45 @@ def _run_import_change(args: argparse.Namespace) -> None:
     )
     if args.json:
         sys.stdout.write(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")
+
+
+def _run_init_sync(args: argparse.Namespace) -> None:
+    """Write package sync scaffolding."""
+    settings = SyncSettings(
+        package_name=args.package_name,
+        sync_label=args.sync_label or args.package_name,
+        source_root=args.source_root,
+        public_repo=args.public_repo,
+        source_repo=args.source_repo,
+        copybarista_project_path=args.copybarista_project_path,
+        smoke_import=args.smoke_import,
+        type_check_targets=tuple(args.type_check_target)
+        or (args.smoke_import, "tests"),
+        forbidden_pr_text=tuple(args.forbidden_pr_text),
+        sync_user_name=args.sync_user_name,
+        sync_user_email=args.sync_user_email,
+    )
+    for path in write_sync_scaffold(
+        root=Path(args.root),
+        settings=settings,
+        force=args.force,
+    ):
+        sys.stdout.write(f"wrote {path}\n")
+
+
+def _run_check_sync_config(args: argparse.Namespace) -> None:
+    """Validate package sync scaffolding."""
+    check_sync_config(root=Path(args.root))
+
+
+def _run_write_export_workflow(args: argparse.Namespace) -> None:
+    """Write the source-repository export workflow."""
+    settings = load_sync_settings(Path(args.sync_config))
+    text = export_workflow(settings)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
 
 
 def _exit_code(err: CopybaristaError) -> int:

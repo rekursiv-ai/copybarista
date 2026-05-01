@@ -22,8 +22,10 @@ import time
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
+DEFAULT_SYNC_LABEL = "Copybarista"
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
+DEFAULT_IMPORT_BRANCH_PREFIX = "copybarista/import/"
 CONTROL_CHAR_BOUND = 32
 DEFAULT_TYPE_CHECK_TARGETS = (".",)
 GITHUB_RETRY_ATTEMPTS = 3
@@ -47,7 +49,12 @@ def main(argv: list[str] | None = None) -> None:
         public_sha=args.public_sha,
         public_base_ref=args.public_base_ref,
         public_head_ref=args.public_head_ref,
-        branch=import_branch_name(explicit=args.branch, public_sha=args.public_sha),
+        branch=import_branch_name(
+            explicit=args.branch,
+            public_sha=args.public_sha,
+            prefix=args.branch_prefix,
+        ),
+        sync_label=args.sync_label,
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
         report=Path(args.report),
@@ -75,6 +82,7 @@ class ImportRequest:
     public_base_ref: str
     public_head_ref: str
     branch: str
+    sync_label: str
     sync_user_name: str
     sync_user_email: str
     report: Path
@@ -136,6 +144,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--branch",
         default=os.environ.get("COPYBARISTA_IMPORT_BRANCH", ""),
+    )
+    parser.add_argument(
+        "--branch-prefix",
+        default=os.environ.get(
+            "COPYBARISTA_IMPORT_BRANCH_PREFIX",
+            DEFAULT_IMPORT_BRANCH_PREFIX,
+        ),
+    )
+    parser.add_argument(
+        "--sync-label",
+        default=os.environ.get("COPYBARISTA_SYNC_LABEL", DEFAULT_SYNC_LABEL),
     )
     parser.add_argument(
         "--report",
@@ -267,6 +286,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             public_base_ref=request.public_base_ref,
             public_head_ref=request.public_head_ref,
             source_base_ref=source_base_ref,
+            sync_label=request.sync_label,
         ),
         encoding="utf-8",
     )
@@ -286,7 +306,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             "--author",
             _commit_author(request.sync_user_name, request.sync_user_email),
             "-m",
-            f"Import Copybarista public changes {request.public_sha}",
+            f"Import {request.sync_label} public changes {request.public_sha}",
         ],
         cwd=request.target_dir,
     )
@@ -295,7 +315,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
         cwd=request.target_dir,
     )
 
-    title = f"Import Copybarista public changes {request.public_sha[:12]}"
+    title = f"Import {request.sync_label} public changes {request.public_sha[:12]}"
     if _gh_pr_exists(branch=branch, repo=request.target_repo, cwd=request.target_dir):
         _run_gh(
             [
@@ -340,10 +360,11 @@ def import_change_pr_body(
     public_base_ref: str,
     public_head_ref: str,
     source_base_ref: str,
+    sync_label: str,
 ) -> str:
     """Return the target import-change PR body."""
     return (
-        "Imports Copybarista public repository changes into the source repository.\n\n"
+        f"Imports {sync_label} public repository changes into the source repository.\n\n"
         f"- Public repository: `{public_repo}`\n"
         f"- Public SHA: `{public_sha}`\n"
         f"- Public base: `{public_base_ref}`\n"
@@ -355,15 +376,12 @@ def import_change_pr_body(
     )
 
 
-def import_branch_name(*, explicit: str, public_sha: str) -> str:
+def import_branch_name(*, explicit: str, public_sha: str, prefix: str) -> str:
     """Return the public-to-source sync branch name."""
     if explicit.strip():
-        return _validated_generated_branch(
-            branch=explicit.strip(),
-            prefix="copybarista/import/",
-        )
-    branch = f"copybarista/import/sha-{_branch_component(public_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix="copybarista/import/")
+        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
+    branch = f"{prefix}sha-{_branch_component(public_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix=prefix)
 
 
 def _commit_author(name: str, email: str) -> str:
