@@ -164,3 +164,88 @@ def test_cli_uses_publish_git_command_name(
 
     assert exc.value.code == 2
     assert "publish-git" in capsys.readouterr().err
+
+
+def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--sync-label",
+            "Configgle",
+            "--source-root",
+            "loop/lib/configgle",
+            "--public-repo",
+            "rekursiv-ai/configgle",
+            "--source-repo",
+            "rekursiv-ai/loop",
+            "--copybarista-project-path",
+            "loop/experimental/copybarista",
+            "--smoke-import",
+            "configgle",
+            "--type-check-target",
+            "configgle",
+            "--type-check-target",
+            "tests",
+        ]
+    )
+
+    assert (tmp_path / "copy.barista.toml").exists()
+    assert (tmp_path / "copybarista.sync.toml").exists()
+    assert (tmp_path / ".github/workflows/sync-to-source.yml").exists()
+    assert not (tmp_path / "private").exists()
+
+
+def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "loop/lib/configgle",
+            "--public-repo",
+            "rekursiv-ai/configgle",
+            "--source-repo",
+            "rekursiv-ai/loop",
+            "--copybarista-project-path",
+            "loop/experimental/copybarista",
+            "--smoke-import",
+            "configgle",
+        ]
+    )
+
+    main(["check-sync-config", str(tmp_path)])
+
+
+def test_cli_write_export_workflow_uses_sync_metadata(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "loop/lib/configgle",
+            "--public-repo",
+            "rekursiv-ai/configgle",
+            "--source-repo",
+            "rekursiv-ai/loop",
+            "--copybarista-project-path",
+            "loop/experimental/copybarista",
+            "--smoke-import",
+            "configgle",
+        ]
+    )
+
+    capsys.readouterr()
+    main(["write-export-workflow", str(tmp_path / "copybarista.sync.toml")])
+
+    output = capsys.readouterr().out
+    assert "configgle/export/main" in output
+    assert "CONFIGGLE" not in output

@@ -58,6 +58,7 @@ def test_import_change_pr_body_contains_review_context():
         public_base_ref="base",
         public_head_ref="head",
         source_base_ref="source",
+        sync_label="Copybarista",
     )
 
     assert "Imports Copybarista public repository changes into the source" in body
@@ -70,6 +71,19 @@ def test_import_change_pr_body_contains_review_context():
     assert "Regenerate this PR before merging if source `main` changes." in body
 
 
+def test_import_change_pr_body_accepts_custom_sync_label():
+    body = import_change_pr_body(
+        public_repo="rekursiv-ai/configgle",
+        public_sha="abcdef1234567890",
+        public_base_ref="base",
+        public_head_ref="head",
+        source_base_ref="source",
+        sync_label="Configgle",
+    )
+
+    assert "Imports Configgle public repository changes into the source" in body
+
+
 def test_string_bool_accepts_action_boolean_values():
     assert _string_bool("true")
     assert _string_bool("1")
@@ -80,7 +94,11 @@ def test_string_bool_accepts_action_boolean_values():
 
 def test_import_branch_name_uses_public_sha():
     assert (
-        import_branch_name(explicit="", public_sha="abcdef1234567890")
+        import_branch_name(
+            explicit="",
+            public_sha="abcdef1234567890",
+            prefix="copybarista/import/",
+        )
         == "copybarista/import/sha-abcdef123456"
     )
 
@@ -90,6 +108,7 @@ def test_import_branch_name_allows_explicit_branch():
         import_branch_name(
             explicit="copybarista/import/custom",
             public_sha="abcdef1234567890",
+            prefix="copybarista/import/",
         )
         == "copybarista/import/custom"
     )
@@ -97,7 +116,11 @@ def test_import_branch_name_allows_explicit_branch():
 
 def test_import_branch_name_rejects_non_generated_explicit_branch():
     with pytest.raises(SystemExit) as error:
-        import_branch_name(explicit="main", public_sha="abcdef1234567890")
+        import_branch_name(
+            explicit="main",
+            public_sha="abcdef1234567890",
+            prefix="copybarista/import/",
+        )
 
     assert error.value.code == 2
 
@@ -107,6 +130,7 @@ def test_import_branch_name_rejects_malformed_explicit_branch():
         import_branch_name(
             explicit="copybarista/import/../main",
             public_sha="abcdef1234567890",
+            prefix="copybarista/import/",
         )
 
     assert error.value.code == 2

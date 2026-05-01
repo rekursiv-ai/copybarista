@@ -56,6 +56,7 @@ def test_export_pr_body_contains_review_context():
     body = export_pr_body(
         description="Publish the latest sync changes.",
         branch="copybarista/export/main",
+        sync_label="Copybarista",
     )
 
     assert "Publish the latest sync changes." in body
@@ -64,6 +65,16 @@ def test_export_pr_body_contains_review_context():
     assert "Exported files" not in body
     assert "Workflow:" not in body
     assert "Do not push manual commits to this generated branch." in body
+
+
+def test_export_pr_body_accepts_custom_sync_label():
+    body = export_pr_body(
+        description="Publish the latest sync changes.",
+        branch="configgle/export/main",
+        sync_label="Configgle",
+    )
+
+    assert "Configgle export branch: `configgle/export/main`" in body
 
 
 def test_export_pr_text_uses_defaults_without_commit_message_opt_in():
@@ -131,7 +142,12 @@ def test_public_pr_text_accepts_reviewable_summary():
 
 def test_export_branch_name_uses_source_branch():
     assert (
-        export_branch_name(explicit="", source_branch="main", source_sha="abcdef")
+        export_branch_name(
+            explicit="",
+            source_branch="main",
+            source_sha="abcdef",
+            prefix="copybarista/export/",
+        )
         == "copybarista/export/main"
     )
 
@@ -142,6 +158,7 @@ def test_export_branch_name_allows_explicit_branch():
             explicit="copybarista/export/custom",
             source_branch="main",
             source_sha="abcdef",
+            prefix="copybarista/export/",
         )
         == "copybarista/export/custom"
     )
@@ -153,6 +170,7 @@ def test_export_branch_name_rejects_non_generated_explicit_branch():
             explicit="main",
             source_branch="main",
             source_sha="abcdef",
+            prefix="copybarista/export/",
         )
 
     assert error.value.code == 2
@@ -164,6 +182,7 @@ def test_export_branch_name_rejects_malformed_explicit_branch():
             explicit="copybarista/export/../main",
             source_branch="main",
             source_sha="abcdef",
+            prefix="copybarista/export/",
         )
 
     assert error.value.code == 2

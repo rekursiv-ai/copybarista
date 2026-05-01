@@ -32,7 +32,7 @@ Homepage = "https://github.com/rekursiv-ai/copybarista"
 Documentation = "https://github.com/rekursiv-ai/copybarista/tree/main/docs"
 Source = "https://github.com/rekursiv-ai/copybarista"
 Issues = "https://github.com/rekursiv-ai/copybarista/issues"
-Changelog = "https://github.com/rekursiv-ai/copybarista/releases"
+Changelog = "https://github.com/rekursiv-ai/copybarista/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = [

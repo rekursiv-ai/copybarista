@@ -25,6 +25,8 @@ DEFAULT_TARGETS = (
     "htmlcov",
     "copybarista.egg-info",
     "copybarista/__pycache__",
+    "examples/__pycache__",
+    "scripts/__pycache__",
     "tests/__pycache__",
     "private/__pycache__",
 )

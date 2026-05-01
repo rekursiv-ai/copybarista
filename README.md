@@ -24,6 +24,8 @@
   ·
   <a href="https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md">GitHub setup</a>
   ·
+  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/CHANGELOG.md">Changelog</a>
+  ·
   <a href="https://rekursiv.ai/blog/i-built-copybarista-in-a-day/">Blog post</a>
 </p>
 
@@ -177,6 +179,37 @@ resolved relative to that root, and exported files land at the destination
 root.
 
 ## Common Workflows
+
+### Set Up Package Sync
+
+Use `init-sync` to create the package-local sync files that every exported
+package can keep public:
+
+```bash
+copybarista init-sync . \
+  --package-name configgle \
+  --sync-label Configgle \
+  --source-root loop/lib/configgle \
+  --public-repo rekursiv-ai/configgle \
+  --source-repo rekursiv-ai/loop \
+  --copybarista-project-path loop/experimental/copybarista \
+  --smoke-import configgle \
+  --type-check-target configgle \
+  --type-check-target tests
+```
+
+This writes `copy.barista.toml`, `copybarista.sync.toml`, and the public import
+workflow `.github/workflows/sync-to-source.yml`. The package name lives in
+`copybarista.sync.toml`; script and workflow names stay stable so new packages
+do not need `sync_<package>.py` files or package-specific environment names.
+
+Validate the scaffolding before wiring GitHub Actions:
+
+```bash
+copybarista check-sync-config .
+copybarista write-export-workflow copybarista.sync.toml \
+  --output configgle-export.yml
+```
 
 ### Export To A Folder
 
@@ -461,7 +494,7 @@ The following are intentional non-goals until a real workflow needs them:
 ## Development
 
 ```bash
-python scripts/check_release_tree.py . --allow-root-git
+python -B scripts/check_release_tree.py . --allow-root-git
 uv sync --all-groups
 uv run --all-groups pre-commit install
 uv run --all-groups pre-commit run --all-files
