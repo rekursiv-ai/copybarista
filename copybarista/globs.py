@@ -8,9 +8,10 @@ unsafe path forms are rejected during config validation.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+
+import re
 
 from copybarista.errors import GlobError
 

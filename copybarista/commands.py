@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import shutil
 import subprocess
-from dataclasses import dataclass
 
 from copybarista.errors import ExportError
 

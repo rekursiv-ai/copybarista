@@ -1,0 +1,88 @@
+fail_fast: false
+files: |
+  (?x)^(
+    (loop/experimental/copybarista/)?
+    (
+      \.github/
+      |assets/
+      |copybarista/
+      |docs/
+      |examples/
+      |private/
+      |scripts/
+      |site/
+      |tests/
+      |\.gitignore
+      |\.pre-commit-config\.yaml
+      |CODE_OF_CONDUCT\.md
+      |CONTRIBUTING\.md
+      |LICENSE
+      |README\.md
+      |SECURITY\.md
+      |copy\.bara\.sky
+      |copy\.barista\.toml
+      |pyproject\.toml
+      |uv\.lock
+    )
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)^(
+            (.*/)?third_party/
+          )
+      - id: trailing-whitespace
+        exclude: |
+          (?x)^(
+            (.*/)?third_party/
+          )
+      - id: check-added-large-files
+        args: [--maxkb=500]
+        exclude: |
+          (?x)^(
+            uv\.lock
+            |(.*/)?third_party/
+          )
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.11.8
+    hooks:
+      - id: uv-lock
+        files: pyproject.toml
+        args: [--locked]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        types_or: [python, pyi, jupyter]
+        args: [--fix]
+      - id: ruff-format
+        types_or: [python, pyi, jupyter]
+
+  - repo: local
+    hooks:
+      - id: codespell
+        name: codespell
+        language: system
+        types_or: [python, markdown, jupyter, shell]
+        exclude: |
+          (?x)^(
+            (.*/)?third_party/
+          )
+        entry: uv run --quiet --all-groups --frozen codespell
+        args: [-w]
+
+      - id: ty
+        name: ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        entry: uv run --quiet --all-groups --frozen ty check

@@ -34,6 +34,12 @@ jobs:
       - name: Format check
         run: uv run --all-groups ruff format --check .
 
+      - name: Spell check
+        run: uv run --all-groups codespell .
+
+      - name: Ty check
+        run: uv run --all-groups ty check
+
       - name: Type check
         run: uv run --all-groups basedpyright copybarista scripts tests
 

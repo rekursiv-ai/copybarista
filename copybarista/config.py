@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import json
-import tomllib
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal, Protocol, cast
 
+import json
+import tomllib
+
 from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import validate_pattern
+
 
 TransformType = Literal["replace", "strip_block"]
 DEFAULT_GIT_BRANCH: Final = "main"

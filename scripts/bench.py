@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from statistics import median
+
 import argparse
 import json
 import platform as platform_lib
@@ -9,9 +13,6 @@ import shutil
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from statistics import median
 
 from copybarista.config import load_config
 from copybarista.destinations import write_folder_destination

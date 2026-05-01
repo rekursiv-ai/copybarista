@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
+
+import shutil
 
 import pytest
 
@@ -17,6 +18,7 @@ from copybarista.config import (
 from copybarista.errors import ExportError
 from copybarista.git import export_git, write_git_destination
 from copybarista.workflow import WorkflowRunner
+
 
 pytestmark = [
     pytest.mark.integration,

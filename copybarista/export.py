@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import tempfile
 import time
-from pathlib import Path
 
 from copybarista.config import WorkflowConfig
 from copybarista.destinations import write_folder_destination

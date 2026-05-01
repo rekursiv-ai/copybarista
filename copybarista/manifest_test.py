@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import hashlib
 import json
-from pathlib import Path
 
 from copybarista.manifest import ExportManifest, file_entry
 

@@ -7,11 +7,12 @@ constructs with explicit configuration errors.
 
 from __future__ import annotations
 
-import ast
-import textwrap
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, cast
+
+import ast
+import textwrap
 
 from copybarista.config import (
     DEFAULT_GIT_BRANCH,
@@ -21,6 +22,7 @@ from copybarista.config import (
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
+
 
 SUPPORTED_WORKFLOW_KEYS: Final = {
     "name",

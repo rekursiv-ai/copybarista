@@ -6,6 +6,8 @@
 
 - [ ] `ruff check`
 - [ ] `ruff format --check`
+- [ ] `codespell`
+- [ ] `ty check`
 - [ ] `basedpyright`
 - [ ] `pytest`
 

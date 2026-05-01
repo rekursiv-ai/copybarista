@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import os
-from pathlib import Path
 
 import pytest
 
 from scripts import bench
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

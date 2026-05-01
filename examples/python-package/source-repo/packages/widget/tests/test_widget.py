@@ -1,7 +1,8 @@
 """Tests that show source imports before Copybarista rewrites them."""
 
-import packages.widget.widget as widget_module
 from packages.widget.widget import label
+
+import packages.widget.widget as widget_module
 
 
 def test_label() -> None:
