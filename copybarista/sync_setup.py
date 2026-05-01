@@ -10,6 +10,8 @@ import json
 import shlex
 import tomllib
 
+import yaml
+
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
 
@@ -31,11 +33,30 @@ DEFAULT_EXCLUDES = (
     "copy.barista.toml",
 )
 CONTROL_CHAR_BOUND = 32
+DEFAULT_SYNC_USER_NAME = "copybarista"
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SyncSettings:
-    """Reusable sync settings for one package."""
+    """Reusable sync settings for one package.
+
+    Attributes:
+      package_name: Package identifier used for config and branch defaults.
+      sync_label: Human-readable package name used in PR text.
+      source_root: Source repository path exported as the public tree.
+      public_repo: Public repository in ``owner/name`` form.
+      source_repo: Source repository in ``owner/name`` form.
+      copybarista_project_path: Source path containing the Copybarista project.
+      smoke_import: Import target used to validate the exported package.
+      type_check_targets: Paths passed to source-side basedpyright.
+      forbidden_pr_text: Public PR title/body terms rejected before export.
+      sync_user_name: Commit author name for generated sync commits.
+      sync_user_email: Commit author email for generated sync commits.
+      export_branch_prefix: Optional source-to-public branch prefix.
+      import_branch_prefix: Optional public-to-source branch prefix.
+
+    """
 
     package_name: str
     sync_label: str
@@ -46,8 +67,8 @@ class SyncSettings:
     smoke_import: str
     type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
-    sync_user_name: str = "copybarista"
-    sync_user_email: str = "copybarista@example.com"
+    sync_user_name: str = DEFAULT_SYNC_USER_NAME
+    sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
     export_branch_prefix: str = ""
     import_branch_prefix: str = ""
 
@@ -68,8 +89,22 @@ class SyncSettings:
 
 
 def load_sync_settings(path: Path) -> SyncSettings:
-    """Load and validate package sync settings from TOML."""
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    """Load and validate package sync settings from TOML.
+
+    Args:
+      path: Path to ``copybarista.sync.toml``.
+
+    Returns:
+      settings: Validated sync settings.
+
+    Raises:
+      ConfigError: If the TOML is malformed or sync settings are invalid.
+
+    """
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as err:
+        raise ConfigError(f"Cannot read sync config {path}: {err}") from err
     sync = raw.get("sync", {})
     if not isinstance(sync, dict):
         raise ConfigError("copybarista.sync.toml must contain a [sync] table.")
@@ -84,10 +119,14 @@ def load_sync_settings(path: Path) -> SyncSettings:
         smoke_import=_required_str(sync, "smoke_import"),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
-        sync_user_name=_required_str(sync, "sync_user_name"),
-        sync_user_email=_required_str(sync, "sync_user_email"),
-        export_branch_prefix=_required_str(sync, "export_branch_prefix"),
-        import_branch_prefix=_required_str(sync, "import_branch_prefix"),
+        sync_user_name=_optional_str(
+            sync, "sync_user_name", default=DEFAULT_SYNC_USER_NAME
+        ),
+        sync_user_email=_optional_str(
+            sync, "sync_user_email", default=DEFAULT_SYNC_USER_EMAIL
+        ),
+        export_branch_prefix=_optional_str(sync, "export_branch_prefix", default=""),
+        import_branch_prefix=_optional_str(sync, "import_branch_prefix", default=""),
     )
     _validate_settings(settings)
     return settings
@@ -96,7 +135,20 @@ def load_sync_settings(path: Path) -> SyncSettings:
 def write_sync_scaffold(
     *, root: Path, settings: SyncSettings, force: bool = False
 ) -> list[Path]:
-    """Write reusable package sync scaffolding into a package root."""
+    """Write reusable package sync scaffolding into a package root.
+
+    Args:
+      root: Package root where sync files are written.
+      settings: Sync settings used to render generated files.
+      force: Whether to overwrite existing sync files.
+
+    Returns:
+      paths: Paths written by the scaffold generator.
+
+    Raises:
+      ConfigError: If settings are invalid or files exist without ``force``.
+
+    """
     _validate_settings(settings)
     files = {
         root / "copy.barista.toml": copy_barista_toml(settings),
@@ -119,7 +171,15 @@ def write_sync_scaffold(
 
 
 def check_sync_config(*, root: Path) -> None:
-    """Validate that reusable sync scaffolding is present and consistent."""
+    """Validate that reusable sync scaffolding is present and consistent.
+
+    Args:
+      root: Package root containing generated sync files.
+
+    Raises:
+      ConfigError: If required files are missing or inconsistent.
+
+    """
     missing = [
         str(path.relative_to(root))
         for path in _required_paths(root)
@@ -128,7 +188,6 @@ def check_sync_config(*, root: Path) -> None:
     if missing:
         raise ConfigError("Missing sync files: " + ", ".join(missing))
     settings = load_sync_settings(root / "copybarista.sync.toml")
-    load_config(root / "copy.barista.toml")
     config = load_config(root / "copy.barista.toml")
     workflow_text = (root / ".github" / "workflows" / "sync-to-source.yml").read_text(
         encoding="utf-8"
@@ -136,13 +195,19 @@ def check_sync_config(*, root: Path) -> None:
     for path in DEFAULT_EXCLUDES:
         if path not in config.files.exclude:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
-    for text in _expected_import_workflow_text(settings):
-        if text not in workflow_text:
-            raise ConfigError(f"sync-to-source.yml must reference {text}.")
+    _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
 
 
 def copy_barista_toml(settings: SyncSettings) -> str:
-    """Return a baseline Copybarista export config."""
+    """Return a baseline Copybarista export config.
+
+    Args:
+      settings: Sync settings used to render the export config.
+
+    Returns:
+      toml: Rendered ``copy.barista.toml`` contents.
+
+    """
     excludes = "\n".join(f"  {_toml_str(path)}," for path in DEFAULT_EXCLUDES)
     return f"""[workflow]
 name = {_toml_str(settings.package_name)}
@@ -158,7 +223,18 @@ exclude = [
 
 
 def sync_toml(settings: SyncSettings) -> str:
-    """Return package sync metadata consumed by workflows and docs."""
+    """Return package sync metadata consumed by workflows and docs.
+
+    Args:
+      settings: Sync settings used to render sync metadata.
+
+    Returns:
+      toml: Rendered ``copybarista.sync.toml`` contents.
+
+    Raises:
+      ConfigError: If settings are invalid.
+
+    """
     _validate_settings(settings)
     targets = "\n".join(
         f"  {_toml_str(target)}," for target in settings.type_check_targets
@@ -188,7 +264,18 @@ forbidden_pr_text = [
 
 
 def export_workflow(settings: SyncSettings) -> str:
-    """Return the source-repository export workflow for one package."""
+    """Return the source-repository export workflow for one package.
+
+    Args:
+      settings: Sync settings used to render the export workflow.
+
+    Returns:
+      yaml_text: Rendered GitHub Actions workflow contents.
+
+    Raises:
+      ConfigError: If settings are invalid.
+
+    """
     _validate_settings(settings)
     type_targets = _shell_lines(
         [
@@ -259,7 +346,18 @@ jobs:
 
 
 def import_workflow(settings: SyncSettings) -> str:
-    """Return the reusable public repository import workflow."""
+    """Return the reusable public repository import workflow.
+
+    Args:
+      settings: Sync settings used to render the import workflow.
+
+    Returns:
+      yaml_text: Rendered GitHub Actions workflow contents.
+
+    Raises:
+      ConfigError: If settings are invalid.
+
+    """
     _validate_settings(settings)
     type_targets = _shell_lines(
         [
@@ -313,14 +411,14 @@ jobs:
       (
         github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
-        !startsWith(github.event.pull_request.head.ref, '{settings.export_prefix}')
+        github.event.pull_request.head.ref != {_github_expr_str(f"{settings.export_prefix}main")}
       ) ||
       (
         github.event_name == 'push' &&
         github.event.before != '0000000000000000000000000000000000000000' &&
-        github.event.head_commit.author.email != '{settings.sync_user_email}' &&
-        !contains(github.event.head_commit.message, '{settings.export_prefix}') &&
-        !contains(github.event.head_commit.message, '{settings.sync_label} export branch:')
+        github.event.head_commit.author.email != {_github_expr_str(settings.sync_user_email)} &&
+        !contains(github.event.head_commit.message, {_github_expr_str(settings.export_prefix)}) &&
+        !contains(github.event.head_commit.message, {_github_expr_str(f"{settings.sync_label} export branch:")})
       )
 
     steps:
@@ -447,24 +545,115 @@ def _required_paths(root: Path) -> tuple[Path, ...]:
     )
 
 
-def _expected_import_workflow_text(settings: SyncSettings) -> tuple[str, ...]:
-    return (
-        settings.source_repo,
-        settings.source_root,
-        settings.copybarista_project_path,
-        settings.import_prefix,
-        settings.sync_label,
-        "sync_import_change.py",
-        "--open-pr false",
-        "--open-pr-only",
-        "GH_TOKEN",
-    )
+def _validate_import_workflow_yaml(
+    *, workflow_text: str, settings: SyncSettings
+) -> None:
+    try:
+        parsed: object = yaml.safe_load(workflow_text)
+    except yaml.YAMLError as err:
+        raise ConfigError(f"Cannot read sync workflow: {err}") from err
+    if not isinstance(parsed, dict):
+        raise ConfigError("sync-to-source.yml must be a YAML mapping.")
+    workflow = cast("dict[str, object]", parsed)
+    jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
+    job = _yaml_mapping(jobs.get("import-change"), "jobs.import-change")
+    env = _yaml_mapping(job.get("env"), "jobs.import-change.env")
+    expected_env = {
+        "TARGET_REPO": settings.source_repo,
+        "TARGET_PROJECT_PATH": settings.source_root,
+        "COPYBARISTA_TOOL_PROJECT_PATH": settings.copybarista_project_path,
+        "COPYBARISTA_IMPORT_BRANCH_PREFIX": settings.import_prefix,
+        "COPYBARISTA_SYNC_LABEL": settings.sync_label,
+        "COPYBARISTA_SYNC_USER_NAME": settings.sync_user_name,
+        "COPYBARISTA_SYNC_USER_EMAIL": settings.sync_user_email,
+    }
+    for key, expected in expected_env.items():
+        if env.get(key) != expected:
+            raise ConfigError(
+                f"sync-to-source.yml jobs.import-change.env.{key} must be {expected}."
+            )
+    job_if = job.get("if", "")
+    if not isinstance(job_if, str):
+        raise ConfigError("sync-to-source.yml jobs.import-change.if must be a string.")
+    for text in (
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        f"github.event.pull_request.head.ref != {_github_expr_str(f'{settings.export_prefix}main')}",
+        f"github.event.head_commit.author.email != {_github_expr_str(settings.sync_user_email)}",
+        f"!contains(github.event.head_commit.message, {_github_expr_str(settings.export_prefix)})",
+        f"!contains(github.event.head_commit.message, {_github_expr_str(f'{settings.sync_label} export branch:')})",
+    ):
+        if text not in job_if:
+            raise ConfigError(
+                f"sync-to-source.yml jobs.import-change.if must contain {text}."
+            )
+    steps = _yaml_list(job.get("steps"), "jobs.import-change.steps")
+    import_step = _workflow_step_run(steps, "Import public tree into target repository")
+    pr_step = _workflow_step_run(steps, "Open or update target import PR")
+    for run, texts in (
+        (
+            import_step,
+            (
+                '--target-repo "$TARGET_REPO"',
+                '--project-path "$TARGET_PROJECT_PATH"',
+                '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
+                '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
+                "--open-pr false",
+            ),
+        ),
+        (
+            pr_step,
+            (
+                '--target-repo "$TARGET_REPO"',
+                '--project-path "$TARGET_PROJECT_PATH"',
+                '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
+                '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
+                "--open-pr-only",
+            ),
+        ),
+    ):
+        for text in texts:
+            if text not in run:
+                raise ConfigError(f"sync-to-source.yml must reference {text}.")
+    step_text = "\n".join(str(step) for step in steps)
+    for text in ("sync_import_change.py", "GH_TOKEN"):
+        if text not in step_text:
+            raise ConfigError(f"sync-to-source.yml must reference {text}.")
+
+
+def _workflow_step_run(steps: list[object], name: str) -> str:
+    for step in steps:
+        step_map = _yaml_mapping(step, f"jobs.import-change.steps.{name}")
+        if step_map.get("name") == name:
+            run = step_map.get("run")
+            if not isinstance(run, str):
+                raise ConfigError(f"sync-to-source.yml step {name} must define run.")
+            return run
+    raise ConfigError(f"sync-to-source.yml must define step {name}.")
+
+
+def _yaml_mapping(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"sync-to-source.yml {name} must be a YAML mapping.")
+    return cast("dict[str, object]", value)
+
+
+def _yaml_list(value: object, name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ConfigError(f"sync-to-source.yml {name} must be a YAML list.")
+    return cast("list[object]", value)
 
 
 def _required_str(sync: dict[str, object], key: str) -> str:
     value = sync.get(key, "")
     if not isinstance(value, str) or not value:
         raise ConfigError(f"copybarista.sync.toml must define sync.{key}.")
+    return value
+
+
+def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
+    value = sync.get(key, default)
+    if not isinstance(value, str):
+        raise ConfigError(f"copybarista.sync.toml sync.{key} must be a string.")
     return value
 
 
@@ -542,6 +731,10 @@ def _toml_str(value: str) -> str:
 
 def _yaml_str(value: str) -> str:
     return json.dumps(value)
+
+
+def _github_expr_str(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _sh(value: str) -> str:
