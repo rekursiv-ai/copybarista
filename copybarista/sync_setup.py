@@ -30,7 +30,6 @@ DEFAULT_EXCLUDES = (
     "dist/**",
     "htmlcov/**",
     ".coverage",
-    "copy.barista.toml",
 )
 CONTROL_CHAR_BOUND = 32
 DEFAULT_SYNC_USER_NAME = "copybarista"
@@ -310,6 +309,7 @@ jobs:
       EXPORT_BRANCH: {_yaml_str(f"{settings.export_prefix}main")}
       SYNC_LABEL: {_yaml_str(settings.sync_label)}
       FORBIDDEN_PR_TEXT: {_yaml_str(forbidden)}
+      COPYBARISTA_AUTO_MERGE: ${{{{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}}}
 
     steps:
       - uses: actions/checkout@v4
@@ -341,7 +341,8 @@ jobs:
             --pr-body {_sh(f"Updates the generated {settings.sync_label} public repository export.")} \\
             --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \\
 {type_targets} \\
-            --smoke-import {_sh(settings.smoke_import)}
+            --smoke-import {_sh(settings.smoke_import)} \\
+            --auto-merge="$COPYBARISTA_AUTO_MERGE"
 """
 
 
