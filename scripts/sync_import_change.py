@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -22,6 +23,8 @@ DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME = "copybarista"
 CONTROL_CHAR_BOUND = 32
+GITHUB_RETRY_ATTEMPTS = 3
+GITHUB_RETRY_DELAY_SEC = 2
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -270,7 +273,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
 
     title = f"Import Copybarista public changes {request.public_sha[:12]}"
     if _gh_pr_exists(branch=branch, repo=request.target_repo, cwd=request.target_dir):
-        _run(
+        _run_gh(
             [
                 "gh",
                 "pr",
@@ -286,7 +289,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             cwd=request.target_dir,
         )
         return
-    _run(
+    _run_gh(
         [
             "gh",
             "pr",
@@ -362,7 +365,7 @@ def _git_head(*, cwd: Path) -> str:
 
 def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
     """Return whether GitHub has an open PR for a branch."""
-    result = _run(
+    result = _run_gh(
         [
             "gh",
             "pr",
@@ -453,6 +456,54 @@ def _run(
     if check and result.returncode != 0:
         raise SystemExit(result.returncode)
     return result
+
+
+def _run_gh(
+    argv: list[str],
+    *,
+    cwd: Path,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a GitHub CLI command with retries for transient API failures."""
+    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
+        result = _run(argv, cwd=cwd, check=False, capture=True)
+        if result.returncode == 0:
+            if not capture:
+                _write_process_output(result)
+            return result
+        if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
+            _write_process_output(result)
+            raise SystemExit(result.returncode)
+        _log(
+            "GitHub CLI command failed with a transient API error; "
+            f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
+            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
+        )
+        time.sleep(GITHUB_RETRY_DELAY_SEC)
+    raise AssertionError("unreachable")
+
+
+def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether a GitHub CLI failure is likely transient."""
+    output = f"{result.stdout}\n{result.stderr}".casefold()
+    return any(
+        token in output
+        for token in (
+            "http 5",
+            "timeout",
+            "timed out",
+            "try resubmitting",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
+    """Replay captured process output to the workflow log."""
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
 
 
 def _log(message: str) -> None:
