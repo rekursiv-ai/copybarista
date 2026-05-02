@@ -562,18 +562,32 @@ class _CopyBaraSkyParser:
         paths = _replace_paths(kwargs.get("paths"))
         multiline = kwargs.get("multiline", False)
         if multiline:
-            if after:
-                raise ConfigError("multiline core.replace is only supported for strip")
-            if len(paths.include) != 1 or paths.exclude:
-                raise ConfigError("multiline core.replace supports exactly one path")
-            start, end = _strip_markers(before)
-            return Transform(
-                id="",
-                type="strip_block",
-                path=paths.include[0],
-                start=start,
-                end=end,
-            )
+            if not before:
+                raise ConfigError("core.replace.before must be non-empty")
+            if paths.exclude:
+                raise ConfigError("core.replace paths must not have exclude patterns")
+            if not after and _looks_like_strip_block(before):
+                if len(paths.include) != 1:
+                    raise ConfigError("multiline strip replacement supports one path")
+                start, end = _strip_markers(before)
+                return Transform(
+                    id="",
+                    type="strip_block",
+                    path=paths.include[0],
+                    start=start,
+                    end=end,
+                    inclusive=True,
+                )
+            return [
+                Transform(
+                    id="",
+                    type="replace",
+                    path=path,
+                    before=before,
+                    after=after,
+                )
+                for path in paths.include
+            ]
         if "\n" in before:
             raise ConfigError(
                 "core.replace before containing newlines requires multiline = True"
@@ -775,6 +789,20 @@ def _strip_prefixes(patterns: tuple[str, ...], source_root: str) -> tuple[str, .
 def _strip_markers(before: str) -> tuple[str, str]:
     """Infer strip block markers from a multiline replacement string."""
     lines = [line for line in before.splitlines() if line.strip()]
+    start = lines[0]
+    if before.startswith("\n"):
+        start = "\n" + start
+    end = lines[-1]
+    suffix = before[before.rfind(end) + len(end) :]
+    if suffix.startswith("\n\n"):
+        end += "\n\n"
+    return start, end
+
+
+def _looks_like_strip_block(before: str) -> bool:
+    """Return whether a multiline replacement is a marker-delimited strip."""
+    lines = [line for line in before.splitlines() if line.strip()]
     if len(lines) < STRIP_MARKER_LINE_COUNT:
-        raise ConfigError("multiline strip replacement needs start and end markers")
-    return lines[0], lines[-1]
+        return False
+    marker_text = "\n".join((lines[0], lines[-1]))
+    return "copybarista:" in marker_text or "copybara:" in marker_text

@@ -32,9 +32,9 @@ def test_main_accepts_generic_project_validation_args(
     sync_import_change.main(
         [
             "--project-path",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--copybarista-project-path",
-            "loop/experimental/copybarista",
+            "tools/copybarista",
             "--public-base-ref",
             "base",
             "--public-head-ref",
@@ -46,8 +46,8 @@ def test_main_accepts_generic_project_validation_args(
         ]
     )
 
-    assert captured[0].project_path == Path("loop/lib/configgle")
-    assert captured[0].copybarista_project_path == Path("loop/experimental/copybarista")
+    assert captured[0].project_path == Path("packages/configgle")
+    assert captured[0].copybarista_project_path == Path("tools/copybarista")
     assert captured[0].type_check_targets == ("configgle", "tests")
 
 

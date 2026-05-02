@@ -48,9 +48,11 @@ glob syntax follows a documented Java-style subset for compatibility with
 escaped literal characters. Config validation still rejects unsafe path forms
 so exports fail early instead of producing surprising file sets.
 
-Patterns are always evaluated after `workflow.source_root` or `core.move` has
-selected the subtree. That means transform paths and manifest destinations are
-root-relative to the exported package, not to the original monorepo checkout.
+Primary file patterns are evaluated after `workflow.source_root` or `core.move`
+has selected the subtree. `[[files.copy]]` entries are evaluated relative to
+their own repo-relative `source` and then assembled into explicit public
+destinations. Transform paths and manifest destinations are root-relative to
+the exported package, not to the original monorepo checkout.
 
 ## Transforms
 
@@ -59,16 +61,41 @@ Transforms mutate the staged tree and report how many files changed.
 `apply_transforms` dispatches the supported transform types directly:
 
 - `replace`: literal UTF-8 replacement.
+- `ruff_format`: deterministic Ruff fixes and formatting for generated Python.
 - `strip_block`: removes a marker-delimited text block.
+- `move`: relocates a staged file or directory after assembly.
 
 `TransformReport.changed` counts changed files, not replacement occurrences.
 If occurrence counts become useful, add a separate field rather than changing
 this meaning.
 
+`ruff_format` is intentionally a closed transform type, not a shell command
+hook. Export configs often rewrite imports, and generated import order should
+be part of the staged tree before final manifest hashing. Keeping that behavior
+inside the transform model prevents public validation from mutating the tree.
+
+`move` is kept as a transform rather than folded into file selection because it
+describes a public tree rewrite after assembly. This matters for projects such
+as Configgle, where a private compatibility stub is selected from the source
+tree and then moved to its public package location. Manifest generation tracks
+the post-transform destination so exported file hashes describe the actual
+published tree.
+
 Required transforms are release gates. A required transform that matches no
 files or finds no replacement text fails the export because a silent no-op
 usually means the source tree drifted away from the expected public shape.
 Optional transforms should be used only for known transitional files.
+
+## Leak Checks
+
+Leak checks are read-only validation over the completed staged tree. They run
+after transforms and before destination writers, so one policy protects folder
+export, Git export, and sync workflows. This is where projects reject
+source-only paths, leftover private markers, monorepo import names, local
+developer paths, and other content that should never reach the public tree.
+
+Leak-check errors identify the rule, path, and line number without printing the
+matched text. That keeps CI output useful without copying secrets into logs.
 
 ## Destinations
 

@@ -391,6 +391,37 @@ def test_rejects_sky_replace_multiline_without_multiline_true(tmp_path: Path):
         load_config(config_path)
 
 
+def test_loads_sky_multiline_literal_replace(tmp_path: Path):
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.replace(
+                    before = "old\\nvalue",
+                    after = "new\\nvalue",
+                    multiline = True,
+                    paths = glob(["a.py", "b.py"]),
+                ),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert [transform.path for transform in config.transforms] == ["a.py", "b.py"]
+    assert all(transform.type == "replace" for transform in config.transforms)
+    assert config.transforms[0].before == "old\nvalue"
+    assert config.transforms[0].after == "new\nvalue"
+
+
 def test_translate_outputs_copybarista_toml(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -548,6 +579,47 @@ export_workflow(
     assert config.transforms[0].type == "strip_block"
     assert config.transforms[0].start == "<!-- copybarista:strip:start -->"
     assert config.transforms[0].end == "<!-- copybarista:strip:end -->"
+    assert config.transforms[0].inclusive
+
+
+def test_multiline_strip_translation_preserves_copybara_block_boundaries(
+    tmp_path: Path,
+):
+    config_path = _write_sky(
+        tmp_path,
+        '''\
+core.workflow(
+    name = "export",
+    origin = folder.origin(),
+    destination = folder.destination(),
+    origin_files = glob(["pkg/**"]),
+    destination_files = glob(["**"]),
+    authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+    mode = "SQUASH",
+    transformations = [
+        core.move("pkg", ""),
+        core.replace(
+            before = """
+<!-- copybarista:strip:start -->
+internal
+<!-- copybarista:strip:end -->
+
+""",
+            after = "",
+            multiline = True,
+            paths = glob(["README.md"]),
+        ),
+    ],
+)
+''',
+    )
+
+    config = load_config(config_path)
+
+    assert config.transforms[0].type == "strip_block"
+    assert config.transforms[0].start == "\n<!-- copybarista:strip:start -->"
+    assert config.transforms[0].end == "<!-- copybarista:strip:end -->\n\n"
+    assert config.transforms[0].inclusive
 
 
 def test_rejects_unsupported_sky_option(tmp_path: Path):
@@ -618,18 +690,8 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
         ("transform = core.replace(before='old', after='new')\n", "paths"),
         (
             "transform = core.replace(before='old', after='new', "
-            "multiline=True, paths=glob(['a.txt']))\n",
-            "multiline",
-        ),
-        (
-            "transform = core.replace(before='old', after='new', "
             "paths=glob(['a.txt']), first_only=True)\n",
             "Unsupported argument",
-        ),
-        (
-            "transform = core.replace(before='only one marker', after='', "
-            "multiline=True, paths=glob(['README.md']))\n",
-            "start and end markers",
         ),
         (
             "author = authoring.pass_thru('Missing brackets')\n",

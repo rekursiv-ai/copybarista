@@ -70,12 +70,13 @@ review what enters the private or monorepo source of truth.
 
 ## Why not just use an Alternative Tool?
 
-There are mainly two other approaches that we found most closely can solve the problem:
+Two adjacent tools solve related parts of this problem:
 
-- Git subtree and `git-filter-repo` with custom tooling for code transformations
-- Copybara, which is a very powerful, mature tool for broad migration, using a Java-based runtime
+- Git subtree and `git-filter-repo` with custom tooling for code transformations.
+- Copybara, a mature general-purpose migration tool with a Java-based runtime.
 
-We recommend starting with the two above approaches first if it matches your requirements (see table below).
+Start with those tools first when their tradeoffs match your requirements, see
+the table below for the specific differences.
 
 Copybarista is intentionally narrowly scoped: it's a Python program which
 publishes clean OSS packages from private or monorepo sources while rewriting
@@ -176,7 +177,8 @@ copybarista export copy.barista.toml /path/to/source \
 
 The `source_ref` argument is the checkout root. `workflow.source_root` is
 resolved relative to that root, and exported files land at the destination
-root.
+root. Use `[[files.copy]]` when a public package should also include selected
+shared files from elsewhere in the same checkout.
 
 ## Common Workflows
 
@@ -189,10 +191,10 @@ package can keep public:
 copybarista init-sync . \
   --package-name configgle \
   --sync-label Configgle \
-  --source-root loop/lib/configgle \
-  --public-repo rekursiv-ai/configgle \
-  --source-repo rekursiv-ai/loop \
-  --copybarista-project-path loop/experimental/copybarista \
+  --source-root packages/configgle \
+  --public-repo example/configgle \
+  --source-repo example/source \
+  --copybarista-project-path tools/copybarista \
   --smoke-import configgle \
   --type-check-target configgle \
   --type-check-target tests
@@ -314,7 +316,9 @@ copybarista validate copy.barista.toml
 - Include/exclude globs using `*`, `**`, `?`, braces, character classes, and
   escaped literals.
 - Source-root selection that moves the selected subtree to destination root.
+- Multi-source assembly with `[[files.copy]]` for selected shared files.
 - Literal whole-file text replacements.
+- Staged file or directory moves for public tree layout adjustments.
 - Marker-delimited block stripping for exact file paths.
 - Native TOML configs for Copybarista workflows.
 - Direct export from supported `copy.bara.sky` workflows via internal
@@ -336,6 +340,7 @@ copybarista translate COPY_BARA_SKY [--workflow NAME] [--output CONFIG]
 copybarista export CONFIG SOURCE_REF [--workflow NAME] \
   [--folder-dir DIR] [--force] [--json]
 copybarista publish-git CONFIG SOURCE_REF [--workflow NAME] [--json]
+copybarista check-leaks CONFIG ROOT [--workflow NAME]
 copybarista import-change CONFIG --public-base DIR --public-head DIR \
   --source-base DIR --destination DIR [--workflow NAME] [--no-verify] [--json]
 copybarista init-sync ROOT --package-name NAME --source-root PATH \
@@ -365,6 +370,8 @@ destination paths.
 
 `--workflow` selects a named workflow from `copy.bara.sky`; `publish-git`
 defaults to `export_git`, and other commands default to `export`.
+`check-leaks` runs the config's `[leak_check]` policy against an existing
+exported tree.
 
 ## Bidirectional Sync Model
 
@@ -419,8 +426,11 @@ repository. The main protections are:
 - Explicit file selection: only configured paths under `source_root` are
   exported, and source-only paths such as private docs, local config, caches,
   build outputs, and release tooling can be excluded.
-- Deterministic transforms: private blocks, imports, and package names are
-  rewritten from checked-in config rather than ad hoc scripts.
+- Deterministic transforms: private blocks, imports, package names, and
+  generated Python formatting are handled from checked-in config rather than ad
+  hoc scripts.
+- Leak checks: optional config rules reject forbidden paths and forbidden text
+  in the transformed export tree before folder or Git destinations are mutated.
 - Release-tree checks: public CI can reject private directories, source-only
   config files, generated caches, bytecode, build artifacts, nested VCS
   metadata, and unstripped private README markers before release.
@@ -449,10 +459,13 @@ Copybarista config, and then runs the same export engine.
 | Workflow mode | `mode = "squash"` | `mode = "SQUASH"` | Change/history modes fail |
 | Source checkout | CLI `SOURCE_REF` | `folder.origin()` | Remote origins fail |
 | Root move | `source_root` | `core.move(ROOT, "")` | Non-root destinations fail |
+| Extra source files | `[[files.copy]]` | Not imported | Native TOML only |
 | File globs | `include` / `exclude` | `glob(..., exclude=...)` | Unsupported glob constructs fail |
 | Folder export | `[destination.folder]` | `folder.destination()` | Needs `--force` for existing folders |
 | Git export | `[destination.git]` | `git.destination(...)` | Single-commit export |
 | Literal replace | `type = "replace"` | `core.replace(...)` | Regex/options fail |
+| Staged move | `type = "move"` | Not imported | Native TOML only |
+| Ruff formatting | `type = "ruff_format"` | Not imported | Runs `ruff check --fix --no-cache` and `ruff format --no-cache` |
 | Strip block | `type = "strip_block"` | Empty multiline replace | Marker form only |
 | Arbitrary logic | Not supported | Rejected | No Starlark execution |
 | Copybara review flows | Not supported | Rejected | Use local `import-change` |
@@ -477,6 +490,7 @@ positional `git.destination("url", push="main")`, omitted `origin_files` and
 | Assemble a public tree from selected files and directories | :white_check_mark: Yes: include/exclude globs select the exported tree | :white_check_mark: Yes: broader file-selection model | :warning: Partial: possible with path filters, but awkward for multiple locations |
 | Keep full source history | :x: No: squash-style export is the focus | :white_check_mark: Yes | :white_check_mark: Yes: this is where Git subtree and `git-filter-repo` fit best |
 | Rewrite absolute Python imports for the public package | :white_check_mark: Yes: supported literal replacements | :white_check_mark: Yes: broader transform model | :x: No: Git leaves file contents unchanged |
+| Normalize generated Python after rewrites | :white_check_mark: Yes: optional Ruff transform | :warning: Partial: use custom workflow commands | :x: No: Git leaves file contents unchanged |
 | Strip private README sections, generated blocks, or internal names | :white_check_mark: Yes: block stripping and release-tree checks | :white_check_mark: Yes: broader transform model | :x: No: requires custom scripts and leak checks |
 | Leave private files out of the public repo | :white_check_mark: Yes: explicit include/exclude globs plus export validation | :white_check_mark: Yes: broader file-selection model | :warning: Partial: path filtering helps, but deeper cleanup is custom |
 | Import public fixes back into the source checkout | :white_check_mark: Yes: reverse import verifies by re-exporting | :white_check_mark: Yes: supports bidirectional repository movement | :warning: Partial: subtree can move history, but not verify semantic rewrites |
@@ -502,7 +516,6 @@ The following are intentional non-goals until a real workflow needs them:
 - Regex-template transforms beyond the literal replacement subset.
 - A general transform plugin API.
 - External implementation details such as cache directory layout.
-
 ## Documentation
 
 - [Tutorial](https://github.com/rekursiv-ai/copybarista/blob/main/docs/tutorial.md):
@@ -525,8 +538,8 @@ python -B scripts/check_release_tree.py . --allow-root-git
 uv sync --all-groups
 uv run --all-groups pre-commit install
 uv run --all-groups pre-commit run --all-files
-uv run --all-groups ruff check .
-uv run --all-groups ruff format --check .
+uv run --all-groups ruff check --no-fix --no-cache .
+uv run --all-groups ruff format --check --no-cache .
 uv run --all-groups codespell .
 uv run --all-groups ty check
 uv run --all-groups basedpyright copybarista tests scripts
@@ -545,7 +558,9 @@ Run the local benchmark helper when changing file selection, glob matching, or
 copy logic:
 
 ```bash
-uv run python scripts/bench.py copy.barista.toml /path/to/source \
+uv run python scripts/bench.py \
+  examples/python-package/source-repo/copy.barista.toml \
+  examples/python-package/source-repo \
   --runs 5 \
   --json
 ```

@@ -23,10 +23,10 @@ def _settings(**kwargs: Any) -> SyncSettings:
     values: dict[str, Any] = {
         "package_name": "configgle",
         "sync_label": "Configgle",
-        "source_root": "loop/lib/configgle",
-        "public_repo": "rekursiv-ai/configgle",
-        "source_repo": "rekursiv-ai/loop",
-        "copybarista_project_path": "loop/experimental/copybarista",
+        "source_root": "packages/configgle",
+        "public_repo": "example/configgle",
+        "source_repo": "example/source",
+        "copybarista_project_path": "tools/copybarista",
         "smoke_import": "configgle",
         "type_check_targets": ("configgle", "tests"),
         "forbidden_pr_text": ("loop",),
@@ -57,13 +57,14 @@ def test_sync_metadata_stores_package_name_as_data(tmp_path: Path):
     assert 'import_branch_prefix = "configgle/import/"' in text
 
 
-def test_generated_export_config_keeps_public_sync_files(tmp_path: Path):
+def test_generated_export_config_blocks_source_sync_files(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
     text = (tmp_path / "copy.barista.toml").read_text(encoding="utf-8")
 
-    assert '"copy.barista.toml"' not in text
-    assert '"copybarista.sync.toml"' not in text
+    assert '"copy.barista.toml"' in text
+    assert '"copybarista.sync.toml"' in text
+    assert "[[leak_check.forbidden_path]]" in text
 
 
 def test_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
@@ -95,8 +96,8 @@ def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
     workflow = tmp_path / ".github/workflows/sync-to-source.yml"
     workflow.write_text(
         workflow.read_text(encoding="utf-8").replace(
-            'TARGET_REPO: "rekursiv-ai/loop"',
-            'TARGET_REPO: "wrong/repo"',
+            "${{ vars.COPYBARISTA_SOURCE_REPO }}",
+            "wrong/repo",
         ),
         encoding="utf-8",
     )
@@ -147,10 +148,10 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
         [sync]
         package_name = "configgle"
         sync_label = "Configgle"
-        source_root = "loop/lib/configgle"
+        source_root = "packages/configgle"
         public_repo = "rekursiv-ai/configgle"
-        source_repo = "rekursiv-ai/loop"
-        copybarista_project_path = "loop/experimental/copybarista"
+        source_repo = "example/source"
+        copybarista_project_path = "tools/copybarista"
         smoke_import = "configgle"
         type_check_targets = ["configgle"]
         forbidden_pr_text = []
@@ -167,7 +168,8 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.validation_python_versions == ("3.12",)
     assert settings.validation_commands == (
         "uv sync --all-groups",
-        "uv run ruff check .",
+        "uv run ruff check --no-fix --no-cache .",
+        "uv run ruff format --check --no-cache .",
         "uv run basedpyright configgle",
         "uv run pytest",
         'uv run python -c "import configgle"',
@@ -182,10 +184,10 @@ def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
         [sync]
         package_name = "configgle"
         sync_label = "Configgle"
-        source_root = "loop/lib/configgle"
+        source_root = "packages/configgle"
         public_repo = "rekursiv-ai/configgle"
-        source_repo = "rekursiv-ai/loop"
-        copybarista_project_path = "loop/experimental/copybarista"
+        source_repo = "example/source"
+        copybarista_project_path = "tools/copybarista"
         smoke_import = "configgle"
         export_branch_prefix = "configgle/export/"
         import_branch_prefix = "configgle/import/"
@@ -209,6 +211,11 @@ def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="import_branch_prefix"):
         load_sync_settings(config)
+
+
+def test_generated_workflows_reject_invalid_smoke_import():
+    with pytest.raises(ConfigError, match="smoke_import"):
+        package_validation_workflow(_settings(smoke_import="configgle; print(1)"))
 
 
 def test_package_validation_workflow_runs_configured_commands():
@@ -253,7 +260,7 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     assert '--auto-merge="$COPYBARISTA_AUTO_MERGE"' in workflow
     assert "CONFIGGLE" not in workflow
     assert "sync_configgle" not in workflow
-    assert "source/loop/experimental/copybarista/scripts/sync_export_pr.py" in workflow
+    assert "source/tools/copybarista/scripts/sync_export_pr.py" in workflow
 
 
 def test_generated_workflows_keep_readable_line_continuations():
@@ -266,8 +273,10 @@ def test_generated_workflows_keep_readable_line_continuations():
 def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     workflow = import_workflow(_settings())
 
-    assert 'TARGET_REPO: "rekursiv-ai/loop"' in workflow
-    assert 'TARGET_PROJECT_PATH: "loop/lib/configgle"' in workflow
+    assert "TARGET_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}" in workflow
+    assert (
+        "TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}" in workflow
+    )
     assert 'COPYBARISTA_IMPORT_BRANCH_PREFIX: "configgle/import/"' in workflow
     assert (
         "github.event.pull_request.head.repo.full_name == github.repository" in workflow
@@ -297,9 +306,9 @@ def test_import_workflow_escapes_github_expression_strings():
 def test_export_workflow_watches_source_and_sync_helpers():
     workflow = export_workflow(_settings())
 
-    assert '"loop/lib/configgle/**"' in workflow
-    assert '"loop/experimental/copybarista/scripts/sync_export_pr.py"' in workflow
-    assert '"loop/experimental/copybarista/scripts/sync_import_change.py"' in workflow
+    assert '"packages/configgle/**"' in workflow
+    assert '"tools/copybarista/scripts/sync_export_pr.py"' in workflow
+    assert '"tools/copybarista/scripts/sync_import_change.py"' in workflow
 
 
 def test_write_sync_scaffold_refuses_to_overwrite_without_force(tmp_path: Path):

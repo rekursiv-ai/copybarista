@@ -115,6 +115,138 @@ def test_import_root_source_root_keeps_paths_relative(tmp_path: Path):
     )
 
 
+def test_import_strips_destination_prefix_before_mapping(tmp_path: Path):
+    paths = _fixture(tmp_path, destination_prefix="demo")
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "demo" / "pkg" / "module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'prefixed'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+        )
+    )
+
+    assert result.changes[0].public == "demo/pkg/module.py"
+    assert result.changes[0].source == "internal/demo/pkg/module.py"
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == "from internal.demo import api\nVALUE = 'prefixed'\n"
+
+
+def test_import_maps_extra_copy_destination_to_source(tmp_path: Path):
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "demo"
+
+        [[files.copy]]
+        source = "shared/web"
+        destination = "demo/lib/web"
+        include = ["*.py"]
+        exclude = ["*_test.py"]
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    assert mapper.source_path("demo/lib/web/search.py") == "shared/web/search.py"
+    with pytest.raises(ImportRequestError, match="unmapped"):
+        mapper.source_path("demo/lib/web/search_test.py")
+
+
+def test_import_maps_extra_copy_file_destination_to_source(tmp_path: Path):
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[files.copy]]
+        source = "shared/json.py"
+        destination = "demo/lib/json.py"
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    assert mapper.source_path("demo/lib/json.py") == "shared/json.py"
+
+
+def test_import_public_edit_maps_moved_path_to_original_source(tmp_path: Path):
+    source_base = tmp_path / "source-base"
+    moved_source = source_base / "internal/demo/_stubs/pkg"
+    moved_source.mkdir(parents=True)
+    (moved_source / "__init__.py").write_text("VALUE = 'base'\n", encoding="utf-8")
+
+    public_base = tmp_path / "public-base"
+    public_pkg = public_base / "pkg"
+    public_pkg.mkdir(parents=True)
+    (public_pkg / "__init__.py").write_text("VALUE = 'base'\n", encoding="utf-8")
+
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/__init__.py").write_text("VALUE = 'head'\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "move"
+        path = "_stubs/pkg"
+        destination = "pkg"
+        """,
+        encoding="utf-8",
+    )
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        )
+    )
+
+    assert [(change.public, change.source) for change in result.changes] == [
+        ("pkg/__init__.py", "internal/demo/_stubs/pkg/__init__.py")
+    ]
+    assert (destination / "internal/demo/_stubs/pkg/__init__.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 'head'\n"
+    assert not (destination / "internal/demo/pkg/__init__.py").exists()
+
+
 def test_import_created_and_deleted_files(tmp_path: Path):
     paths = _fixture(tmp_path)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
@@ -614,6 +746,7 @@ def _fixture(
     tmp_path: Path,
     *,
     source_root: str = "internal/demo",
+    destination_prefix: str = "",
     include_strip_block: bool = False,
     with_transform: bool = True,
 ) -> _FixturePaths:
@@ -633,19 +766,24 @@ def _fixture(
     (source_project / "README.md").write_text(readme, encoding="utf-8")
 
     public_base = tmp_path / "public-base"
-    (public_base / "pkg").mkdir(parents=True)
-    (public_base / "pkg/module.py").write_text(
+    public_project = (
+        public_base / destination_prefix if destination_prefix else public_base
+    )
+    public_project.mkdir(parents=True)
+    (public_project / "pkg").mkdir(parents=True)
+    (public_project / "pkg/module.py").write_text(
         "from copybarista.public import api\nVALUE = 'base'\n",
         encoding="utf-8",
     )
     (public_base / "README.md").write_text("public readme\n", encoding="utf-8")
 
     config = tmp_path / "copy.barista.toml"
+    transform_path = f"{destination_prefix + '/' if destination_prefix else ''}pkg/*.py"
     replace_transform = (
-        """
+        f"""
         [[transform]]
         type = "replace"
-        path = "pkg/*.py"
+        path = "{transform_path}"
         before = "from internal.demo"
         after = "from copybarista.public"
         """
@@ -673,6 +811,8 @@ def _fixture(
         [files]
         include = ["**"]
         exclude = ["private.txt"]
+        destination_prefix = "{destination_prefix}"
+        destination_prefix_exclude = ["README.md"]
 
         {replace_transform}
         {strip_block}

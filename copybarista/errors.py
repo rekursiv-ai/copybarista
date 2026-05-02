@@ -17,6 +17,10 @@ class ExportError(CopybaristaError):
     """Raised when export execution fails."""
 
 
+class LeakCheckError(CopybaristaError):
+    """Raised when an exported tree violates leak-check policy."""
+
+
 class ImportRequestError(CopybaristaError):
     """Raised when a change request cannot be imported safely."""
 

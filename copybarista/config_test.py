@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from copybarista.config import load_config
+from copybarista.config import load_config, workflow_to_toml
 from copybarista.errors import ConfigError
 
 
@@ -48,10 +48,182 @@ def test_loads_switchboard_style_config(tmp_path: Path):
     assert config.source_root == "project"
     assert config.files.include == ("**",)
     assert config.files.exclude == ("build/**", "**/__pycache__/**")
+    assert config.files.destination_prefix == ""
+    assert config.files.destination_prefix_exclude == ()
     assert [transform.type for transform in config.transforms] == [
         "replace",
         "strip_block",
     ]
+
+
+def test_loads_destination_prefix_config(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "pkg"
+        destination_prefix_exclude = ["README.md", ".github/**"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.files.destination_prefix == "pkg"
+    assert config.files.destination_prefix_exclude == ("README.md", ".github/**")
+
+
+def test_loads_file_copy_config(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.copy]]
+        source = "shared/json.py"
+        destination = "demo/lib/json.py"
+        include = ["*.py"]
+        exclude = ["*_test.py"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert len(config.files.copy) == 1
+    assert config.files.copy[0].source == "shared/json.py"
+    assert config.files.copy[0].destination == "demo/lib/json.py"
+    assert config.files.copy[0].include == ("*.py",)
+    assert config.files.copy[0].exclude == ("*_test.py",)
+    serialized = workflow_to_toml(config)
+    assert "[[files.copy]]" in serialized
+    assert 'source = "shared/json.py"' in serialized
+    assert 'include = ["*.py"]' in serialized
+    assert 'exclude = ["*_test.py"]' in serialized
+
+
+def test_loads_leak_check_policy(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [leak_check]
+
+        [[leak_check.forbidden_path]]
+        id = "private-paths"
+        paths = ["private/**", "copy.barista.toml"]
+        message = "source-only path"
+
+        [[leak_check.forbidden_text]]
+        id = "loop-imports"
+        pattern = "\\\\binternal_pkg\\\\."
+        paths = ["**/*.py"]
+        exclude = ["tests/**"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.leak_check.forbidden_path[0].id == "private-paths"
+    assert config.leak_check.forbidden_path[0].paths == (
+        "private/**",
+        "copy.barista.toml",
+    )
+    assert config.leak_check.forbidden_text[0].pattern == r"\binternal_pkg\."
+    assert config.leak_check.forbidden_text[0].exclude == ("tests/**",)
+    serialized = workflow_to_toml(config)
+    assert "[[leak_check.forbidden_path]]" in serialized
+    assert "[[leak_check.forbidden_text]]" in serialized
+
+
+def test_rejects_invalid_leak_check_regex(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[leak_check.forbidden_text]]
+        pattern = "["
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="forbidden_text regex"):
+        load_config(config_path)
+
+
+def test_rejects_file_copy_escape(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.copy]]
+        source = "../shared/json.py"
+        destination = "demo/lib/json.py"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"files\.copy\.source"):
+        load_config(config_path)
+
+
+def test_loads_ruff_format_transform(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.transforms[0].type == "ruff_format"
+    assert config.transforms[0].path == "."
 
 
 def test_rejects_missing_workflow(tmp_path: Path):

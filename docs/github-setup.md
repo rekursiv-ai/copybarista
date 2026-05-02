@@ -32,7 +32,9 @@ changes are merged.
 The older example workflows use generic variable names such as
 `COPYBARISTA_SOURCE_REPO` and `COPYBARISTA_SOURCE_PROJECT_PATH`. Scaffolded
 package workflows instead store package identity in `copybarista.sync.toml` and
-render concrete workflow values such as `TARGET_PROJECT_PATH`.
+read deployment targets from public repository variables such as
+`COPYBARISTA_SOURCE_REPO`, `COPYBARISTA_TARGET_PROJECT_PATH`, and
+`COPYBARISTA_TOOL_PROJECT_PATH`.
 
 ## Package Sync Scaffolding
 
@@ -43,10 +45,10 @@ rather than package-named wrapper scripts:
 copybarista init-sync . \
   --package-name configgle \
   --sync-label Configgle \
-  --source-root loop/lib/configgle \
-  --public-repo rekursiv-ai/configgle \
-  --source-repo rekursiv-ai/loop \
-  --copybarista-project-path loop/experimental/copybarista \
+  --source-root packages/configgle \
+  --public-repo example/configgle \
+  --source-repo example/source \
+  --copybarista-project-path tools/copybarista \
   --smoke-import configgle \
   --type-check-target configgle \
   --type-check-target tests
@@ -70,8 +72,10 @@ package-specific environment names. Generated workflows use shared
 
 - `COPYBARISTA_SYNC_TOKEN` -- source workflow token for opening public PRs.
 - `COPYBARISTA_IMPORT_TOKEN` -- public workflow token for opening source PRs.
-- `TARGET_REPO`, `TARGET_PROJECT_PATH`, `COPYBARISTA_TOOL_PROJECT_PATH`,
-  `COPYBARISTA_SYNC_LABEL`, and `COPYBARISTA_IMPORT_BRANCH_PREFIX` -- generated
+- `COPYBARISTA_SOURCE_REPO`, `COPYBARISTA_TARGET_PROJECT_PATH`, and
+  `COPYBARISTA_TOOL_PROJECT_PATH` -- public repository variables that point the
+  import workflow at the source repository and Copybarista checkout path.
+- `COPYBARISTA_SYNC_LABEL` and `COPYBARISTA_IMPORT_BRANCH_PREFIX` -- generated
   workflow environment values derived from `copybarista.sync.toml`.
 
 Generate the source-repository export workflow from the same metadata:
@@ -363,6 +367,10 @@ repositories. Treat each exported project as its own sync pair:
 - one public-to-source workflow in each public repository;
 - distinct export branches and public-safe PR titles for each project.
 
+If a project needs selected shared monorepo utilities, use `[[files.copy]]` in
+that project's `copy.barista.toml` instead of keeping duplicate files inside the
+project tree. Each copied destination remains part of that project's import map.
+
 The example workflow serializes one project's exports with:
 
 ```yaml
@@ -562,8 +570,8 @@ from the repository root:
 ```bash
 python -B scripts/check_release_tree.py . --allow-root-git
 uv sync --all-groups
-uv run --all-groups ruff check .
-uv run --all-groups ruff format --check .
+uv run --all-groups ruff check --no-fix --no-cache .
+uv run --all-groups ruff format --check --no-cache .
 uv run --all-groups basedpyright copybarista scripts tests
 uv run --all-groups pytest
 uv build --out-dir /tmp/copybarista-dist-check

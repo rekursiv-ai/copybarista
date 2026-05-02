@@ -8,13 +8,14 @@ from pathlib import Path, PurePosixPath
 from typing import Final, Literal, Protocol, cast
 
 import json
+import re
 import tomllib
 
 from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import validate_pattern
 
 
-TransformType = Literal["replace", "strip_block", "move"]
+TransformType = Literal["replace", "ruff_format", "strip_block", "move"]
 DEFAULT_GIT_BRANCH: Final = "main"
 
 
@@ -58,6 +59,16 @@ class GitDestination:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FileCopy:
+    """Additional repo-relative files to assemble into the exported tree."""
+
+    source: str
+    destination: str
+    include: tuple[str, ...] = ("**",)
+    exclude: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FileSelection:
     """Include and exclude patterns relative to the source root.
 
@@ -67,6 +78,37 @@ class FileSelection:
 
     include: tuple[str, ...]
     exclude: tuple[str, ...]
+    destination_prefix: str = ""
+    destination_prefix_exclude: tuple[str, ...] = ()
+    copy: tuple[FileCopy, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ForbiddenTextRule:
+    """Regex rule for text that must not appear in exported files."""
+
+    id: str
+    pattern: str
+    paths: tuple[str, ...] = ("**",)
+    exclude: tuple[str, ...] = ()
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ForbiddenPathRule:
+    """Glob rule for paths that must not appear in an exported tree."""
+
+    id: str
+    paths: tuple[str, ...]
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LeakCheck:
+    """Policy checks that run against the transformed export tree."""
+
+    forbidden_text: tuple[ForbiddenTextRule, ...] = ()
+    forbidden_path: tuple[ForbiddenPathRule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -108,6 +150,7 @@ class WorkflowConfig:
     transforms: tuple[Transform, ...]
     folder: FolderDestination
     git: GitDestination
+    leak_check: LeakCheck = LeakCheck()
 
 
 def load_config(path: Path, *, workflow_name: str = "export") -> WorkflowConfig:
@@ -152,7 +195,11 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
       ConfigError: If the config is malformed or unsupported.
 
     """
-    _check_keys(raw, {"workflow", "files", "destination", "transform"}, "config")
+    _check_keys(
+        raw,
+        {"workflow", "files", "destination", "transform", "leak_check"},
+        "config",
+    )
     workflow = _table(raw, "workflow")
     _check_keys(workflow, {"name", "mode", "source_root"}, "workflow")
     mode = _string(workflow, "mode", default="squash")
@@ -162,13 +209,37 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
     name = _string(workflow, "name", default="default")
 
     files = _table(raw, "files")
-    _check_keys(files, {"include", "exclude"}, "files")
+    _check_keys(
+        files,
+        {
+            "include",
+            "exclude",
+            "destination_prefix",
+            "destination_prefix_exclude",
+            "copy",
+        },
+        "files",
+    )
     selection = FileSelection(
         include=tuple(
             _glob_list(_string_list(files, "include", default=("**",)), "files.include")
         ),
         exclude=tuple(
             _glob_list(_string_list(files, "exclude", default=()), "files.exclude")
+        ),
+        destination_prefix=_relative_path(
+            _string(files, "destination_prefix", default=""),
+            "files.destination_prefix",
+        ),
+        destination_prefix_exclude=tuple(
+            _glob_list(
+                _string_list(files, "destination_prefix_exclude", default=()),
+                "files.destination_prefix_exclude",
+            )
+        ),
+        copy=tuple(
+            _parse_file_copy(idx=idx, raw_copy=entry)
+            for idx, entry in enumerate(_list(files, "copy"), start=1)
         ),
     )
 
@@ -189,6 +260,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         transforms=transforms,
         folder=folder,
         git=git,
+        leak_check=_parse_leak_check(raw),
     )
 
 
@@ -230,6 +302,41 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             f"exclude = {_toml_list(config.files.exclude)}",
         ]
     )
+    if config.files.destination_prefix:
+        lines.append(
+            f"destination_prefix = {_toml_string(config.files.destination_prefix)}"
+        )
+    if config.files.destination_prefix_exclude:
+        lines.append(
+            "destination_prefix_exclude = "
+            f"{_toml_list(config.files.destination_prefix_exclude)}"
+        )
+    for file_copy in config.files.copy:
+        lines.extend(["", "[[files.copy]]"])
+        lines.append(f"source = {_toml_string(file_copy.source)}")
+        lines.append(f"destination = {_toml_string(file_copy.destination)}")
+        if file_copy.include != ("**",):
+            lines.append(f"include = {_toml_list(file_copy.include)}")
+        if file_copy.exclude:
+            lines.append(f"exclude = {_toml_list(file_copy.exclude)}")
+    if config.leak_check.forbidden_path or config.leak_check.forbidden_text:
+        lines.extend(["", "[leak_check]"])
+    for rule in config.leak_check.forbidden_path:
+        lines.extend(["", "[[leak_check.forbidden_path]]"])
+        lines.append(f"id = {_toml_string(rule.id)}")
+        lines.append(f"paths = {_toml_list(rule.paths)}")
+        if rule.message:
+            lines.append(f"message = {_toml_string(rule.message)}")
+    for rule in config.leak_check.forbidden_text:
+        lines.extend(["", "[[leak_check.forbidden_text]]"])
+        lines.append(f"id = {_toml_string(rule.id)}")
+        lines.append(f"pattern = {_toml_string(rule.pattern)}")
+        if rule.paths != ("**",):
+            lines.append(f"paths = {_toml_list(rule.paths)}")
+        if rule.exclude:
+            lines.append(f"exclude = {_toml_list(rule.exclude)}")
+        if rule.message:
+            lines.append(f"message = {_toml_string(rule.message)}")
     for transform in config.transforms:
         lines.extend(["", "[[transform]]"])
         lines.append(f"type = {_toml_string(transform.type)}")
@@ -248,11 +355,132 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
                 lines.append(f"reverse_after = {_toml_string(transform.reverse_after)}")
         elif transform.type == "move":
             lines.append(f"destination = {_toml_string(transform.destination)}")
-        else:
+        elif transform.type == "strip_block":
             lines.append(f"start = {_toml_string(transform.start)}")
             lines.append(f"end = {_toml_string(transform.end)}")
             lines.append(f"inclusive = {_toml_bool(transform.inclusive)}")
     return "\n".join(lines) + "\n"
+
+
+def _parse_leak_check(raw: dict[str, object]) -> LeakCheck:
+    """Parse optional transformed-tree leak-check policy."""
+    policy = _table(raw, "leak_check", default={})
+    _check_keys(policy, {"forbidden_text", "forbidden_path"}, "leak_check")
+    return LeakCheck(
+        forbidden_text=tuple(
+            _parse_forbidden_text_rule(idx=idx, raw_rule=entry)
+            for idx, entry in enumerate(
+                _list(policy, "forbidden_text"),
+                start=1,
+            )
+        ),
+        forbidden_path=tuple(
+            _parse_forbidden_path_rule(idx=idx, raw_rule=entry)
+            for idx, entry in enumerate(
+                _list(policy, "forbidden_path"),
+                start=1,
+            )
+        ),
+    )
+
+
+def _parse_forbidden_text_rule(idx: int, raw_rule: object) -> ForbiddenTextRule:
+    """Parse one `[[leak_check.forbidden_text]]` rule."""
+    if not isinstance(raw_rule, dict):
+        raise ConfigError("Each leak_check.forbidden_text entry must be a table")
+    raw_rule = cast("dict[str, object]", raw_rule)
+    _check_keys(
+        raw_rule,
+        {"id", "pattern", "paths", "exclude", "message"},
+        f"leak_check.forbidden_text[{idx}]",
+    )
+    pattern = _string(raw_rule, "pattern")
+    if not pattern:
+        raise ConfigError("leak_check.forbidden_text pattern must be non-empty")
+    try:
+        re.compile(pattern)
+    except re.error as err:
+        raise ConfigError(
+            f"Invalid leak_check.forbidden_text regex: {pattern}"
+        ) from err
+    return ForbiddenTextRule(
+        id=_string(raw_rule, "id", default=f"forbidden-text-{idx}"),
+        pattern=pattern,
+        paths=tuple(
+            _glob_list(
+                _string_list(raw_rule, "paths", default=("**",)),
+                "leak_check.forbidden_text.paths",
+            )
+        ),
+        exclude=tuple(
+            _glob_list(
+                _string_list(raw_rule, "exclude", default=()),
+                "leak_check.forbidden_text.exclude",
+            )
+        ),
+        message=_string(raw_rule, "message", default=""),
+    )
+
+
+def _parse_forbidden_path_rule(idx: int, raw_rule: object) -> ForbiddenPathRule:
+    """Parse one `[[leak_check.forbidden_path]]` rule."""
+    if not isinstance(raw_rule, dict):
+        raise ConfigError("Each leak_check.forbidden_path entry must be a table")
+    raw_rule = cast("dict[str, object]", raw_rule)
+    _check_keys(
+        raw_rule,
+        {"id", "paths", "message"},
+        f"leak_check.forbidden_path[{idx}]",
+    )
+    paths = tuple(
+        _glob_list(
+            _string_list(raw_rule, "paths", default=()),
+            "leak_check.forbidden_path.paths",
+        )
+    )
+    if not paths:
+        raise ConfigError("leak_check.forbidden_path paths must be non-empty")
+    return ForbiddenPathRule(
+        id=_string(raw_rule, "id", default=f"forbidden-path-{idx}"),
+        paths=paths,
+        message=_string(raw_rule, "message", default=""),
+    )
+
+
+def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
+    """Parse one `[[files.copy]]` table into an assembly copy config."""
+    if not isinstance(raw_copy, dict):
+        raise ConfigError("Each files.copy entry must be a table")
+    raw_copy = cast("dict[str, object]", raw_copy)
+    _check_keys(
+        raw_copy,
+        {"source", "destination", "include", "exclude"},
+        f"files.copy[{idx}]",
+    )
+    source = _relative_path(_string(raw_copy, "source"), "files.copy.source")
+    destination = _relative_path(
+        _string(raw_copy, "destination"), "files.copy.destination"
+    )
+    if not source:
+        raise ConfigError("files.copy source must be non-empty")
+    if not destination:
+        raise ConfigError("files.copy destination must be non-empty")
+    return FileCopy(
+        source=source,
+        destination=destination,
+        include=tuple(
+            _glob_list(
+                _string_list(raw_copy, "include", default=("**",)),
+                "files.copy.include",
+            )
+        ),
+        exclude=tuple(
+            _glob_list(
+                _string_list(raw_copy, "exclude", default=()),
+                "files.copy.exclude",
+            )
+        ),
+    )
 
 
 def _parse_transform(idx: int, raw_transform: object) -> Transform:
@@ -279,7 +507,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         f"transform[{idx}]",
     )
     ttype = _string(raw_transform, "type")
-    if ttype not in ("replace", "strip_block", "move"):
+    if ttype not in ("replace", "ruff_format", "strip_block", "move"):
         raise ConfigError(f"Unsupported transform type: {ttype}")
     path = _glob_path(_relative_path(_string(raw_transform, "path"), "transform.path"))
     transform_id = _string(raw_transform, "id", default=f"{idx}:{ttype}:{path}")
@@ -337,6 +565,20 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             type="move",
             path=path,
             destination=dest,
+            required=required,
+        )
+    if ttype == "ruff_format":
+        _check_keys(
+            raw_transform,
+            {"id", "type", "path", "required"},
+            f"transform[{idx}]",
+        )
+        if _has_glob_syntax(path):
+            raise ConfigError("ruff_format path must be an exact file or directory")
+        return Transform(
+            id=transform_id,
+            type="ruff_format",
+            path=path,
             required=required,
         )
     _check_keys(

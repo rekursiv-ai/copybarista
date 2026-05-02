@@ -1,0 +1,15 @@
+[workflow]
+name = @@PACKAGE_NAME@@
+mode = "squash"
+source_root = @@SOURCE_ROOT@@
+
+[files]
+include = ["**"]
+exclude = [
+@@EXCLUDES@@
+]
+
+[[leak_check.forbidden_path]]
+id = "source-only-paths"
+paths = ["copy.bara.sky", "copy.barista.toml", "copybarista.sync.toml", "private/**"]
+message = "source-only path was exported"

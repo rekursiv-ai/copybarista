@@ -1,0 +1,64 @@
+name: Export public package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - @@SOURCE_ROOT_PATH@@
+      - @@EXPORT_SCRIPT_PATH@@
+      - @@IMPORT_SCRIPT_PATH@@
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copybarista-export-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  export-pr:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+      TARGET_REPO: @@PUBLIC_REPO@@
+      BASE_BRANCH: main
+      EXPORT_BRANCH: @@EXPORT_BRANCH@@
+      SYNC_LABEL: @@SYNC_LABEL@@
+      FORBIDDEN_PR_TEXT: @@FORBIDDEN_PR_TEXT@@
+      COPYBARISTA_SYNC_USER_NAME: @@SYNC_USER_NAME@@
+      COPYBARISTA_SYNC_USER_EMAIL: @@SYNC_USER_EMAIL@@
+      COPYBARISTA_AUTO_MERGE: ${{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+          ref: ${{ env.BASE_BRANCH }}
+          path: public
+      - name: Open export PR
+        run: |
+          uv --quiet --project @@COPYBARISTA_PROJECT_PATH@@ run python \
+            @@SYNC_EXPORT_SCRIPT@@ \
+            --source-dir source \
+            --project-path @@SOURCE_ROOT@@ \
+            --public-dir public \
+            --target-repo "$TARGET_REPO" \
+            --base-branch "$BASE_BRANCH" \
+            --branch "$EXPORT_BRANCH" \
+            --branch-prefix @@EXPORT_BRANCH_PREFIX@@ \
+            --sync-label "$SYNC_LABEL" \
+            --pr-title @@PR_TITLE@@ \
+            --pr-body @@PR_BODY@@ \
+            --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \
+@@TYPE_TARGETS@@ \
+            --smoke-import @@SMOKE_IMPORT@@ \
+            --auto-merge="$COPYBARISTA_AUTO_MERGE"

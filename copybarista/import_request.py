@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from os import walk
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import shutil
@@ -148,6 +148,7 @@ class PathMapper:
 
     config: WorkflowConfig
     matcher: GlobSet = field(init=False)
+    destination_prefix_exclude: GlobSet | None = field(init=False)
 
     def __post_init__(self) -> None:
         """Compile file selection once for all changed paths."""
@@ -158,6 +159,13 @@ class PathMapper:
                 include=self.config.files.include,
                 exclude=self.config.files.exclude,
             ),
+        )
+        object.__setattr__(
+            self,
+            "destination_prefix_exclude",
+            GlobSet(include=self.config.files.destination_prefix_exclude)
+            if self.config.files.destination_prefix_exclude
+            else None,
         )
 
     def source_path(self, public_path: str) -> str:
@@ -173,13 +181,61 @@ class PathMapper:
           ImportRequestError: If the path is excluded, metadata, or unmapped.
 
         """
-        if _is_metadata_path(public_path) or not self.matcher.matches(public_path):
+        if _is_metadata_path(public_path):
+            raise ImportRequestError(
+                f"Public path is excluded or unmapped: {public_path}"
+            )
+        source_public_path = _reverse_move_path(
+            public_path=public_path,
+            transforms=self.config.transforms,
+        )
+        copied_source = self._copied_source_path(source_public_path)
+        if copied_source:
+            return copied_source
+        source_rel = self._source_relative_path(source_public_path)
+        if not self.matcher.matches(source_rel):
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}"
             )
         if not self.config.source_root:
+            return source_rel
+        return f"{self.config.source_root}/{source_rel}"
+
+    def _copied_source_path(self, public_path: str) -> str:
+        """Map a public path produced by `[[files.copy]]` back to its source."""
+        for file_copy in self.config.files.copy:
+            matcher = GlobSet(include=file_copy.include, exclude=file_copy.exclude)
+            if public_path == file_copy.destination:
+                if matcher.matches(Path(file_copy.source).name):
+                    return file_copy.source
+                raise ImportRequestError(
+                    f"Public path is excluded or unmapped: {public_path}"
+                )
+            prefix = f"{file_copy.destination}/"
+            if not public_path.startswith(prefix):
+                continue
+            rel = public_path.removeprefix(prefix)
+            if matcher.matches(rel):
+                return f"{file_copy.source}/{rel}"
+            raise ImportRequestError(
+                f"Public path is excluded or unmapped: {public_path}"
+            )
+        return ""
+
+    def _source_relative_path(self, public_path: str) -> str:
+        """Strip the configured destination prefix from a public path."""
+        prefix = self.config.files.destination_prefix
+        if not prefix:
             return public_path
-        return f"{self.config.source_root}/{public_path}"
+        prefix_path = f"{prefix}/"
+        if public_path.startswith(prefix_path):
+            return public_path.removeprefix(prefix_path)
+        if (
+            self.destination_prefix_exclude is not None
+            and self.destination_prefix_exclude.matches(public_path)
+        ):
+            return public_path
+        raise ImportRequestError(f"Public path is excluded or unmapped: {public_path}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -319,8 +375,14 @@ class ChangeRequestImporter:
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
         """Undo supported content transforms for one public file."""
         content = data
+        match_path = _reverse_move_path(
+            public_path=public_path,
+            transforms=self.config.transforms,
+        )
         for transform in reversed(self.config.transforms):
-            if not _matches_transform(transform, public_path):
+            if transform.type in ("move", "ruff_format"):
+                continue
+            if not _matches_transform(transform, match_path):
                 continue
             if transform.type == "strip_block":
                 raise ImportRequestError(
@@ -389,8 +451,14 @@ class ChangeRequestImporter:
     def _reverse_transform_ids(self, public_path: str) -> tuple[str, ...]:
         """Return reversible transform IDs that affect a public path."""
         ids: list[str] = []
+        match_path = _reverse_move_path(
+            public_path=public_path,
+            transforms=self.config.transforms,
+        )
         for transform in reversed(self.config.transforms):
-            if _matches_transform(transform, public_path):
+            if transform.type in ("move", "ruff_format"):
+                continue
+            if _matches_transform(transform, match_path):
                 if transform.type == "strip_block":
                     raise ImportRequestError(
                         f"Public path requires non-reversible transform "
@@ -474,6 +542,20 @@ def _tree_file(path: Path) -> TreeEntry:
     )
 
 
+def _reverse_move_path(*, public_path: str, transforms: tuple[Transform, ...]) -> str:
+    """Map a post-move public path back to the pre-move staged path."""
+    path = PurePosixPath(public_path)
+    for transform in reversed(transforms):
+        if transform.type != "move":
+            continue
+        destination = PurePosixPath(transform.destination)
+        if path == destination:
+            path = PurePosixPath(transform.path)
+        elif path.is_relative_to(destination):
+            path = PurePosixPath(transform.path) / path.relative_to(destination)
+    return path.as_posix()
+
+
 def _matches_transform(transform: Transform, public_path: str) -> bool:
     """Return whether a transform applies to a public path."""
     return GlobSet(include=(transform.path,)).matches(public_path)
@@ -500,9 +582,7 @@ def _reverse_after(transform: Transform) -> str:
 
 def _source_path(*, config: WorkflowConfig, public_path: str) -> str:
     """Return the source path corresponding to one public path."""
-    if not config.source_root:
-        return public_path
-    return f"{config.source_root}/{public_path}"
+    return PathMapper(config=config).source_path(public_path)
 
 
 def _read_import_text(*, path: Path, label: str) -> str:
