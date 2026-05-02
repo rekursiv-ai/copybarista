@@ -14,8 +14,8 @@ All notable Copybarista changes are documented here.
   and generic source-repo workflow settings.
 - Strengthened release-tree validation and added a self-export release
   integration test.
-- Expanded export parity coverage and docs for Copybarista, Configgle,
-  Switchboard, and Rabble sync workflows.
+- Expanded export parity coverage and release documentation for multiple
+  package sync workflows.
 
 ## 0.1.1 - 2026-05-01
 

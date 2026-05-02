@@ -56,6 +56,12 @@ BLOCKED_TEXT = (
     ("loop" + ".lib", "monorepo import"),
     ("/Users" + "/dan", "local developer path"),
     ("~/" + "loop", "local developer path"),
+    ("Switch" + "board", "private project name"),
+    ("switch" + "board", "private project name"),
+    ("Rab" + "ble", "private project name"),
+    ("rab" + "ble", "private project name"),
+    ("Rat" + "lab", "private project name"),
+    ("rat" + "lab", "private project name"),
 )
 BLOCKED_TEXT_BY_PATH = {
     ".gitignore": ("private/fixtures",),
