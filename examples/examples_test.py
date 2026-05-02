@@ -155,7 +155,7 @@ def _run_pytest(*, root: Path, tests: Path) -> None:
     env["PYTHONPATH"] = str(root)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     # The test invokes the current Python interpreter with a fixed argv list.
-    subprocess.run(  # noqa: S603
+    subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
         [
             sys.executable,
             "-m",
