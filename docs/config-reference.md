@@ -259,6 +259,38 @@ copybarista import-change CONFIG \
   [--json]
 ```
 
+Write reusable package sync scaffolding:
+
+```bash
+copybarista init-sync ROOT \
+  --package-name NAME \
+  --source-root PATH \
+  --public-repo OWNER/REPO \
+  --source-repo OWNER/REPO \
+  --copybarista-project-path PATH \
+  --smoke-import MODULE \
+  [--sync-label LABEL] \
+  [--type-check-target PATH] \
+  [--forbidden-pr-text TEXT] \
+  [--validation-python-version VERSION] \
+  [--validation-command COMMAND] \
+  [--sync-user-name NAME] \
+  [--sync-user-email EMAIL] \
+  [--overwrite]
+```
+
+Validate generated package sync scaffolding:
+
+```bash
+copybarista check-sync-config ROOT
+```
+
+Render the source-repository export workflow from package sync metadata:
+
+```bash
+copybarista write-export-workflow copybarista.sync.toml [--output PATH]
+```
+
 `--json` prints the export manifest to stdout. Without `--json`, successful
 commands are quiet.
 

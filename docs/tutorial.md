@@ -161,6 +161,7 @@ this tutorial, but adds:
 
 - a runnable Python package under `packages/widget`;
 - source-to-public export through a generated pull request;
+- generated public package validation for exported PRs;
 - public-to-source import validation and generated source pull requests;
 - branch protection, required checks, and optional auto-merge;
 - automation bot setup guidance for generated PR authorship.

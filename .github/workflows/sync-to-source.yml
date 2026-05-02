@@ -51,6 +51,8 @@ jobs:
       TARGET_REPO: ${{ inputs.target_repo || vars.COPYBARISTA_IMPORT_TARGET_REPO }}
       TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_IMPORT_PROJECT_PATH }}
       BASE_BRANCH: ${{ inputs.base_branch || 'main' }}
+      COPYBARISTA_IMPORT_BRANCH_PREFIX: copybarista/import/
+      COPYBARISTA_SYNC_LABEL: Copybarista
       COPYBARISTA_SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
       COPYBARISTA_SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
       DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
@@ -159,6 +161,8 @@ jobs:
             --public-sha "$GITHUB_SHA" \
             --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
             --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
+            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
+            --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
             --type-check-target copybarista \
             --type-check-target scripts \
@@ -179,6 +183,8 @@ jobs:
             --public-sha "$GITHUB_SHA" \
             --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
             --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
+            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
+            --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
             --open-pr true \
             --open-pr-only

@@ -42,13 +42,15 @@ PRIVATE_SYNC_MARKERS = (
     "<!-- copybarista:private-sync:end -->",
 )
 REQUIRED_PATHS = (
-    ".github/workflows/ci.yml",
     ".github/workflows/sync-to-source.yml",
     "LICENSE",
     "README.md",
     "copybarista",
     "pyproject.toml",
     "scripts",
+)
+REQUIRED_ANY_PATH_GROUPS = (
+    (".github/workflows/ci.yml", ".github/workflows/package-validation.yml"),
 )
 
 
@@ -80,6 +82,11 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
         for required in REQUIRED_PATHS
         if not (root / required).exists()
     ]
+    errors.extend(
+        f"Missing required release path: one of {', '.join(group)}"
+        for group in REQUIRED_ANY_PATH_GROUPS
+        if not any((root / required).exists() for required in group)
+    )
     errors.extend(_content_errors(root))
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()

@@ -246,6 +246,9 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings())
 
     assert "configgle/export/main" in workflow
+    assert (
+        "group: copybarista-export-${{ github.workflow }}-${{ github.ref }}" in workflow
+    )
     assert '--sync-label "$SYNC_LABEL"' in workflow
     assert '--auto-merge="$COPYBARISTA_AUTO_MERGE"' in workflow
     assert "CONFIGGLE" not in workflow
@@ -269,12 +272,18 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     assert (
         "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     )
-    assert "github.event.pull_request.head.ref != 'configgle/export/main'" in workflow
+    assert (
+        "!startsWith(github.event.pull_request.head.ref, 'configgle/export/')"
+        in workflow
+    )
+    assert 'git check-ref-format --allow-onelevel "$ref"' in workflow
     assert (
         "github.event.head_commit.author.email != 'copybarista@example.com'" in workflow
     )
     assert "--open-pr false" in workflow
     assert "--open-pr-only" in workflow
+    assert '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"' in workflow
+    assert '--sync-label "$COPYBARISTA_SYNC_LABEL"' in workflow
     assert "GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" in workflow
 
 

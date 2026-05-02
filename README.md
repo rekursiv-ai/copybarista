@@ -338,6 +338,15 @@ copybarista export CONFIG SOURCE_REF [--workflow NAME] \
 copybarista publish-git CONFIG SOURCE_REF [--workflow NAME] [--json]
 copybarista import-change CONFIG --public-base DIR --public-head DIR \
   --source-base DIR --destination DIR [--workflow NAME] [--no-verify] [--json]
+copybarista init-sync ROOT --package-name NAME --source-root PATH \
+  --public-repo OWNER/REPO --source-repo OWNER/REPO \
+  --copybarista-project-path PATH --smoke-import MODULE \
+  [--sync-label LABEL] [--type-check-target PATH] \
+  [--forbidden-pr-text TEXT] [--validation-python-version VERSION] \
+  [--validation-command COMMAND] [--sync-user-name NAME] \
+  [--sync-user-email EMAIL] [--overwrite]
+copybarista check-sync-config ROOT
+copybarista write-export-workflow copybarista.sync.toml [--output PATH]
 ```
 
 `CONFIG` can be a Copybarista TOML file or a supported `copy.bara.sky` file.

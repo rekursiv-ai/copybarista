@@ -398,6 +398,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: copybarista-export-${{{{ github.workflow }}}}-${{{{ github.ref }}}}
+  cancel-in-progress: false
+
 jobs:
   export-pr:
     runs-on: ubuntu-latest
@@ -511,7 +515,7 @@ jobs:
       (
         github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.head.ref != {_github_expr_str(f"{settings.export_prefix}main")}
+        !startsWith(github.event.pull_request.head.ref, {_github_expr_str(settings.export_prefix)})
       ) ||
       (
         github.event_name == 'push' &&
@@ -556,6 +560,12 @@ jobs:
             echo "::error::Cannot resolve public base ref for import."
             exit 1
           fi
+          for ref in "$base_ref" "$head_ref"; do
+            if ! git check-ref-format --allow-onelevel "$ref"; then
+              echo "::error::Invalid public ref: $ref"
+              exit 1
+            fi
+          done
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
@@ -678,7 +688,7 @@ def _validate_import_workflow_yaml(
         raise ConfigError("sync-to-source.yml jobs.import-change.if must be a string.")
     for text in (
         "github.event.pull_request.head.repo.full_name == github.repository",
-        f"github.event.pull_request.head.ref != {_github_expr_str(f'{settings.export_prefix}main')}",
+        f"!startsWith(github.event.pull_request.head.ref, {_github_expr_str(settings.export_prefix)})",
         f"github.event.head_commit.author.email != {_github_expr_str(settings.sync_user_email)}",
         f"!contains(github.event.head_commit.message, {_github_expr_str(settings.export_prefix)})",
         f"!contains(github.event.head_commit.message, {_github_expr_str(f'{settings.sync_label} export branch:')})",
@@ -698,6 +708,7 @@ def _validate_import_workflow_yaml(
                 '--project-path "$TARGET_PROJECT_PATH"',
                 '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
                 '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
+                '--sync-label "$COPYBARISTA_SYNC_LABEL"',
                 "--open-pr false",
             ),
         ),
@@ -708,6 +719,7 @@ def _validate_import_workflow_yaml(
                 '--project-path "$TARGET_PROJECT_PATH"',
                 '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
                 '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
+                '--sync-label "$COPYBARISTA_SYNC_LABEL"',
                 "--open-pr-only",
             ),
         ),

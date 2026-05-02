@@ -27,6 +27,17 @@ def test_check_tree_accepts_required_release_shape(tmp_path: Path):
     assert check_tree(root=tmp_path) == ()
 
 
+def test_check_tree_accepts_package_validation_workflow_name(tmp_path: Path):
+    _write_required_tree(tmp_path)
+    (tmp_path / ".github/workflows/ci.yml").unlink()
+    (tmp_path / ".github/workflows/package-validation.yml").write_text(
+        "ok\n",
+        encoding="utf-8",
+    )
+
+    assert check_tree(root=tmp_path) == ()
+
+
 def test_check_tree_rejects_private_generated_and_vcs_paths(tmp_path: Path):
     _write_required_tree(tmp_path)
     for path in (
@@ -79,5 +90,5 @@ def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):
 def test_check_tree_reports_missing_required_paths(tmp_path: Path):
     errors = check_tree(root=tmp_path)
 
-    assert any(".github/workflows/ci.yml" in error for error in errors)
+    assert any("one of .github/workflows/ci.yml" in error for error in errors)
     assert any("pyproject.toml" in error for error in errors)
