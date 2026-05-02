@@ -104,14 +104,15 @@ checkout.
 1. Create the destination repository as private.
 2. Copy the source-to-public workflow into the source repository.
 3. Copy the public-to-source workflow into the destination repository.
-4. Add repository secrets and variables in both repositories.
-5. Export the first Copybarista tree into a pull request.
-6. Confirm CI passes on the exported tree.
-7. Protect the destination default branch.
-8. Merge the first export with squash merge.
-9. Test reverse sync with a small public pull request.
-10. Make the repository public when the public tree and sync loop are clean.
-11. Configure package publishing.
+4. Copy the package validation workflow into the destination repository.
+5. Add repository secrets and variables in both repositories.
+6. Export the first Copybarista tree into a pull request.
+7. Confirm package validation and import-skip checks pass on the exported tree.
+8. Protect the destination default branch.
+9. Merge the first export with squash merge.
+10. Test reverse sync with a small public pull request.
+11. Make the repository public when the public tree and sync loop are clean.
+12. Configure package publishing.
 
 Keeping the repository private until the first verified export avoids exposing
 temporary setup commits, private path names, or incomplete release metadata.
