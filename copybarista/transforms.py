@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import shutil
+
 from copybarista.config import Transform
 from copybarista.errors import TransformError
 from copybarista.globs import GlobSet
@@ -63,6 +65,12 @@ def apply_transform(
     """
     if transform.type == "replace":
         result = _replace(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
+    elif transform.type == "move":
+        result = _move(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
@@ -176,6 +184,37 @@ def _strip_block(
     if transform.required:
         raise TransformError(f"Transformation '{transform.id}' was a no-op")
     return _TransformResult(changed=0, count=0, files=())
+
+
+def _move(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Move or rename a file or directory within the staging tree."""
+    source = root / transform.path
+    dest = root / transform.destination
+    if not source.exists():
+        if transform.required:
+            raise TransformError(f"Transformation '{transform.id}' matched no files")
+        return _TransformResult(changed=0, count=0, files=())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), dest)
+    if dest.is_dir():
+        moved = [p for p in dest.rglob("*") if p.is_file()]
+    else:
+        moved = [dest]
+    count = len(moved)
+    files: list[TransformFileReport] = []
+    for path in sorted(moved):
+        new_rel = path.relative_to(root).as_posix()
+        old_rel = transform.path + new_rel.removeprefix(transform.destination)
+        files.append(
+            TransformFileReport(
+                source=sources_by_destination.get(old_rel, old_rel),
+                destination=new_rel,
+                count=1,
+            )
+        )
+    return _TransformResult(changed=count, count=count, files=tuple(files))
 
 
 def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
