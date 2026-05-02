@@ -695,7 +695,7 @@ def _run(
     """Run a subprocess while streaming commands for Action logs."""
     _log("+ " + " ".join(argv))
     # The caller provides an argument vector, not a shell string.
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
         argv,
         cwd=cwd,
         check=False,
