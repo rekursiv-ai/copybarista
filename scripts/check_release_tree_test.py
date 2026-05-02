@@ -104,6 +104,18 @@ def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
     assert any("local developer path" in error for error in errors)
 
 
+def test_check_tree_rejects_private_project_names_in_root_docs(tmp_path: Path):
+    _write_required_tree(tmp_path)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "Published " + "Switch" + "board" + " sync notes.\n",
+        encoding="utf-8",
+    )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any("private project name" in error for error in errors)
+
+
 def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):
     _write_required_tree(tmp_path)
     (tmp_path / ".git/HEAD").parent.mkdir()

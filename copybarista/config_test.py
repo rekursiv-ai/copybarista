@@ -10,7 +10,7 @@ from copybarista.config import load_config, workflow_to_toml
 from copybarista.errors import ConfigError
 
 
-def test_loads_switchboard_style_config(tmp_path: Path):
+def test_loads_sample_style_config(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         """

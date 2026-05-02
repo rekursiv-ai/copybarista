@@ -16,7 +16,7 @@ def test_include_globstar_matches_any_depth():
     assert globs.matches("pkg/subpkg/module.py")
 
 
-def test_switchboard_excludes_match_expected_paths():
+def test_sample_excludes_match_expected_paths():
     globs = GlobSet(
         include=("**",),
         exclude=(
