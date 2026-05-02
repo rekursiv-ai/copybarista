@@ -387,6 +387,87 @@ def test_matching_binary_file_fails_clearly(tmp_path: Path):
         )
 
 
+def test_move_renames_file(tmp_path: Path):
+    (tmp_path / "old").mkdir()
+    src = tmp_path / "old" / "readme.md"
+    src.write_text("hello\n", encoding="utf-8")
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="move-readme",
+                type="move",
+                path="old/readme.md",
+                destination="new/readme.md",
+            ),
+        ),
+    )
+
+    assert not src.exists()
+    assert (tmp_path / "new" / "readme.md").read_text(encoding="utf-8") == "hello\n"
+    assert result.changed == 1
+    assert result.count == 1
+
+
+def test_move_renames_directory(tmp_path: Path):
+    (tmp_path / "old" / "sub").mkdir(parents=True)
+    (tmp_path / "old" / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "old" / "sub" / "b.txt").write_text("b\n", encoding="utf-8")
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="move-dir",
+                type="move",
+                path="old",
+                destination="new",
+            ),
+        ),
+    )
+
+    assert not (tmp_path / "old").exists()
+    assert (tmp_path / "new" / "a.txt").read_text(encoding="utf-8") == "a\n"
+    assert (tmp_path / "new" / "sub" / "b.txt").read_text(encoding="utf-8") == "b\n"
+    assert result.changed == 2
+    assert result.count == 2
+
+
+def test_required_move_fails_when_source_missing(tmp_path: Path):
+    with pytest.raises(TransformError, match="no files"):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="move-missing",
+                    type="move",
+                    path="nonexistent.md",
+                    destination="target.md",
+                ),
+            ),
+        )
+
+
+def test_optional_move_allows_missing_source(tmp_path: Path):
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="move-missing",
+                type="move",
+                path="nonexistent.md",
+                destination="target.md",
+                required=False,
+            ),
+        ),
+    )
+
+    assert result.changed == 0
+    assert result.count == 0
+    assert result.files == ()
+
+
 def _entry(source: str, destination: str) -> ManifestEntry:
     return ManifestEntry(
         source=source,

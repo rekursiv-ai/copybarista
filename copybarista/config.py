@@ -14,7 +14,7 @@ from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import validate_pattern
 
 
-TransformType = Literal["replace", "strip_block"]
+TransformType = Literal["replace", "strip_block", "move"]
 DEFAULT_GIT_BRANCH: Final = "main"
 
 
@@ -89,6 +89,7 @@ class Transform:
     end: str = ""
     inclusive: bool = True
     required: bool = True
+    destination: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -245,6 +246,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
                     f"reverse_before = {_toml_string(transform.reverse_before)}"
                 )
                 lines.append(f"reverse_after = {_toml_string(transform.reverse_after)}")
+        elif transform.type == "move":
+            lines.append(f"destination = {_toml_string(transform.destination)}")
         else:
             lines.append(f"start = {_toml_string(transform.start)}")
             lines.append(f"end = {_toml_string(transform.end)}")
@@ -271,11 +274,12 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             "start",
             "end",
             "inclusive",
+            "destination",
         },
         f"transform[{idx}]",
     )
     ttype = _string(raw_transform, "type")
-    if ttype not in ("replace", "strip_block"):
+    if ttype not in ("replace", "strip_block", "move"):
         raise ConfigError(f"Unsupported transform type: {ttype}")
     path = _glob_path(_relative_path(_string(raw_transform, "path"), "transform.path"))
     transform_id = _string(raw_transform, "id", default=f"{idx}:{ttype}:{path}")
@@ -314,6 +318,25 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             after=_string(raw_transform, "after"),
             reverse_before=reverse_before,
             reverse_after=reverse_after,
+            required=required,
+        )
+    if ttype == "move":
+        _check_keys(
+            raw_transform,
+            {"id", "type", "path", "destination", "required"},
+            f"transform[{idx}]",
+        )
+        if _has_glob_syntax(path):
+            raise ConfigError("move path must be an exact file path")
+        dest = _string(raw_transform, "destination", default="")
+        if not dest:
+            raise ConfigError("move destination must be non-empty")
+        dest = _relative_path(dest, "transform.destination")
+        return Transform(
+            id=transform_id,
+            type="move",
+            path=path,
+            destination=dest,
             required=required,
         )
     _check_keys(
