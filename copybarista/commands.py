@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import shutil
 import subprocess
@@ -23,13 +24,16 @@ class CommandResult:
 class CommandRunner:
     """Run external commands without invoking a shell."""
 
-    def run(self, argv: list[str], *, check: bool = True) -> CommandResult:
+    def run(
+        self, argv: list[str], *, check: bool = True, cwd: Path | None = None
+    ) -> CommandResult:
         """Run a command and return captured output.
 
         Args:
           argv: Executable and argument vector. It is never passed through a
             shell.
           check: Whether a nonzero exit code should raise.
+          cwd: Optional working directory for the command.
 
         Returns:
           result: Captured return code, stdout, and stderr.
@@ -43,6 +47,7 @@ class CommandRunner:
             argv,
             check=False,
             capture_output=True,
+            cwd=cwd,
             text=True,
         )
         command_result = CommandResult(

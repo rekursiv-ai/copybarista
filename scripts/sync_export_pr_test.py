@@ -34,7 +34,7 @@ def test_main_accepts_generic_project_validation_args(
     sync_export_pr.main(
         [
             "--project-path",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--release-check-script",
             "scripts/check_release_tree.py",
             "--type-check-target",
@@ -46,7 +46,7 @@ def test_main_accepts_generic_project_validation_args(
         ]
     )
 
-    assert captured[0].project_path == Path("loop/lib/configgle")
+    assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].release_check_script == Path("scripts/check_release_tree.py")
     assert captured[0].type_check_targets == ("configgle", "tests")
     assert captured[0].smoke_import == "configgle"

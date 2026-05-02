@@ -119,9 +119,12 @@ def test_self_export_performance_has_recordable_timings():
     source_repo = Path(source_repo_text).resolve()
     if not (source_repo / source_root).is_dir():
         pytest.skip("Source checkout unavailable for self-export performance test")
+    config_path = PROJECT_ROOT / "copy.barista.toml"
+    if not config_path.exists():
+        pytest.skip("Copybarista self-export config is unavailable")
 
     report = bench.build_report(
-        config_path=PROJECT_ROOT / "copy.barista.toml",
+        config_path=config_path,
         source_ref=source_repo,
         runs=int(os.environ.get("COPYBARISTA_SELF_PERF_RUNS", "3")),
     )

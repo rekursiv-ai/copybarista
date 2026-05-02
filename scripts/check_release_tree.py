@@ -41,6 +41,35 @@ PRIVATE_SYNC_MARKERS = (
     "<!-- copybarista:private-sync:start -->",
     "<!-- copybarista:private-sync:end -->",
 )
+TEXT_SCAN_NAMES = frozenset((".gitignore", ".pre-commit-config.yaml"))
+TEXT_SCAN_SUFFIXES = frozenset((".md", ".mmd", ".py", ".toml", ".yaml", ".yml"))
+TEXT_SCAN_SKIP_PATHS = frozenset(
+    (
+        "scripts/check_release_tree.py",
+        "scripts/check_release_tree_test.py",
+    )
+)
+BLOCKED_TEXT = (
+    ("loop" + "/experimental", "monorepo path"),
+    ("loop" + ".experimental", "monorepo import"),
+    ("loop" + "/lib", "monorepo path"),
+    ("loop" + ".lib", "monorepo import"),
+    ("/Users" + "/dan", "local developer path"),
+    ("~/" + "loop", "local developer path"),
+)
+BLOCKED_TEXT_BY_PATH = {
+    ".gitignore": ("private/fixtures",),
+    ".pre-commit-config.yaml": (
+        "|private/",
+        "|site/",
+        "|copy\\.bara\\.sky",
+        "|copy\\.barista\\.toml",
+    ),
+    "pyproject.toml": (
+        '"private/**"',
+        '"private/fixtures/**/*.py"',
+    ),
+}
 REQUIRED_PATHS = (
     ".github/workflows/sync-to-source.yml",
     "LICENSE",
@@ -141,13 +170,35 @@ def _root_path_errors(*, rel: str, parts: tuple[str, ...]) -> tuple[str, ...]:
 
 def _content_errors(root: Path) -> tuple[str, ...]:
     """Return release-policy errors that require reading file contents."""
-    readme = root / "README.md"
-    if not readme.is_file():
-        return ()
-    text = readme.read_text(encoding="utf-8", errors="replace")
-    if any(marker in text for marker in PRIVATE_SYNC_MARKERS):
-        return ("Private sync README block must not be exported",)
-    return ()
+    errors: list[str] = []
+    for path in _content_paths(root):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if any(marker in text for marker in PRIVATE_SYNC_MARKERS):
+            errors.append(f"Private sync marker must not be exported: {rel}")
+        for token, label in BLOCKED_TEXT:
+            if token in text:
+                errors.append(f"{label} must not be exported: {rel}")
+        errors.extend(
+            f"Source-only config text must not be exported: {rel}"
+            for token in BLOCKED_TEXT_BY_PATH.get(rel, ())
+            if token in text
+        )
+    return tuple(errors)
+
+
+def _content_paths(root: Path) -> tuple[Path, ...]:
+    """Return text-like files covered by release-tree content policy."""
+    paths: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel in TEXT_SCAN_SKIP_PATHS:
+            continue
+        if path.name in TEXT_SCAN_NAMES or path.suffix in TEXT_SCAN_SUFFIXES:
+            paths.append(path)
+    return tuple(paths)
 
 
 if __name__ == "__main__":

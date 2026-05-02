@@ -10,7 +10,7 @@ import stat
 import pytest
 
 from copybarista.config import load_config
-from copybarista.errors import ExportError
+from copybarista.errors import ExportError, LeakCheckError
 from copybarista.export import export_folder
 
 
@@ -139,6 +139,262 @@ def test_folder_export_manifest_is_deterministic_across_runs(tmp_path: Path):
     )
 
     assert first.to_json() == second.to_json()
+
+
+def test_folder_export_can_prefix_package_files(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "pkg").mkdir()
+    (project / "__init__.py").write_text(
+        "from internal.demo import api\n", encoding="utf-8"
+    )
+    (project / "pkg" / "module.py").write_text(
+        "from internal.demo import api\n", encoding="utf-8"
+    )
+    (project / "README.md").write_text("readme\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "demo"
+        destination_prefix_exclude = ["README.md"]
+
+        [[transform]]
+        type = "replace"
+        path = "demo/{*.py,**/*.py}"
+        before = "internal.demo"
+        after = "demo"
+        """,
+        encoding="utf-8",
+    )
+
+    manifest = export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    assert [entry.destination for entry in manifest.files] == [
+        "README.md",
+        "demo/__init__.py",
+        "demo/pkg/module.py",
+    ]
+    assert (tmp_path / "out" / "README.md").read_text(encoding="utf-8") == "readme\n"
+    assert (tmp_path / "out" / "demo" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "from demo import api\n"
+
+
+def test_folder_export_can_run_ruff_format_transform(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        """
+        [tool.ruff]
+        fix = true
+
+        [tool.ruff.lint]
+        select = ["I"]
+        """,
+        encoding="utf-8",
+    )
+    (project / "module.py").write_text("import sys\nimport os\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+
+    manifest = export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    assert (tmp_path / "out" / "module.py").read_text(encoding="utf-8") == (
+        "import os\nimport sys\n"
+    )
+    assert manifest.transforms[0].type == "ruff_format"
+    assert manifest.transforms[0].changed == 1
+
+
+def test_folder_export_ruff_format_allows_unfixable_lint_after_fixes(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        """
+        [tool.ruff]
+        fix = true
+
+        [tool.ruff.lint]
+        select = ["F401", "I"]
+        """,
+        encoding="utf-8",
+    )
+    (project / "module.py").write_text("import sys\nimport os\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+
+    manifest = export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    assert (tmp_path / "out" / "module.py").read_text(encoding="utf-8") == ""
+    assert manifest.transforms[0].changed == 1
+
+
+def test_folder_export_runs_leak_checks_after_transforms(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "module.py").write_text(
+        "from internal_pkg.demo import api\n", encoding="utf-8"
+    )
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "module.py"
+        before = "internal_pkg.demo"
+        after = "demo"
+
+        [[leak_check.forbidden_text]]
+        id = "loop-imports"
+        pattern = "\\\\binternal_pkg\\\\."
+        paths = ["*.py", "**/*.py"]
+        """,
+        encoding="utf-8",
+    )
+
+    export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    assert (tmp_path / "out" / "module.py").read_text(encoding="utf-8") == (
+        "from demo import api\n"
+    )
+
+
+def test_folder_export_fails_on_leak_check_violation(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "module.py").write_text(
+        "from internal_pkg.demo import api\n", encoding="utf-8"
+    )
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[leak_check.forbidden_text]]
+        id = "loop-imports"
+        pattern = "\\\\binternal_pkg\\\\."
+        paths = ["*.py", "**/*.py"]
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LeakCheckError, match="Leak check failed"):
+        export_folder(
+            load_config(config_path),
+            source_ref=source_ref,
+            destination=tmp_path / "out",
+            force=True,
+        )
+
+
+def test_folder_export_ruff_format_allows_noop(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+
+    manifest = export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    assert manifest.transforms[0].changed == 0
+    assert manifest.transforms[0].files == ()
 
 
 def test_folder_export_requires_force_for_existing_destination(tmp_path: Path):

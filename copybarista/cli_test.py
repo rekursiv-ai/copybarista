@@ -13,6 +13,7 @@ from copybarista.errors import (
     ConfigError,
     ExportError,
     ImportRequestError,
+    LeakCheckError,
     OutputMismatchError,
     TransformError,
 )
@@ -141,10 +142,45 @@ def test_cli_reports_transform_errors_as_release_gate_failures(
     assert "no changes" in capsys.readouterr().err
 
 
+def test_cli_check_leaks_reports_policy_violations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    root = tmp_path / "out"
+    root.mkdir()
+    (root / "module.py").write_text(
+        "from internal_pkg.lib import json\n", encoding="utf-8"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[leak_check.forbidden_text]]
+        id = "loop-imports"
+        pattern = "\\\\binternal_pkg\\\\."
+        paths = ["*.py", "**/*.py"]
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main(["check-leaks", str(config), str(root)])
+
+    assert exc.value.code == 2
+    assert "loop-imports: module.py:1" in capsys.readouterr().err
+
+
 def test_cli_release_gate_exit_code_mapping():
     assert _exit_code(ConfigError("bad config")) == 1
     assert _exit_code(TransformError("no-op")) == 2
     assert _exit_code(OutputMismatchError("mismatch")) == 2
+    assert _exit_code(LeakCheckError("leak")) == 2
     assert _exit_code(ExportError("git failed")) == 3
     assert _exit_code(ImportRequestError("import failed")) == 3
 
@@ -176,13 +212,13 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
             "--sync-label",
             "Configgle",
             "--source-root",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--public-repo",
-            "rekursiv-ai/configgle",
+            "example/configgle",
             "--source-repo",
-            "rekursiv-ai/loop",
+            "example/source",
             "--copybarista-project-path",
-            "loop/experimental/copybarista",
+            "tools/copybarista",
             "--smoke-import",
             "configgle",
             "--type-check-target",
@@ -207,13 +243,13 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
             "--package-name",
             "configgle",
             "--source-root",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--public-repo",
-            "rekursiv-ai/configgle",
+            "example/configgle",
             "--source-repo",
-            "rekursiv-ai/loop",
+            "example/source",
             "--copybarista-project-path",
-            "loop/experimental/copybarista",
+            "tools/copybarista",
             "--smoke-import",
             "configgle",
             "--validation-python-version",
@@ -228,7 +264,7 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
     workflow = (tmp_path / ".github/workflows/package-validation.yml").read_text(
         encoding="utf-8"
     )
-    assert 'python-version: ["3.13"]' in workflow
+    assert 'python-version: "3.13"' in workflow
     assert "uv sync --all-groups" in workflow
     assert "uv run pytest" in workflow
 
@@ -241,13 +277,13 @@ def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
             "--package-name",
             "configgle",
             "--source-root",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--public-repo",
-            "rekursiv-ai/configgle",
+            "example/configgle",
             "--source-repo",
-            "rekursiv-ai/loop",
+            "example/source",
             "--copybarista-project-path",
-            "loop/experimental/copybarista",
+            "tools/copybarista",
             "--smoke-import",
             "configgle",
         ]
@@ -266,13 +302,13 @@ def test_cli_write_export_workflow_uses_sync_metadata(
             "--package-name",
             "configgle",
             "--source-root",
-            "loop/lib/configgle",
+            "packages/configgle",
             "--public-repo",
-            "rekursiv-ai/configgle",
+            "example/configgle",
             "--source-repo",
-            "rekursiv-ai/loop",
+            "example/source",
             "--copybarista-project-path",
-            "loop/experimental/copybarista",
+            "tools/copybarista",
             "--smoke-import",
             "configgle",
         ]

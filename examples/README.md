@@ -69,9 +69,10 @@ The exported tree is a standalone package:
   widget/__init__.py
 ```
 
-The export removes the private README block and rewrites the test imports from
-the source repository package path to the public package path. Run the exported
-tests with:
+The export removes the private README block, rewrites the test imports from
+the source repository package path to the public package path, and runs a leak
+check that rejects leftover `packages.widget` references. Run the exported tests
+with:
 
 ```bash
 PYTHONPATH=/tmp/widget-public uv run --with pytest pytest /tmp/widget-public/tests
@@ -298,7 +299,7 @@ Expected result after merge:
 
 Merge the source PR after source-side review and checks.
 
-### 9. Continue The Sync Loop
+### 9. Continue Sync
 
 For source-owned changes, run `Export public repository` again and merge the
 generated public PR.
@@ -459,7 +460,8 @@ branch ruleset requires check names that your CI actually emits, such as:
 
 ```bash
 uv sync --all-groups
-uv run --all-groups ruff check .
+uv run --all-groups ruff check --no-fix --no-cache .
+uv run --all-groups ruff format --check --no-cache .
 uv run --all-groups pytest
 ```
 

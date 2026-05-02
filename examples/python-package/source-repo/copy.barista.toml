@@ -23,6 +23,12 @@ exclude = [
   "**/*.egg-info/**",
 ]
 
+[[leak_check.forbidden_text]]
+id = "source-package-imports"
+pattern = "\\bpackages\\.widget\\."
+paths = ["*.py", "**/*.py", "*.md", "**/*.md", "*.toml", "**/*.toml"]
+message = "source package import remained after export"
+
 [[transform]]
 type = "replace"
 path = "**/*.py"

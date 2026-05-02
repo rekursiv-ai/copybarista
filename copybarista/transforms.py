@@ -13,8 +13,9 @@ from pathlib import Path
 
 import shutil
 
+from copybarista.commands import CommandRunner, resolve_executable
 from copybarista.config import Transform
-from copybarista.errors import TransformError
+from copybarista.errors import ExportError, TransformError
 from copybarista.globs import GlobSet
 from copybarista.manifest import ManifestEntry, TransformFileReport, TransformReport
 
@@ -75,8 +76,14 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
         )
-    else:
+    elif transform.type == "strip_block":
         result = _strip_block(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
+    else:
+        result = _ruff_format(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
@@ -205,8 +212,10 @@ def _move(
     count = len(moved)
     files: list[TransformFileReport] = []
     for path in sorted(moved):
-        new_rel = path.relative_to(root).as_posix()
-        old_rel = transform.path + new_rel.removeprefix(transform.destination)
+        new_path = path.relative_to(root)
+        new_rel = new_path.as_posix()
+        suffix = new_path.relative_to(transform.destination)
+        old_rel = (Path(transform.path) / suffix).as_posix()
         files.append(
             TransformFileReport(
                 source=sources_by_destination.get(old_rel, old_rel),
@@ -215,6 +224,45 @@ def _move(
             )
         )
     return _TransformResult(changed=count, count=count, files=tuple(files))
+
+
+def _ruff_format(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Run Ruff fixes and formatting inside the staged tree."""
+    target = root / transform.path
+    if not target.exists():
+        if transform.required:
+            raise TransformError(f"Transformation '{transform.id}' matched no files")
+        return _TransformResult(changed=0, count=0, files=())
+    before = _snapshot_regular_files(root=root, target=target)
+    runner = CommandRunner()
+    ruff = resolve_executable("ruff")
+    try:
+        runner.run(
+            [ruff, "check", "--fix", "--exit-zero", "--no-cache", transform.path],
+            cwd=root,
+        )
+        runner.run([ruff, "format", "--no-cache", transform.path], cwd=root)
+    except ExportError as err:
+        raise TransformError(
+            f"Transformation '{transform.id}' ruff_format failed: {err}"
+        ) from err
+    after = _snapshot_regular_files(root=root, target=target)
+    changed_paths = tuple(
+        path for path in sorted(after) if before.get(path) != after[path]
+    )
+    deleted_paths = tuple(path for path in sorted(before) if path not in after)
+    files = tuple(
+        _file_report(
+            root=root,
+            path=root / path,
+            count=1,
+            sources_by_destination=sources_by_destination,
+        )
+        for path in (*changed_paths, *deleted_paths)
+    )
+    return _TransformResult(changed=len(files), count=len(files), files=files)
 
 
 def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
@@ -290,11 +338,18 @@ def _read_text(path: Path) -> str:
         raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
 
 
+def _snapshot_regular_files(root: Path, target: Path) -> dict[Path, bytes]:
+    """Return staged file bytes keyed by root-relative path."""
+    paths = (target,) if target.is_file() else tuple(sorted(target.rglob("*")))
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in paths
+        if path.is_file() and not path.is_symlink()
+    }
+
+
 def _collapse_removed_block_gap(before: str, after: str) -> str:
     """Avoid creating extra blank lines around an inclusive stripped block."""
     if before.endswith("\n") and after.startswith("\n"):
-        # Marker-block stripping removes the selected block as a unit.
-        # Collapsing adjacent newlines keeps the surrounding paragraphs joined
-        # without creating a formatting artifact at the removal boundary.
         return before + after.lstrip("\n")
     return before + after

@@ -8,13 +8,4 @@ __pycache__/
 build/
 dist/
 htmlcov/
-
-# Private parity fixtures intentionally contain generated-looking paths.
 !examples/python-package/github/protect-main-ruleset.json
-!private/github/protect-main-ruleset.json
-!private/fixtures/**/.venv/
-!private/fixtures/**/.venv/**
-!private/fixtures/**/__pycache__/
-!private/fixtures/**/__pycache__/**
-!private/fixtures/**/*.egg-info/
-!private/fixtures/**/*.egg-info/**

@@ -1,16 +1,13 @@
 fail_fast: false
 files: |
   (?x)^(
-    (loop/experimental/copybarista/)?
     (
       \.github/
       |assets/
       |copybarista/
       |docs/
       |examples/
-      |private/
       |scripts/
-      |site/
       |tests/
       |\.gitignore
       |\.pre-commit-config\.yaml
@@ -19,8 +16,6 @@ files: |
       |LICENSE
       |README\.md
       |SECURITY\.md
-      |copy\.bara\.sky
-      |copy\.barista\.toml
       |pyproject\.toml
       |uv\.lock
     )

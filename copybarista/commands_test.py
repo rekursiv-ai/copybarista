@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import sys
 
 import pytest
@@ -38,6 +40,15 @@ def test_command_runner_can_return_unchecked_failures():
     )
 
     assert result.returncode == 3
+
+
+def test_command_runner_can_run_in_working_directory(tmp_path: Path):
+    result = CommandRunner().run(
+        [sys.executable, "-c", "from pathlib import Path; print(Path.cwd())"],
+        cwd=tmp_path,
+    )
+
+    assert result.stdout.strip() == str(tmp_path)
 
 
 def test_resolve_executable_keeps_unknown_names():

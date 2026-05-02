@@ -17,12 +17,14 @@ from copybarista.errors import (
     ExportError,
     GlobError,
     ImportRequestError,
+    LeakCheckError,
     OutputMismatchError,
     TransformError,
 )
 from copybarista.export import export_folder
 from copybarista.git import export_git
 from copybarista.import_request import ImportRequest, import_change_request
+from copybarista.leak_check import enforce_leak_check
 from copybarista.sync_setup import (
     SyncSettings,
     check_sync_config,
@@ -77,6 +79,14 @@ def _parser() -> argparse.ArgumentParser:
     publish_git.add_argument("--workflow", default="export_git")
     publish_git.add_argument("--json", action="store_true")
 
+    check_leaks = sub.add_parser(
+        "check-leaks",
+        help="Check a tree against config leak policy",
+    )
+    check_leaks.add_argument("config")
+    check_leaks.add_argument("root")
+    check_leaks.add_argument("--workflow", default="export")
+
     import_change = sub.add_parser(
         "import-change",
         help="Import a public change into a source-of-truth checkout",
@@ -130,6 +140,7 @@ def _command_handlers() -> dict[str, Callable[[argparse.Namespace], None]]:
         "translate": _run_translate,
         "export": _run_export,
         "publish-git": _run_publish_git,
+        "check-leaks": _run_check_leaks,
         "import-change": _run_import_change,
         "init-sync": _run_init_sync,
         "check-sync-config": _run_check_sync_config,
@@ -177,6 +188,12 @@ def _run_publish_git(args: argparse.Namespace) -> None:
     manifest = export_git(config=config, source_ref=Path(args.source_ref))
     if args.json:
         sys.stdout.write(manifest.to_json())
+
+
+def _run_check_leaks(args: argparse.Namespace) -> None:
+    """Run leak policy checks against an existing tree."""
+    config = load_config(Path(args.config), workflow_name=args.workflow)
+    enforce_leak_check(root=Path(args.root), policy=config.leak_check)
 
 
 def _run_import_change(args: argparse.Namespace) -> None:
@@ -245,7 +262,7 @@ def _exit_code(err: CopybaristaError) -> int:
     """Return the release-gate exit code for a user-facing error."""
     if isinstance(err, (ConfigError, GlobError)):
         return 1
-    if isinstance(err, (OutputMismatchError, TransformError)):
+    if isinstance(err, (LeakCheckError, OutputMismatchError, TransformError)):
         return 2
     if isinstance(err, (ExportError, ImportRequestError)):
         return 3

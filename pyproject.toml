@@ -1,6 +1,6 @@
 [project]
 name = "copybarista"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python-first repository subtree export tool."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -229,13 +229,6 @@ ignore = [
 ]
 "scripts/**" = [
     "T201",    # Print found. (CLI tools use print for output.)
-]
-"private/**" = [
-    "INP001",  # Private helpers and fixtures are not a package API.
-]
-"private/fixtures/**/*.py" = [
-    "D100",
-    "INP001",
 ]
 "typings/**" = [
     "PYI015", # Assignment default in stub — field specifiers are semantic.

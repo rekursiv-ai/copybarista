@@ -75,7 +75,33 @@ def test_check_tree_rejects_private_sync_readme_markers(tmp_path: Path):
 
     errors = check_tree(root=tmp_path)
 
-    assert any("Private sync README block" in error for error in errors)
+    assert any("Private sync marker" in error for error in errors)
+
+
+def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
+    _write_required_tree(tmp_path)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "files: |\n  |private/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".gitignore").write_text(
+        "!private/fixtures/**/.venv/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.ruff.lint.per-file-ignores]\n"private/**" = ["INP001"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "docs/guide.md").parent.mkdir()
+    (tmp_path / "docs/guide.md").write_text(
+        "Run from " + "/Users" + "/dan" + "/loop.\n",
+        encoding="utf-8",
+    )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any("Source-only config text" in error for error in errors)
+    assert any("local developer path" in error for error in errors)
 
 
 def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):

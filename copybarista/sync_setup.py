@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import cast
 
 import json
+import keyword
 import shlex
 import tomllib
 
@@ -30,6 +32,9 @@ DEFAULT_EXCLUDES = (
     "dist/**",
     "htmlcov/**",
     ".coverage",
+    "copy.bara.sky",
+    "copy.barista.toml",
+    "copybarista.sync.toml",
 )
 CONTROL_CHAR_BOUND = 32
 DEFAULT_SYNC_USER_NAME = "copybarista"
@@ -228,6 +233,8 @@ def check_sync_config(*, root: Path) -> None:
     for path in DEFAULT_EXCLUDES:
         if path not in config.files.exclude:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
+    if not config.leak_check.forbidden_path:
+        raise ConfigError("copy.barista.toml must define forbidden path leak checks.")
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
     _validate_package_validation_workflow_yaml(
         workflow_text=(
@@ -248,17 +255,14 @@ def copy_barista_toml(settings: SyncSettings) -> str:
 
     """
     excludes = "\n".join(f"  {_toml_str(path)}," for path in DEFAULT_EXCLUDES)
-    return f"""[workflow]
-name = {_toml_str(settings.package_name)}
-mode = "squash"
-source_root = {_toml_str(settings.source_root)}
-
-[files]
-include = ["**"]
-exclude = [
-{excludes}
-]
-"""
+    return _render_template(
+        "copy.barista.toml.tmpl",
+        {
+            "PACKAGE_NAME": _toml_str(settings.package_name),
+            "SOURCE_ROOT": _toml_str(settings.source_root),
+            "EXCLUDES": excludes,
+        },
+    )
 
 
 def sync_toml(settings: SyncSettings) -> str:
@@ -287,31 +291,26 @@ def sync_toml(settings: SyncSettings) -> str:
     commands = "\n".join(
         f"  {_toml_str(command)}," for command in settings.validation_commands
     )
-    return f"""[sync]
-package_name = {_toml_str(settings.package_name)}
-sync_label = {_toml_str(settings.sync_label)}
-sync_user_name = {_toml_str(settings.sync_user_name)}
-sync_user_email = {_toml_str(settings.sync_user_email)}
-source_root = {_toml_str(settings.source_root)}
-public_repo = {_toml_str(settings.public_repo)}
-source_repo = {_toml_str(settings.source_repo)}
-copybarista_project_path = {_toml_str(settings.copybarista_project_path)}
-smoke_import = {_toml_str(settings.smoke_import)}
-export_branch_prefix = {_toml_str(settings.export_prefix)}
-import_branch_prefix = {_toml_str(settings.import_prefix)}
-type_check_targets = [
-{targets}
-]
-forbidden_pr_text = [
-{forbidden}
-]
-validation_python_versions = [
-{python_versions}
-]
-validation_commands = [
-{commands}
-]
-"""
+    return _render_template(
+        "copybarista.sync.toml.tmpl",
+        {
+            "PACKAGE_NAME": _toml_str(settings.package_name),
+            "SYNC_LABEL": _toml_str(settings.sync_label),
+            "SYNC_USER_NAME": _toml_str(settings.sync_user_name),
+            "SYNC_USER_EMAIL": _toml_str(settings.sync_user_email),
+            "SOURCE_ROOT": _toml_str(settings.source_root),
+            "PUBLIC_REPO": _toml_str(settings.public_repo),
+            "SOURCE_REPO": _toml_str(settings.source_repo),
+            "COPYBARISTA_PROJECT_PATH": _toml_str(settings.copybarista_project_path),
+            "SMOKE_IMPORT": _toml_str(settings.smoke_import),
+            "EXPORT_BRANCH_PREFIX": _toml_str(settings.export_prefix),
+            "IMPORT_BRANCH_PREFIX": _toml_str(settings.import_prefix),
+            "TYPE_CHECK_TARGETS": targets,
+            "FORBIDDEN_PR_TEXT": forbidden,
+            "VALIDATION_PYTHON_VERSIONS": python_versions,
+            "VALIDATION_COMMANDS": commands,
+        },
+    )
 
 
 def package_validation_workflow(settings: SyncSettings) -> str:
@@ -329,36 +328,32 @@ def package_validation_workflow(settings: SyncSettings) -> str:
     """
     _validate_settings(settings)
     commands = _shell_script(settings.validation_commands, indent="          ")
-    python_versions = ", ".join(
-        _yaml_str(version) for version in settings.validation_python_versions
+    python_setup = (
+        f"          python-version: {_yaml_str(settings.validation_python_versions[0])}"
+        if len(settings.validation_python_versions) == 1
+        else "          python-version: ${{ matrix.python-version }}"
     )
-    return f"""name: Package validation
-
-on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-
-permissions:
-  contents: read
-
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [{python_versions}]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{{{ matrix.python-version }}}}
-      - uses: astral-sh/setup-uv@v5
-      - name: Validate package
-        run: |
-{commands}
-"""
+    strategy = ""
+    if len(settings.validation_python_versions) > 1:
+        python_versions = ", ".join(
+            _yaml_str(version) for version in settings.validation_python_versions
+        )
+        strategy = "\n".join(
+            (
+                "    strategy:",
+                "      matrix:",
+                f"        python-version: [{python_versions}]",
+                "",
+            )
+        )
+    return _render_template(
+        "package-validation.yml.tmpl",
+        {
+            "STRATEGY": strategy,
+            "PYTHON_SETUP": python_setup,
+            "COMMANDS": commands,
+        },
+    )
 
 
 def export_workflow(settings: SyncSettings) -> str:
@@ -384,69 +379,36 @@ def export_workflow(settings: SyncSettings) -> str:
         indent="            ",
     )
     forbidden = ",".join(settings.forbidden_pr_text)
-    return f"""name: Export public package
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - {_yaml_str(f"{settings.source_root}/**")}
-      - {_yaml_str(f"{settings.copybarista_project_path}/scripts/sync_export_pr.py")}
-      - {_yaml_str(f"{settings.copybarista_project_path}/scripts/sync_import_change.py")}
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: copybarista-export-${{{{ github.workflow }}}}-${{{{ github.ref }}}}
-  cancel-in-progress: false
-
-jobs:
-  export-pr:
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{{{ secrets.COPYBARISTA_SYNC_TOKEN }}}}
-      TARGET_REPO: {_yaml_str(settings.public_repo)}
-      BASE_BRANCH: main
-      EXPORT_BRANCH: {_yaml_str(f"{settings.export_prefix}main")}
-      SYNC_LABEL: {_yaml_str(settings.sync_label)}
-      FORBIDDEN_PR_TEXT: {_yaml_str(forbidden)}
-      COPYBARISTA_AUTO_MERGE: ${{{{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}}}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: source
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{{{ env.TARGET_REPO }}}}
-          token: ${{{{ secrets.COPYBARISTA_SYNC_TOKEN }}}}
-          ref: ${{{{ env.BASE_BRANCH }}}}
-          path: public
-      - name: Open export PR
-        run: |
-          uv --quiet --project {_sh(f"source/{settings.copybarista_project_path}")} run python \\
-            {_sh(f"source/{settings.copybarista_project_path}/scripts/sync_export_pr.py")} \\
-            --source-dir source \\
-            --project-path {_sh(settings.source_root)} \\
-            --public-dir public \\
-            --target-repo "$TARGET_REPO" \\
-            --base-branch "$BASE_BRANCH" \\
-            --branch "$EXPORT_BRANCH" \\
-            --branch-prefix {_sh(settings.export_prefix)} \\
-            --sync-label "$SYNC_LABEL" \\
-            --pr-title {_sh(f"Update {settings.sync_label} export")} \\
-            --pr-body {_sh(f"Updates the generated {settings.sync_label} public repository export.")} \\
-            --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \\
-{type_targets} \\
-            --smoke-import {_sh(settings.smoke_import)} \\
-            --auto-merge="$COPYBARISTA_AUTO_MERGE"
-"""
+    project_path = f"source/{settings.copybarista_project_path}"
+    script_path = f"{project_path}/scripts/sync_export_pr.py"
+    return _render_template(
+        "source-to-public.yml.tmpl",
+        {
+            "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
+            "EXPORT_SCRIPT_PATH": _yaml_str(
+                f"{settings.copybarista_project_path}/scripts/sync_export_pr.py"
+            ),
+            "IMPORT_SCRIPT_PATH": _yaml_str(
+                f"{settings.copybarista_project_path}/scripts/sync_import_change.py"
+            ),
+            "PUBLIC_REPO": _yaml_str(settings.public_repo),
+            "EXPORT_BRANCH": _yaml_str(f"{settings.export_prefix}main"),
+            "SYNC_LABEL": _yaml_str(settings.sync_label),
+            "FORBIDDEN_PR_TEXT": _yaml_str(forbidden),
+            "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
+            "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
+            "COPYBARISTA_PROJECT_PATH": _sh(project_path),
+            "SYNC_EXPORT_SCRIPT": _sh(script_path),
+            "SOURCE_ROOT": _sh(settings.source_root),
+            "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
+            "PR_TITLE": _sh(f"Update {settings.sync_label} export"),
+            "PR_BODY": _sh(
+                f"Updates the generated {settings.sync_label} public repository export."
+            ),
+            "TYPE_TARGETS": type_targets,
+            "SMOKE_IMPORT": _sh(settings.smoke_import),
+        },
+    )
 
 
 def import_workflow(settings: SyncSettings) -> str:
@@ -471,183 +433,39 @@ def import_workflow(settings: SyncSettings) -> str:
         ],
         indent="            ",
     )
-    return f"""name: Import public changes
+    return _render_template(
+        "public-to-source.yml.tmpl",
+        {
+            "IMPORT_BRANCH_PREFIX": _yaml_str(settings.import_prefix),
+            "SYNC_LABEL": _yaml_str(settings.sync_label),
+            "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
+            "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
+            "EXPORT_PREFIX_EXPR": _github_expr_str(settings.export_prefix),
+            "SYNC_USER_EMAIL_EXPR": _github_expr_str(settings.sync_user_email),
+            "EXPORT_BRANCH_MESSAGE_EXPR": _github_expr_str(
+                f"{settings.sync_label} export branch:"
+            ),
+            "TYPE_TARGETS": type_targets,
+        },
+    )
 
-on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      public_base_ref:
-        description: Public ref that represents the already-synced base tree.
-        default: main
-        required: true
-      public_head_ref:
-        description: Public ref to import. Defaults to this workflow run SHA.
-        required: false
 
-permissions:
-  contents: read
-
-concurrency:
-  group: copybarista-import-${{{{ github.ref }}}}
-  cancel-in-progress: false
-
-jobs:
-  import-change:
-    name: Import public changes to source
-    runs-on: ubuntu-latest
-    env:
-      DISPATCH_PUBLIC_BASE_REF: ${{{{ inputs.public_base_ref }}}}
-      DISPATCH_PUBLIC_HEAD_REF: ${{{{ inputs.public_head_ref }}}}
-      TARGET_REPO: {_yaml_str(settings.source_repo)}
-      TARGET_PROJECT_PATH: {_yaml_str(settings.source_root)}
-      COPYBARISTA_TOOL_PROJECT_PATH: {_yaml_str(settings.copybarista_project_path)}
-      COPYBARISTA_IMPORT_BRANCH_PREFIX: {_yaml_str(settings.import_prefix)}
-      COPYBARISTA_SYNC_LABEL: {_yaml_str(settings.sync_label)}
-      COPYBARISTA_SYNC_USER_NAME: {_yaml_str(settings.sync_user_name)}
-      COPYBARISTA_SYNC_USER_EMAIL: {_yaml_str(settings.sync_user_email)}
-
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        !startsWith(github.event.pull_request.head.ref, {_github_expr_str(settings.export_prefix)})
-      ) ||
-      (
-        github.event_name == 'push' &&
-        github.event.before != '0000000000000000000000000000000000000000' &&
-        github.event.head_commit.author.email != {_github_expr_str(settings.sync_user_email)} &&
-        !contains(github.event.head_commit.message, {_github_expr_str(settings.export_prefix)}) &&
-        !contains(github.event.head_commit.message, {_github_expr_str(f"{settings.sync_label} export branch:")})
-      )
-
-    steps:
-      - name: Check token
-        env:
-          IMPORT_TOKEN: ${{{{ secrets.COPYBARISTA_IMPORT_TOKEN }}}}
-        run: |
-          if [ -z "$IMPORT_TOKEN" ]; then
-            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
-            exit 1
-          fi
-
-      - name: Set sync paths
-        run: |
-          echo "IMPORT_REPORT=$RUNNER_TEMP/copybarista-import-report.json" >> "$GITHUB_ENV"
-          echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/sync_import_change.py" >> "$GITHUB_ENV"
-
-      - id: refs
-        name: Resolve public refs
-        run: |
-          if [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
-            base_ref="${{{{ github.event.pull_request.base.sha }}}}"
-            head_ref="${{{{ github.event.pull_request.head.sha }}}}"
-          elif [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
-            base_ref="$DISPATCH_PUBLIC_BASE_REF"
-            head_ref="$DISPATCH_PUBLIC_HEAD_REF"
-            if [ -z "$head_ref" ]; then
-              head_ref="${{GITHUB_SHA}}"
-            fi
-          else
-            base_ref="${{{{ github.event.before }}}}"
-            head_ref="${{GITHUB_SHA}}"
-          fi
-          if [ -z "$base_ref" ] || [ "$base_ref" = "0000000000000000000000000000000000000000" ]; then
-            echo "::error::Cannot resolve public base ref for import."
-            exit 1
-          fi
-          for ref in "$base_ref" "$head_ref"; do
-            if ! git check-ref-format --allow-onelevel "$ref"; then
-              echo "::error::Invalid public ref: $ref"
-              exit 1
-            fi
-          done
-          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{{{ steps.refs.outputs.base_ref }}}}
-          path: public-base
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{{{ steps.refs.outputs.head_ref }}}}
-          path: public-head
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{{{ env.TARGET_REPO }}}}
-          token: ${{{{ secrets.COPYBARISTA_IMPORT_TOKEN }}}}
-          ref: main
-          path: target
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v5
-
-      - name: Capture trusted import helper
-        run: |
-          install -m 600 \\
-            "target/$COPYBARISTA_TOOL_PROJECT_PATH/scripts/sync_import_change.py" \\
-            "$TRUSTED_IMPORT_SCRIPT"
-
-      - name: Import public tree into target repository
-        run: |
-          uv --quiet --project "target/$COPYBARISTA_TOOL_PROJECT_PATH" run python \\
-            "$TRUSTED_IMPORT_SCRIPT" \\
-            --public-base public-base \\
-            --public-head public-head \\
-            --target-dir target \\
-            --target-repo "$TARGET_REPO" \\
-            --project-path "$TARGET_PROJECT_PATH" \\
-            --copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH" \\
-            --base-branch main \\
-            --public-repo "$GITHUB_REPOSITORY" \\
-            --public-sha "$GITHUB_SHA" \\
-            --public-base-ref "${{{{ steps.refs.outputs.base_ref }}}}" \\
-            --public-head-ref "${{{{ steps.refs.outputs.head_ref }}}}" \\
-            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \\
-            --sync-label "$COPYBARISTA_SYNC_LABEL" \\
-            --report "$IMPORT_REPORT" \\
-{type_targets} \\
-            --open-pr false
-
-      - name: Open or update target import PR
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{{{ secrets.COPYBARISTA_IMPORT_TOKEN }}}}
-        run: |
-          python "$TRUSTED_IMPORT_SCRIPT" \\
-            --target-dir target \\
-            --target-repo "$TARGET_REPO" \\
-            --project-path "$TARGET_PROJECT_PATH" \\
-            --copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH" \\
-            --base-branch main \\
-            --public-repo "$GITHUB_REPOSITORY" \\
-            --public-sha "$GITHUB_SHA" \\
-            --public-base-ref "${{{{ steps.refs.outputs.base_ref }}}}" \\
-            --public-head-ref "${{{{ steps.refs.outputs.head_ref }}}}" \\
-            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \\
-            --sync-label "$COPYBARISTA_SYNC_LABEL" \\
-            --report "$IMPORT_REPORT" \\
-            --open-pr true \\
-            --open-pr-only
-
-      - name: Upload import report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: copybarista-import-report
-          path: ${{{{ env.IMPORT_REPORT }}}}
-          if-no-files-found: ignore
-"""
+def _render_template(name: str, values: dict[str, str]) -> str:
+    """Render one package-data template with explicit token replacement."""
+    text = (
+        resources.files("copybarista.templates")
+        .joinpath(name)
+        .read_text(encoding="utf-8")
+    )
+    for key, value in values.items():
+        text = text.replace(f"@@{key}@@", value)
+    if "@@" in text:
+        raise AssertionError(f"Unrendered token in template {name}.")
+    return text
 
 
 def _required_paths(root: Path) -> tuple[Path, ...]:
+    """Return generated public sync files that must stay present."""
     return (
         root / "copy.barista.toml",
         root / "copybarista.sync.toml",
@@ -659,6 +477,7 @@ def _required_paths(root: Path) -> tuple[Path, ...]:
 def _validate_import_workflow_yaml(
     *, workflow_text: str, settings: SyncSettings
 ) -> None:
+    """Validate the exported public-to-source workflow matches settings."""
     try:
         parsed: object = yaml.safe_load(workflow_text)
     except yaml.YAMLError as err:
@@ -670,9 +489,9 @@ def _validate_import_workflow_yaml(
     job = _yaml_mapping(jobs.get("import-change"), "jobs.import-change")
     env = _yaml_mapping(job.get("env"), "jobs.import-change.env")
     expected_env = {
-        "TARGET_REPO": settings.source_repo,
-        "TARGET_PROJECT_PATH": settings.source_root,
-        "COPYBARISTA_TOOL_PROJECT_PATH": settings.copybarista_project_path,
+        "TARGET_REPO": "${{ vars.COPYBARISTA_SOURCE_REPO }}",
+        "TARGET_PROJECT_PATH": "${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}",
+        "COPYBARISTA_TOOL_PROJECT_PATH": "${{ vars.COPYBARISTA_TOOL_PROJECT_PATH }}",
         "COPYBARISTA_IMPORT_BRANCH_PREFIX": settings.import_prefix,
         "COPYBARISTA_SYNC_LABEL": settings.sync_label,
         "COPYBARISTA_SYNC_USER_NAME": settings.sync_user_name,
@@ -736,6 +555,7 @@ def _validate_import_workflow_yaml(
 def _validate_package_validation_workflow_yaml(
     *, workflow_text: str, settings: SyncSettings
 ) -> None:
+    """Validate package CI matches generated sync validation commands."""
     try:
         parsed: object = yaml.safe_load(workflow_text)
     except yaml.YAMLError as err:
@@ -745,15 +565,32 @@ def _validate_package_validation_workflow_yaml(
     workflow = cast("dict[str, object]", parsed)
     jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
     job = _yaml_mapping(jobs.get("validate"), "jobs.validate")
-    matrix = _yaml_mapping(
-        _yaml_mapping(job.get("strategy"), "jobs.validate.strategy").get("matrix"),
-        "jobs.validate.strategy.matrix",
-    )
-    if matrix.get("python-version") != list(settings.validation_python_versions):
+    if job.get("name") != "Lint, type-check, test, and build":
         raise ConfigError(
-            "package-validation.yml jobs.validate.strategy.matrix.python-version "
-            "must match validation_python_versions."
+            "package-validation.yml jobs.validate.name must be "
+            "'Lint, type-check, test, and build'."
         )
+    if len(settings.validation_python_versions) == 1:
+        steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
+        setup_step = _workflow_uses_step(steps, "actions/setup-python@v5")
+        with_config = _yaml_mapping(
+            setup_step.get("with"), "jobs.validate.steps.setup-python.with"
+        )
+        if with_config.get("python-version") != settings.validation_python_versions[0]:
+            raise ConfigError(
+                "package-validation.yml setup-python python-version must match "
+                "validation_python_versions."
+            )
+    else:
+        matrix = _yaml_mapping(
+            _yaml_mapping(job.get("strategy"), "jobs.validate.strategy").get("matrix"),
+            "jobs.validate.strategy.matrix",
+        )
+        if matrix.get("python-version") != list(settings.validation_python_versions):
+            raise ConfigError(
+                "package-validation.yml jobs.validate.strategy.matrix.python-version "
+                "must match validation_python_versions."
+            )
     steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
     run = _workflow_step_run(steps, "Validate package")
     commands = tuple(line.strip() for line in run.splitlines() if line.strip())
@@ -765,6 +602,7 @@ def _validate_package_validation_workflow_yaml(
 
 
 def _workflow_step_run(steps: list[object], name: str) -> str:
+    """Return the shell script for a named workflow step."""
     for step in steps:
         step_map = _yaml_mapping(step, f"jobs.import-change.steps.{name}")
         if step_map.get("name") == name:
@@ -775,19 +613,31 @@ def _workflow_step_run(steps: list[object], name: str) -> str:
     raise ConfigError(f"sync-to-source.yml must define step {name}.")
 
 
+def _workflow_uses_step(steps: list[object], uses: str) -> dict[str, object]:
+    """Return the first workflow step using an action."""
+    for step in steps:
+        step_map = _yaml_mapping(step, f"workflow step {uses}")
+        if step_map.get("uses") == uses:
+            return step_map
+    raise ConfigError(f"Workflow must define step using {uses}.")
+
+
 def _yaml_mapping(value: object, name: str) -> dict[str, object]:
+    """Return `value` as a YAML mapping or raise a config error."""
     if not isinstance(value, dict):
         raise ConfigError(f"sync-to-source.yml {name} must be a YAML mapping.")
     return cast("dict[str, object]", value)
 
 
 def _yaml_list(value: object, name: str) -> list[object]:
+    """Return `value` as a YAML list or raise a config error."""
     if not isinstance(value, list):
         raise ConfigError(f"sync-to-source.yml {name} must be a YAML list.")
     return cast("list[object]", value)
 
 
 def _required_str(sync: dict[str, object], key: str) -> str:
+    """Read a required non-empty string from the sync table."""
     value = sync.get(key, "")
     if not isinstance(value, str) or not value:
         raise ConfigError(f"copybarista.sync.toml must define sync.{key}.")
@@ -795,6 +645,7 @@ def _required_str(sync: dict[str, object], key: str) -> str:
 
 
 def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
+    """Read an optional string from the sync table."""
     value = sync.get(key, default)
     if not isinstance(value, str):
         raise ConfigError(f"copybarista.sync.toml sync.{key} must be a string.")
@@ -804,12 +655,14 @@ def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
 def _optional_str_tuple(
     sync: dict[str, object], key: str, *, default: tuple[str, ...]
 ) -> tuple[str, ...]:
+    """Read an optional list of strings from the sync table."""
     if key not in sync:
         return default
     return _required_str_tuple(sync, key)
 
 
 def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
+    """Read a required list of strings from the sync table."""
     value = sync.get(key, [])
     if not isinstance(value, list):
         raise ConfigError(
@@ -831,10 +684,12 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
 def _default_validation_commands(
     *, smoke_import: str, type_check_targets: tuple[str, ...]
 ) -> tuple[str, ...]:
+    """Build the default exported-package validation command list."""
     type_targets = " ".join(shlex.quote(target) for target in type_check_targets)
     return (
         "uv sync --all-groups",
-        "uv run ruff check .",
+        "uv run ruff check --no-fix --no-cache .",
+        "uv run ruff format --check --no-cache .",
         f"uv run basedpyright {type_targets}",
         "uv run pytest",
         f'uv run python -c "import {smoke_import}"',
@@ -843,6 +698,7 @@ def _default_validation_commands(
 
 
 def _validate_settings(settings: SyncSettings) -> None:
+    """Validate sync settings before writing workflow files."""
     for name, value in (
         ("package_name", settings.package_name),
         ("sync_label", settings.sync_label),
@@ -858,6 +714,7 @@ def _validate_settings(settings: SyncSettings) -> None:
             raise ConfigError(f"sync.{name} cannot be empty.")
     if not settings.type_check_targets:
         raise ConfigError("sync.type_check_targets cannot be empty.")
+    _validate_python_module_name(settings.smoke_import, name="smoke_import")
     if not settings.validation_python_versions:
         raise ConfigError("sync.validation_python_versions cannot be empty.")
     if not settings.validation_commands:
@@ -869,7 +726,15 @@ def _validate_settings(settings: SyncSettings) -> None:
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
 
 
+def _validate_python_module_name(value: str, *, name: str) -> None:
+    """Reject module names that cannot be safely embedded in smoke commands."""
+    parts = value.split(".")
+    if not all(part.isidentifier() and not keyword.iskeyword(part) for part in parts):
+        raise ConfigError(f"sync.{name} must be a dotted Python module name.")
+
+
 def _validate_branch_prefix(prefix: str, *, name: str) -> None:
+    """Reject branch prefixes that can overwrite protected or arbitrary refs."""
     if not prefix or prefix in {"main", "master"} or prefix.startswith(("-", "/")):
         raise ConfigError(f"sync.{name} is not a safe generated branch prefix.")
     branch = f"{prefix}check"
@@ -878,6 +743,7 @@ def _validate_branch_prefix(prefix: str, *, name: str) -> None:
 
 
 def _valid_git_branch_name(branch: str) -> bool:
+    """Return whether `branch` is safe for generated sync pushes."""
     if branch in {"main", "master"} or branch.startswith(("-", "/")):
         return False
     if branch.endswith(("/", ".", ".lock")):
@@ -891,6 +757,7 @@ def _valid_git_branch_name(branch: str) -> bool:
 
 
 def _shell_lines(args: list[str], *, indent: str) -> str:
+    """Format CLI flag pairs as a continued shell command."""
     pairs = [
         f"{indent}{_sh(args[idx])} {_sh(args[idx + 1])}"
         for idx in range(0, len(args), 2)
@@ -899,26 +766,32 @@ def _shell_lines(args: list[str], *, indent: str) -> str:
 
 
 def _shell_script(commands: tuple[str, ...], *, indent: str) -> str:
+    """Indent validation commands for generated workflow YAML."""
     return "\n".join(f"{indent}{command}" for command in commands)
 
 
 def _toml_str(value: str) -> str:
+    """Return a TOML-compatible quoted string."""
     return json.dumps(value)
 
 
 def _yaml_str(value: str) -> str:
+    """Return a YAML-compatible quoted string."""
     return json.dumps(value)
 
 
 def _github_expr_str(value: str) -> str:
+    """Return a single-quoted GitHub expression string literal."""
     return "'" + value.replace("'", "''") + "'"
 
 
 def _sh(value: str) -> str:
+    """Return a shell-quoted argument."""
     return shlex.quote(value)
 
 
 def _branch_slug(value: str) -> str:
+    """Return the generated branch slug for a package name."""
     slug = "".join(char if char.isalnum() else "-" for char in value.casefold()).strip(
         "-"
     )
