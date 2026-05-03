@@ -15,6 +15,8 @@ from scripts.sync_export_pr import (
     _gh_pr_exists,
     _public_pr_text,
     _replace_tree,
+    _validate_public,
+    _validate_source,
     export_branch_name,
     export_pr_body,
     export_pr_text,
@@ -305,3 +307,58 @@ def test_replace_tree_preserves_git_and_removes_stale_files(tmp_path: Path):
     assert not (destination / "stale.txt").exists()
     assert not (destination / "pkg/old.py").exists()
     assert (destination / "pkg/module.py").read_text(encoding="utf-8") == "new\n"
+
+
+def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
+        calls.append(["basedpyright", str(project), *targets])
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
+
+    _validate_source(project=Path("/repo/pkg"), type_check_targets=("configgle",))
+
+    assert [
+        "uv",
+        "--quiet",
+        "--project",
+        "/repo/pkg",
+        "run",
+        "ty",
+        "check",
+    ] in calls
+
+
+def test_validate_public_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
+        calls.append(["basedpyright", str(public_dir), *targets])
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_run_basedpyright_public",
+        fake_basedpyright_public,
+    )
+
+    _validate_public(
+        public_dir=Path("/public"),
+        dist_dir=Path("/dist"),
+        release_check_script=None,
+        type_check_targets=("configgle",),
+        smoke_import="",
+    )
+
+    assert ["uv", "run", "--all-groups", "ty", "check"] in calls
+    assert ["uv", "run", "--all-groups", "codespell", "."] in calls

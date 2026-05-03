@@ -92,7 +92,8 @@ regenerating existing sync files.
 
 The generated package validation workflow runs package-owned commands from
 `copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
-basedpyright over `type_check_targets`, pytest, a smoke import, and `uv build`.
+codespell, full-project ty, basedpyright over `type_check_targets`, pytest, a
+smoke import, and `uv build`.
 Use repeated `--validation-python-version` and `--validation-command` flags when
 a package needs a different public correctness contract. `check-sync-config`
 validates that `.github/workflows/package-validation.yml` still matches those

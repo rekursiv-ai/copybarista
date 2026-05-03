@@ -249,6 +249,8 @@ def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "run",
             "ruff",
             "check",
+            "--no-fix",
+            "--no-cache",
             ".",
         ],
         cwd=project,
@@ -263,11 +265,24 @@ def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "ruff",
             "format",
             "--check",
+            "--no-cache",
             ".",
         ],
         cwd=project,
     )
     _run_basedpyright(project=project, targets=type_check_targets)
+    _run(
+        [
+            "uv",
+            "--quiet",
+            "--project",
+            str(project),
+            "run",
+            "ty",
+            "check",
+        ],
+        cwd=project,
+    )
     _run(
         [
             "uv",
@@ -354,11 +369,16 @@ def _validate_public(
             cwd=public_dir,
         )
     _run(["uv", "sync", "--all-groups"], cwd=public_dir)
-    _run(["uv", "run", "--all-groups", "ruff", "check", "."], cwd=public_dir)
     _run(
-        ["uv", "run", "--all-groups", "ruff", "format", "--check", "."],
+        ["uv", "run", "--all-groups", "ruff", "check", "--no-fix", "--no-cache", "."],
         cwd=public_dir,
     )
+    _run(
+        ["uv", "run", "--all-groups", "ruff", "format", "--check", "--no-cache", "."],
+        cwd=public_dir,
+    )
+    _run(["uv", "run", "--all-groups", "codespell", "."], cwd=public_dir)
+    _run(["uv", "run", "--all-groups", "ty", "check"], cwd=public_dir)
     _run_basedpyright_public(public_dir=public_dir, targets=type_check_targets)
     _run(["uv", "run", "--all-groups", "pytest", "-q"], cwd=public_dir)
     _run(["uv", "build", "--out-dir", str(dist_dir)], cwd=public_dir)

@@ -19,8 +19,8 @@ Run these before submitting changes:
 
 ```bash
 uv run --all-groups pre-commit run --all-files
-uv run --all-groups ruff check .
-uv run --all-groups ruff format --check .
+uv run --all-groups ruff check --no-fix --no-cache .
+uv run --all-groups ruff format --check --no-cache .
 uv run --all-groups codespell .
 uv run --all-groups ty check
 uv run --all-groups basedpyright copybarista scripts tests

@@ -14,6 +14,7 @@ from scripts.sync_import_change import (
     _commit_author,
     _gh_pr_exists,
     _string_bool,
+    _validate_target,
     import_branch_name,
     import_change_pr_body,
 )
@@ -222,3 +223,29 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
     assert error.value.code == 1
     assert calls == sync_import_change.GITHUB_RETRY_ATTEMPTS
     assert "HTTP 504" in capsys.readouterr().err
+
+
+def test_validate_target_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
+        calls.append(["basedpyright", str(project), *targets])
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run_basedpyright", fake_basedpyright)
+
+    _validate_target(project=Path("/repo/pkg"), type_check_targets=("configgle",))
+
+    assert [
+        "uv",
+        "--quiet",
+        "--project",
+        "/repo/pkg",
+        "run",
+        "ty",
+        "check",
+    ] in calls

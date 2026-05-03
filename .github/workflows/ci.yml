@@ -29,10 +29,10 @@ jobs:
         run: uv sync --all-groups
 
       - name: Lint
-        run: uv run --all-groups ruff check .
+        run: uv run --all-groups ruff check --no-fix --no-cache .
 
       - name: Format check
-        run: uv run --all-groups ruff format --check .
+        run: uv run --all-groups ruff format --check --no-cache .
 
       - name: Spell check
         run: uv run --all-groups codespell .

@@ -283,6 +283,7 @@ exclude = [
     ".pytest_cache/",
     "build/",
     "dist/",
+    "docs/",
     "typings/",
     "**/third_party/",
 ]
@@ -292,6 +293,7 @@ ignore = [
     ".pytest_cache/",
     "build/",
     "dist/",
+    "docs/",
     "typings/",
     "**/third_party/",
 ]
@@ -326,6 +328,7 @@ exclude = [
     ".pytest_cache/",
     "build/",
     "dist/",
+    "docs/",
     "typings/",
     "**/third_party/",
 ]

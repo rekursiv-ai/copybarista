@@ -170,6 +170,8 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
         "uv sync --all-groups",
         "uv run ruff check --no-fix --no-cache .",
         "uv run ruff format --check --no-cache .",
+        "uv run codespell .",
+        "uv run ty check",
         "uv run basedpyright configgle",
         "uv run pytest",
         'uv run python -c "import configgle"',

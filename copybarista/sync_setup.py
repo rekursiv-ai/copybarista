@@ -690,6 +690,8 @@ def _default_validation_commands(
         "uv sync --all-groups",
         "uv run ruff check --no-fix --no-cache .",
         "uv run ruff format --check --no-cache .",
+        "uv run codespell .",
+        "uv run ty check",
         f"uv run basedpyright {type_targets}",
         "uv run pytest",
         f'uv run python -c "import {smoke_import}"',
