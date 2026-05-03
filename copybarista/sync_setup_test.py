@@ -291,6 +291,10 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     assert (
         "github.event.head_commit.author.email != 'copybarista@example.com'" in workflow
     )
+    assert "id: settings" in workflow
+    assert "Public-to-source import is not configured; skipping." in workflow
+    assert 'if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then' in workflow
+    assert "if: steps.settings.outputs.enabled == 'true'" in workflow
     assert "--open-pr false" in workflow
     assert "--open-pr-only" in workflow
     assert '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"' in workflow

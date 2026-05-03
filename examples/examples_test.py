@@ -103,6 +103,11 @@ def test_github_workflow_examples_call_copybarista_commands():
         "github.event.before != '0000000000000000000000000000000000000000'"
         in public_to_source
     )
+    assert "Public-to-source import is not configured; skipping." in public_to_source
+    assert 'if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then' in (
+        public_to_source
+    )
+    assert "if: steps.settings.outputs.enabled == 'true'" in public_to_source
     assert "PYTHONDONTWRITEBYTECODE=1" in public_to_source
     assert 'source_base_ref="$(git rev-parse HEAD)"' in public_to_source
     assert 'pr_title="Import public changes ${head_ref:0:12}"' in public_to_source
