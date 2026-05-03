@@ -53,21 +53,33 @@ jobs:
       DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
 
     steps:
-      - name: Check settings
+      - id: settings
+        name: Check settings
         env:
           IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
+          missing=false
           if [ -z "$IMPORT_TOKEN" ]; then
             echo "::error::Set COPYBARISTA_IMPORT_TOKEN."
-            exit 1
+            missing=true
           fi
           if [ -z "$SOURCE_REPO" ]; then
             echo "::error::Set COPYBARISTA_SOURCE_REPO."
-            exit 1
+            missing=true
           fi
+          if [ "$missing" = "true" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            echo "::notice::Public-to-source import is not configured; skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - id: refs
         name: Resolve public refs
+        if: steps.settings.outputs.enabled == 'true'
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base_ref="${{ github.event.pull_request.base.sha }}"
@@ -102,18 +114,21 @@ jobs:
           echo "open_pr=$open_pr" >> "$GITHUB_OUTPUT"
 
       - name: Check out public base
+        if: steps.settings.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.refs.outputs.base_ref }}
           path: public-base
 
       - name: Check out public head
+        if: steps.settings.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.refs.outputs.head_ref }}
           path: public-head
 
       - name: Check out source repository
+        if: steps.settings.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -123,9 +138,11 @@ jobs:
           persist-credentials: false
 
       - name: Set up uv
+        if: steps.settings.outputs.enabled == 'true'
         uses: astral-sh/setup-uv@v5
 
       - name: Import public changes
+        if: steps.settings.outputs.enabled == 'true'
         run: |
           uvx copybarista import-change "source/$PROJECT_PATH/copy.barista.toml" \
             --public-base public-base \
@@ -135,6 +152,7 @@ jobs:
             --json > "$RUNNER_TEMP/copybarista-import-report.json"
 
       - name: Validate source checkout
+        if: steps.settings.outputs.enabled == 'true'
         working-directory: source
         run: |
           test -f "$PROJECT_PATH/copy.barista.toml"
@@ -146,7 +164,7 @@ jobs:
           fi
 
       - name: Open or update source PR
-        if: steps.refs.outputs.open_pr == 'true'
+        if: steps.settings.outputs.enabled == 'true' && steps.refs.outputs.open_pr == 'true'
         working-directory: source
         env:
           GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
