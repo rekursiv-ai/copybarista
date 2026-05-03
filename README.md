@@ -209,9 +209,9 @@ names. Use `init-sync --overwrite` only when intentionally regenerating existing
 sync files.
 
 The validation workflow runs package-owned commands from `copybarista.sync.toml`.
-By default it syncs dependencies, runs Ruff, basedpyright, pytest, a smoke import,
-and `uv build`. Override it at setup time when a package needs different public
-correctness gates:
+By default it syncs dependencies, runs Ruff, codespell, ty, basedpyright,
+pytest, a smoke import, and `uv build`. Override it at setup time when a package
+needs different public correctness gates:
 
 ```bash
 copybarista init-sync . \

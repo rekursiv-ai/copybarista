@@ -219,6 +219,8 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "run",
             "ruff",
             "check",
+            "--no-fix",
+            "--no-cache",
             ".",
         ],
         cwd=project,
@@ -233,11 +235,24 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "ruff",
             "format",
             "--check",
+            "--no-cache",
             ".",
         ],
         cwd=project,
     )
     _run_basedpyright(project=project, targets=type_check_targets)
+    _run(
+        [
+            "uv",
+            "--quiet",
+            "--project",
+            str(project),
+            "run",
+            "ty",
+            "check",
+        ],
+        cwd=project,
+    )
     _run(
         [
             "uv",
