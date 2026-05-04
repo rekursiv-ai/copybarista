@@ -114,6 +114,36 @@ def test_loads_file_copy_config(tmp_path: Path):
     assert 'exclude = ["*_test.py"]' in serialized
 
 
+def test_loads_file_write_config(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.write]]
+        path = "demo/lib/web/__init__.py"
+        content = "\\\"\\\"\\\"Web helpers.\\\"\\\"\\\"\\n"
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert len(config.files.write) == 1
+    assert config.files.write[0].path == "demo/lib/web/__init__.py"
+    assert config.files.write[0].content == '"""Web helpers."""\n'
+    serialized = workflow_to_toml(config)
+    assert "[[files.write]]" in serialized
+    assert 'path = "demo/lib/web/__init__.py"' in serialized
+    assert 'content = "\\"\\"\\"Web helpers.\\"\\"\\"\\n"' in serialized
+
+
 def test_loads_leak_check_policy(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
@@ -198,6 +228,29 @@ def test_rejects_file_copy_escape(tmp_path: Path):
     )
 
     with pytest.raises(ConfigError, match=r"files\.copy\.source"):
+        load_config(config_path)
+
+
+def test_rejects_file_write_escape(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.write]]
+        path = "../demo/__init__.py"
+        content = ""
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"files\.write\.path"):
         load_config(config_path)
 
 

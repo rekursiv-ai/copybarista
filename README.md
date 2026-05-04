@@ -178,7 +178,9 @@ copybarista export copy.barista.toml /path/to/source \
 The `source_ref` argument is the checkout root. `workflow.source_root` is
 resolved relative to that root, and exported files land at the destination
 root. Use `[[files.copy]]` when a public package should also include selected
-shared files from elsewhere in the same checkout.
+shared files from elsewhere in the same checkout. Use `[[files.write]]` for
+small export-only files that should be materialized in the public tree without
+creating fake source files.
 
 ## Common Workflows
 
@@ -460,6 +462,7 @@ Copybarista config, and then runs the same export engine.
 | Source checkout | CLI `SOURCE_REF` | `folder.origin()` | Remote origins fail |
 | Root move | `source_root` | `core.move(ROOT, "")` | Non-root destinations fail |
 | Extra source files | `[[files.copy]]` | Not imported | Native TOML only |
+| Generated files | `[[files.write]]` | Not imported | Native TOML only |
 | File globs | `include` / `exclude` | `glob(..., exclude=...)` | Unsupported glob constructs fail |
 | Folder export | `[destination.folder]` | `folder.destination()` | Needs `--force` for existing folders |
 | Git export | `[destination.git]` | `git.destination(...)` | Single-commit export |

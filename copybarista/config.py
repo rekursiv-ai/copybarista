@@ -69,6 +69,14 @@ class FileCopy:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FileWrite:
+    """Generated file to materialize into the exported tree."""
+
+    path: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FileSelection:
     """Include and exclude patterns relative to the source root.
 
@@ -81,6 +89,7 @@ class FileSelection:
     destination_prefix: str = ""
     destination_prefix_exclude: tuple[str, ...] = ()
     copy: tuple[FileCopy, ...] = ()
+    write: tuple[FileWrite, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -217,6 +226,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             "destination_prefix",
             "destination_prefix_exclude",
             "copy",
+            "write",
         },
         "files",
     )
@@ -240,6 +250,10 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         copy=tuple(
             _parse_file_copy(idx=idx, raw_copy=entry)
             for idx, entry in enumerate(_list(files, "copy"), start=1)
+        ),
+        write=tuple(
+            _parse_file_write(idx=idx, raw_write=entry)
+            for idx, entry in enumerate(_list(files, "write"), start=1)
         ),
     )
 
@@ -319,6 +333,10 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             lines.append(f"include = {_toml_list(file_copy.include)}")
         if file_copy.exclude:
             lines.append(f"exclude = {_toml_list(file_copy.exclude)}")
+    for file_write in config.files.write:
+        lines.extend(["", "[[files.write]]"])
+        lines.append(f"path = {_toml_string(file_write.path)}")
+        lines.append(f"content = {_toml_string(file_write.content)}")
     if config.leak_check.forbidden_path or config.leak_check.forbidden_text:
         lines.extend(["", "[leak_check]"])
     for rule in config.leak_check.forbidden_path:
@@ -481,6 +499,18 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
             )
         ),
     )
+
+
+def _parse_file_write(idx: int, raw_write: object) -> FileWrite:
+    """Parse one `[[files.write]]` table into a generated file config."""
+    if not isinstance(raw_write, dict):
+        raise ConfigError("Each files.write entry must be a table")
+    raw_write = cast("dict[str, object]", raw_write)
+    _check_keys(raw_write, {"path", "content"}, f"files.write[{idx}]")
+    path = _relative_path(_string(raw_write, "path"), "files.write.path")
+    if not path:
+        raise ConfigError("files.write path must be non-empty")
+    return FileWrite(path=path, content=_string(raw_write, "content"))
 
 
 def _parse_transform(idx: int, raw_transform: object) -> Transform:
