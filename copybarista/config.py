@@ -138,6 +138,7 @@ class Transform:
     reverse_after: str = ""
     start: str = ""
     end: str = ""
+    else_marker: str = ""
     inclusive: bool = True
     required: bool = True
     destination: str = ""
@@ -376,6 +377,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
         elif transform.type == "strip_block":
             lines.append(f"start = {_toml_string(transform.start)}")
             lines.append(f"end = {_toml_string(transform.end)}")
+            if transform.else_marker:
+                lines.append(f"else = {_toml_string(transform.else_marker)}")
             lines.append(f"inclusive = {_toml_bool(transform.inclusive)}")
     return "\n".join(lines) + "\n"
 
@@ -613,21 +616,21 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         )
     _check_keys(
         raw_transform,
-        {"id", "type", "path", "required", "start", "end", "inclusive"},
+        {"id", "type", "path", "required", "start", "end", "else", "inclusive"},
         f"transform[{idx}]",
     )
     start = _string(raw_transform, "start")
     end = _string(raw_transform, "end")
     if not start or not end:
         raise ConfigError("strip_block start and end markers must be non-empty")
-    if _has_glob_syntax(path):
-        raise ConfigError("strip_block path must be an exact file path")
+    else_marker = _string(raw_transform, "else", default="")
     return Transform(
         id=transform_id,
         type="strip_block",
         path=path,
         start=start,
         end=end,
+        else_marker=else_marker,
         inclusive=_bool(raw_transform, "inclusive", default=True),
         required=required,
     )

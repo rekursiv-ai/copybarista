@@ -160,37 +160,36 @@ def _replace(
 def _strip_block(
     root: Path, transform: Transform, sources_by_destination: dict[str, str]
 ) -> _TransformResult:
-    """Remove marker-delimited blocks from one file."""
-    path = root / transform.path
-    if not path.exists():
-        if transform.required:
-            raise TransformError(f"Transformation '{transform.id}' matched no files")
-        return _TransformResult(changed=0, count=0, files=())
-    original = _read_text(path)
-    updated, count = _strip_blocks(original, transform)
-    if count == 0:
-        if transform.required:
+    """Remove marker-delimited blocks from matched files."""
+    paths = _matching_files(root=root, pattern=transform.path)
+    changed = 0
+    total_count = 0
+    files: list[TransformFileReport] = []
+    for path in paths:
+        if path.is_symlink():
+            continue
+        original = _read_text(path)
+        updated, count = _strip_blocks(original, transform)
+        if count == 0 or updated == original:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        changed += 1
+        total_count += count
+        files.append(
+            _file_report(
+                root=root,
+                path=path,
+                count=count,
+                sources_by_destination=sources_by_destination,
+            )
+        )
+    if changed == 0 and transform.required:
+        if paths:
             raise TransformError(
                 f"Transformation '{transform.id}' did not find start marker"
             )
-        return _TransformResult(changed=0, count=0, files=())
-    if updated != original:
-        path.write_text(updated, encoding="utf-8")
-        return _TransformResult(
-            changed=1,
-            count=count,
-            files=(
-                _file_report(
-                    root=root,
-                    path=path,
-                    count=count,
-                    sources_by_destination=sources_by_destination,
-                ),
-            ),
-        )
-    if transform.required:
-        raise TransformError(f"Transformation '{transform.id}' was a no-op")
-    return _TransformResult(changed=0, count=0, files=())
+        raise TransformError(f"Transformation '{transform.id}' matched no files")
+    return _TransformResult(changed=changed, count=total_count, files=tuple(files))
 
 
 def _move(
@@ -271,6 +270,8 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
         raise TransformError(
             f"Transformation '{transform.id}' markers must be non-empty"
         )
+    if transform.else_marker:
+        return _strip_blocks_with_else(text, transform)
     updated = text
     search_from = 0
     count = 0
@@ -303,6 +304,54 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
             updated = updated[:start_idx] + updated[end_idx:]
             search_from = start_idx + len(transform.end)
         count += 1
+
+
+def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
+    """Strip if/else/endif blocks, uncommenting the else branch."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+        trailing_newline = True
+    else:
+        trailing_newline = False
+    result: list[str] = []
+    i = 0
+    count = 0
+    while i < len(lines):
+        if transform.start in lines[i]:
+            else_idx = None
+            end_idx = None
+            for j in range(i + 1, len(lines)):
+                if transform.else_marker in lines[j]:
+                    else_idx = j
+                elif transform.end in lines[j]:
+                    end_idx = j
+                    break
+            if end_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' did not find end marker"
+                )
+            if else_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' found block without "
+                    f"else marker '{transform.else_marker}'"
+                )
+            for line in lines[else_idx + 1 : end_idx]:
+                if line.startswith("# "):
+                    result.append(line[2:])
+                elif line.startswith("#"):
+                    result.append(line[1:])
+                else:
+                    result.append(line)
+            i = end_idx + 1
+            count += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    final = "\n".join(result)
+    if trailing_newline:
+        final += "\n"
+    return final, count
 
 
 def _file_report(

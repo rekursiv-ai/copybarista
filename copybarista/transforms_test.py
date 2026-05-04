@@ -468,6 +468,157 @@ def test_optional_move_allows_missing_source(tmp_path: Path):
     assert result.files == ()
 
 
+def test_strip_block_if_else_uncomments_else_branch(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "before\n"
+        "# copybarista:if internal\n"
+        "INTERNAL = True\n"
+        "# copybarista:else\n"
+        "# INTERNAL = False\n"
+        "# copybarista:endif\n"
+        "after\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="conditional",
+                type="strip_block",
+                path="config.py",
+                start="# copybarista:if internal",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "before\nINTERNAL = False\nafter\n"
+    assert result.changed == 1
+    assert result.count == 1
+
+
+def test_strip_block_if_else_multiple_lines(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "# copybarista:if internal\n"
+        'X = "wide"\n'
+        'Y = "internal"\n'
+        "# copybarista:else\n"
+        '# X = "narrow"\n'
+        '# Y = "public"\n'
+        "# copybarista:endif\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="conditional",
+                type="strip_block",
+                path="config.py",
+                start="# copybarista:if internal",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == 'X = "narrow"\nY = "public"\n'
+
+
+def test_strip_block_if_else_repeated_blocks(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "a = 1\n"
+        "# copybarista:if internal\n"
+        "b = 2\n"
+        "# copybarista:else\n"
+        "# b = 3\n"
+        "# copybarista:endif\n"
+        "c = 4\n"
+        "# copybarista:if internal\n"
+        "d = 5\n"
+        "# copybarista:else\n"
+        "# d = 6\n"
+        "# copybarista:endif\n"
+        "e = 7\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="conditional",
+                type="strip_block",
+                path="config.py",
+                start="# copybarista:if internal",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "a = 1\nb = 3\nc = 4\nd = 6\ne = 7\n"
+    assert result.count == 2
+
+
+def test_strip_block_if_else_preserves_indented_comments(tmp_path: Path):
+    """Lines with # that aren't comment prefixes should be preserved."""
+    path = tmp_path / "config.py"
+    path.write_text(
+        "# copybarista:if internal\n"
+        "x = 1\n"
+        "# copybarista:else\n"
+        "#     x = 2\n"
+        "# copybarista:endif\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="conditional",
+                type="strip_block",
+                path="config.py",
+                start="# copybarista:if internal",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "    x = 2\n"
+
+
+def test_strip_block_if_else_missing_else_marker_raises(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "# copybarista:if internal\nx = 1\n# copybarista:endif\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransformError, match="else marker"):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="conditional",
+                    type="strip_block",
+                    path="config.py",
+                    start="# copybarista:if internal",
+                    end="# copybarista:endif",
+                    else_marker="# copybarista:else",
+                ),
+            ),
+        )
+
+
 def _entry(source: str, destination: str) -> ManifestEntry:
     return ManifestEntry(
         source=source,
