@@ -82,8 +82,8 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
         )
-    elif transform.type == "omit_lines":
-        result = _omit_lines(
+    elif transform.type == "internal_lines":
+        result = _internal_lines(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
@@ -204,7 +204,7 @@ def _strip_block(
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
 
 
-def _omit_lines(
+def _internal_lines(
     root: Path, transform: Transform, sources_by_destination: dict[str, str]
 ) -> _TransformResult:
     """Remove every line containing the start marker from matched files."""

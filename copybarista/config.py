@@ -20,7 +20,7 @@ TransformType = Literal[
     "ruff_format",
     "strip_block",
     "move",
-    "omit_lines",
+    "internal_lines",
     "uncomment",
 ]
 DEFAULT_GIT_BRANCH: Final = "main"
@@ -388,7 +388,7 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             if transform.else_marker:
                 lines.append(f"else = {_toml_string(transform.else_marker)}")
             lines.append(f"inclusive = {_toml_bool(transform.inclusive)}")
-        elif transform.type == "omit_lines":
+        elif transform.type == "internal_lines":
             lines.append(f"start = {_toml_string(transform.start)}")
         elif transform.type == "uncomment":
             lines.append(f"start = {_toml_string(transform.start)}")
@@ -560,7 +560,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         "ruff_format",
         "strip_block",
         "move",
-        "omit_lines",
+        "internal_lines",
         "uncomment",
     ):
         raise ConfigError(f"Unsupported transform type: {ttype}")
@@ -636,7 +636,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             path=path,
             required=required,
         )
-    if ttype == "omit_lines":
+    if ttype == "internal_lines":
         _check_keys(
             raw_transform,
             {"id", "type", "path", "required", "start"},
@@ -644,10 +644,10 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         )
         start = _string(raw_transform, "start")
         if not start:
-            raise ConfigError("omit_lines start marker must be non-empty")
+            raise ConfigError("internal_lines start marker must be non-empty")
         return Transform(
             id=transform_id,
-            type="omit_lines",
+            type="internal_lines",
             path=path,
             start=start,
             required=required,
