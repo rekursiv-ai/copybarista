@@ -659,7 +659,7 @@ def test_strip_block_if_else_missing_else_marker_raises(tmp_path: Path):
         )
 
 
-def test_omit_lines_removes_marked_lines(tmp_path: Path):
+def test_internal_lines_removes_marked_lines(tmp_path: Path):
     path = tmp_path / "module.py"
     path.write_text(
         "from foo import Bar  # copybarista:internal\n"
@@ -674,7 +674,7 @@ def test_omit_lines_removes_marked_lines(tmp_path: Path):
         (
             Transform(
                 id="omit-internal",
-                type="omit_lines",
+                type="internal_lines",
                 path="module.py",
                 start="# copybarista:internal",
             ),
@@ -689,7 +689,7 @@ def test_omit_lines_removes_marked_lines(tmp_path: Path):
     ]
 
 
-def test_omit_lines_across_multiple_files(tmp_path: Path):
+def test_internal_lines_across_multiple_files(tmp_path: Path):
     (tmp_path / "a.py").write_text(
         "keep\nomit  # copybarista:internal\n", encoding="utf-8"
     )
@@ -700,7 +700,7 @@ def test_omit_lines_across_multiple_files(tmp_path: Path):
         (
             Transform(
                 id="omit-multi",
-                type="omit_lines",
+                type="internal_lines",
                 path="*.py",
                 start="# copybarista:internal",
             ),
@@ -713,7 +713,7 @@ def test_omit_lines_across_multiple_files(tmp_path: Path):
     assert result.count == 2
 
 
-def test_omit_lines_required_fails_when_no_marker_found(tmp_path: Path):
+def test_internal_lines_required_fails_when_no_marker_found(tmp_path: Path):
     (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
 
     with pytest.raises(TransformError, match="marker"):
@@ -722,7 +722,7 @@ def test_omit_lines_required_fails_when_no_marker_found(tmp_path: Path):
             (
                 Transform(
                     id="omit-missing",
-                    type="omit_lines",
+                    type="internal_lines",
                     path="clean.py",
                     start="# copybarista:internal",
                 ),
@@ -730,7 +730,7 @@ def test_omit_lines_required_fails_when_no_marker_found(tmp_path: Path):
         )
 
 
-def test_omit_lines_optional_allows_no_matches(tmp_path: Path):
+def test_internal_lines_optional_allows_no_matches(tmp_path: Path):
     path = tmp_path / "clean.py"
     path.write_text("x = 1\n", encoding="utf-8")
 
@@ -739,7 +739,7 @@ def test_omit_lines_optional_allows_no_matches(tmp_path: Path):
         (
             Transform(
                 id="omit-optional",
-                type="omit_lines",
+                type="internal_lines",
                 path="clean.py",
                 start="# copybarista:internal",
                 required=False,
