@@ -348,7 +348,7 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
 
 
 def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
-    """Strip if/else/endif blocks, uncommenting the else branch."""
+    """Replace an internal/public conditional block with its else branch."""
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
