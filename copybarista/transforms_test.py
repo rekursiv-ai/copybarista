@@ -596,6 +596,46 @@ def test_strip_block_if_else_preserves_indented_comments(tmp_path: Path):
     assert path.read_text(encoding="utf-8") == "    x = 2\n"
 
 
+def test_strip_block_if_else_indented_block(tmp_path: Path):
+    """Else branch with indented # comments uncomments correctly."""
+    path = tmp_path / "module.py"
+    path.write_text(
+        "class Foo:\n"
+        "    @property\n"
+        "    # copybarista:if internal\n"
+        "    def internal_name(self) -> bool:\n"
+        '        """Internal doc."""\n'
+        "    # copybarista:else\n"
+        "    # def public_name(self) -> bool:\n"
+        '    #     """Public doc."""\n'
+        "    # copybarista:endif\n"
+        "        return False\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="conditional",
+                type="strip_block",
+                path="module.py",
+                start="# copybarista:if internal",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        "class Foo:\n"
+        "    @property\n"
+        "    def public_name(self) -> bool:\n"
+        '        """Public doc."""\n'
+        "        return False\n"
+    )
+
+
 def test_strip_block_if_else_missing_else_marker_raises(tmp_path: Path):
     path = tmp_path / "config.py"
     path.write_text(
@@ -617,6 +657,97 @@ def test_strip_block_if_else_missing_else_marker_raises(tmp_path: Path):
                 ),
             ),
         )
+
+
+def test_omit_lines_removes_marked_lines(tmp_path: Path):
+    path = tmp_path / "module.py"
+    path.write_text(
+        "from foo import Bar  # copybarista:omit\n"
+        "from baz import Qux\n"
+        "import internal  # copybarista:omit\n"
+        "x = 1\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="omit-internal",
+                type="omit_lines",
+                path="module.py",
+                start="# copybarista:omit",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "from baz import Qux\nx = 1\n"
+    assert result.changed == 1
+    assert result.count == 2
+    assert [(f.source, f.destination, f.count) for f in result.files] == [
+        ("module.py", "module.py", 2)
+    ]
+
+
+def test_omit_lines_across_multiple_files(tmp_path: Path):
+    (tmp_path / "a.py").write_text("keep\nomit  # copybarista:omit\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("# copybarista:omit\nkeep\n", encoding="utf-8")
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="omit-multi",
+                type="omit_lines",
+                path="*.py",
+                start="# copybarista:omit",
+            ),
+        ),
+    )
+
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "keep\n"
+    assert (tmp_path / "b.py").read_text(encoding="utf-8") == "keep\n"
+    assert result.changed == 2
+    assert result.count == 2
+
+
+def test_omit_lines_required_fails_when_no_marker_found(tmp_path: Path):
+    (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(TransformError, match="marker"):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="omit-missing",
+                    type="omit_lines",
+                    path="clean.py",
+                    start="# copybarista:omit",
+                ),
+            ),
+        )
+
+
+def test_omit_lines_optional_allows_no_matches(tmp_path: Path):
+    path = tmp_path / "clean.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="omit-optional",
+                type="omit_lines",
+                path="clean.py",
+                start="# copybarista:omit",
+                required=False,
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "x = 1\n"
+    assert result.changed == 0
+    assert result.count == 0
 
 
 def _entry(source: str, destination: str) -> ManifestEntry:

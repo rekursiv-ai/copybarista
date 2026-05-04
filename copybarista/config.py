@@ -15,7 +15,7 @@ from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import validate_pattern
 
 
-TransformType = Literal["replace", "ruff_format", "strip_block", "move"]
+TransformType = Literal["replace", "ruff_format", "strip_block", "move", "omit_lines"]
 DEFAULT_GIT_BRANCH: Final = "main"
 
 
@@ -534,13 +534,14 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             "reverse_after",
             "start",
             "end",
+            "else",
             "inclusive",
             "destination",
         },
         f"transform[{idx}]",
     )
     ttype = _string(raw_transform, "type")
-    if ttype not in ("replace", "ruff_format", "strip_block", "move"):
+    if ttype not in ("replace", "ruff_format", "strip_block", "move", "omit_lines"):
         raise ConfigError(f"Unsupported transform type: {ttype}")
     path = _glob_path(_relative_path(_string(raw_transform, "path"), "transform.path"))
     transform_id = _string(raw_transform, "id", default=f"{idx}:{ttype}:{path}")
@@ -612,6 +613,22 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             id=transform_id,
             type="ruff_format",
             path=path,
+            required=required,
+        )
+    if ttype == "omit_lines":
+        _check_keys(
+            raw_transform,
+            {"id", "type", "path", "required", "start"},
+            f"transform[{idx}]",
+        )
+        start = _string(raw_transform, "start")
+        if not start:
+            raise ConfigError("omit_lines start marker must be non-empty")
+        return Transform(
+            id=transform_id,
+            type="omit_lines",
+            path=path,
+            start=start,
             required=required,
         )
     _check_keys(
