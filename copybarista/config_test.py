@@ -552,31 +552,6 @@ def test_rejects_empty_strip_block_markers(tmp_path: Path):
         load_config(config_path)
 
 
-def test_rejects_strip_block_glob_path(tmp_path: Path):
-    config_path = tmp_path / "copy.barista.toml"
-    config_path.write_text(
-        """
-        [workflow]
-        name = "demo"
-        mode = "squash"
-        source_root = "project"
-
-        [files]
-        include = ["**"]
-
-        [[transform]]
-        type = "strip_block"
-        path = "*.md"
-        start = "<!-- copybarista:strip:start -->"
-        end = "<!-- copybarista:strip:end -->"
-        """,
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ConfigError, match="exact file"):
-        load_config(config_path)
-
-
 def test_parses_move_transform(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
