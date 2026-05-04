@@ -206,13 +206,13 @@ Each transform accepts:
 `type`:
 
 Required transform type. Supported values are `replace`, `ruff_format`,
-`strip_block`, and `move`.
+`strip_block`, `move`, `internal_lines`, and `uncomment`.
 
 `path`:
 
-Required destination-root-relative path. `replace` accepts a supported glob
-pattern. `ruff_format`, `strip_block`, and `move` require one exact file or
-directory path.
+Required destination-root-relative path. `replace`, `internal_lines`, and
+`uncomment` accept a supported glob pattern. `ruff_format`, `strip_block`,
+and `move` require one exact file or directory path.
 
 `id`:
 
