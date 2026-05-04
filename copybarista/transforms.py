@@ -82,6 +82,12 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
         )
+    elif transform.type == "omit_lines":
+        result = _omit_lines(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
     else:
         result = _ruff_format(
             root=root,
@@ -188,6 +194,41 @@ def _strip_block(
             raise TransformError(
                 f"Transformation '{transform.id}' did not find start marker"
             )
+        raise TransformError(f"Transformation '{transform.id}' matched no files")
+    return _TransformResult(changed=changed, count=total_count, files=tuple(files))
+
+
+def _omit_lines(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Remove every line containing the start marker from matched files."""
+    paths = _matching_files(root=root, pattern=transform.path)
+    changed = 0
+    total_count = 0
+    files: list[TransformFileReport] = []
+    for path in paths:
+        if path.is_symlink():
+            continue
+        original = _read_text(path)
+        lines = original.splitlines(keepends=True)
+        kept = [line for line in lines if transform.start not in line]
+        count = len(lines) - len(kept)
+        if count == 0:
+            continue
+        path.write_text("".join(kept), encoding="utf-8")
+        changed += 1
+        total_count += count
+        files.append(
+            _file_report(
+                root=root,
+                path=path,
+                count=count,
+                sources_by_destination=sources_by_destination,
+            )
+        )
+    if changed == 0 and transform.required:
+        if paths:
+            raise TransformError(f"Transformation '{transform.id}' did not find marker")
         raise TransformError(f"Transformation '{transform.id}' matched no files")
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
 
@@ -337,10 +378,12 @@ def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
                     f"else marker '{transform.else_marker}'"
                 )
             for line in lines[else_idx + 1 : end_idx]:
-                if line.startswith("# "):
-                    result.append(line[2:])
-                elif line.startswith("#"):
-                    result.append(line[1:])
+                stripped = line.lstrip()
+                indent = line[: len(line) - len(stripped)]
+                if stripped.startswith("# "):
+                    result.append(indent + stripped[2:])
+                elif stripped.startswith("#"):
+                    result.append(indent + stripped[1:])
                 else:
                     result.append(line)
             i = end_idx + 1
