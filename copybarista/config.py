@@ -138,6 +138,7 @@ class Transform:
     reverse_after: str = ""
     start: str = ""
     end: str = ""
+    # TOML key "else"; strip_block keeps and uncomments this branch.
     else_marker: str = ""
     inclusive: bool = True
     required: bool = True
