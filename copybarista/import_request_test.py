@@ -194,6 +194,31 @@ def test_import_maps_extra_copy_file_destination_to_source(tmp_path: Path):
     assert mapper.source_path("demo/lib/json.py") == "shared/json.py"
 
 
+def test_import_rejects_generated_file_destination(tmp_path: Path):
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[files.write]]
+        path = "demo/lib/web/__init__.py"
+        content = ""
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    with pytest.raises(ImportRequestError, match="unmapped"):
+        mapper.source_path("demo/lib/web/__init__.py")
+
+
 def test_import_public_edit_maps_moved_path_to_original_source(tmp_path: Path):
     source_base = tmp_path / "source-base"
     moved_source = source_base / "internal/demo/_stubs/pkg"

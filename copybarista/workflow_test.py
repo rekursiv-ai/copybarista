@@ -9,6 +9,7 @@ import pytest
 from copybarista.config import (
     FileCopy,
     FileSelection,
+    FileWrite,
     FolderDestination,
     GitDestination,
     Transform,
@@ -21,13 +22,14 @@ from copybarista.workflow import WorkflowRunner
 def _config(
     source_root: str = "project",
     copies: tuple[FileCopy, ...] = (),
+    writes: tuple[FileWrite, ...] = (),
     transforms: tuple[Transform, ...] = (),
 ) -> WorkflowConfig:
     return WorkflowConfig(
         name="demo",
         mode="squash",
         source_root=source_root,
-        files=FileSelection(include=("**",), exclude=(), copy=copies),
+        files=FileSelection(include=("**",), exclude=(), copy=copies, write=writes),
         transforms=transforms,
         folder=FolderDestination(),
         git=GitDestination(),
@@ -164,6 +166,30 @@ def test_workflow_runner_copies_extra_directory_with_filters(tmp_path: Path):
     )
 
 
+def test_workflow_runner_writes_generated_file(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+
+    staged = WorkflowRunner(
+        config=_config(
+            writes=(
+                FileWrite(
+                    path="project/lib/web/__init__.py",
+                    content='"""Web helpers."""\n',
+                ),
+            )
+        ),
+        source_ref=source_ref,
+    ).stage(tmp_path / "stage")
+
+    assert (staged.root / "project/lib/web/__init__.py").read_text(
+        encoding="utf-8"
+    ) == '"""Web helpers."""\n'
+    assert [(entry.source, entry.destination) for entry in staged.files] == [
+        ("<generated:project/lib/web/__init__.py>", "project/lib/web/__init__.py")
+    ]
+
+
 def test_workflow_runner_rejects_extra_copy_collision(tmp_path: Path):
     source_ref = tmp_path / "repo"
     (source_ref / "project").mkdir(parents=True)
@@ -194,6 +220,18 @@ def test_workflow_runner_rejects_missing_extra_copy_source(tmp_path: Path):
                     ),
                 )
             ),
+            source_ref=source_ref,
+        ).stage(tmp_path / "stage")
+
+
+def test_workflow_runner_rejects_generated_file_collision(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "project" / "app.py").write_text("app\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="already exists"):
+        WorkflowRunner(
+            config=_config(writes=(FileWrite(path="app.py", content="generated\n"),)),
             source_ref=source_ref,
         ).stage(tmp_path / "stage")
 

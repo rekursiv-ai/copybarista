@@ -15,7 +15,7 @@ from typing import Protocol
 import shutil
 import time
 
-from copybarista.config import Transform, WorkflowConfig
+from copybarista.config import FileWrite, Transform, WorkflowConfig
 from copybarista.errors import ExportError
 from copybarista.globs import GlobSet
 from copybarista.leak_check import enforce_leak_check
@@ -97,6 +97,10 @@ class WorkflowRunner:
                     record_phase=record_phase,
                 )
             )
+        entries.extend(
+            _write_generated(staging=staging, file_write=file_write)
+            for file_write in self.config.files.write
+        )
         entries_tuple = tuple(entries)
         transform_started = time.perf_counter()
         reports = apply_transforms(
@@ -296,6 +300,20 @@ def _copy_file(
     return file_entry(
         source=source_path.relative_to(source_ref).as_posix(),
         destination=destination,
+        path=dest,
+    )
+
+
+def _write_generated(staging: Path, file_write: FileWrite) -> ManifestEntry:
+    """Write one generated file into staging and return its manifest entry."""
+    dest = staging / file_write.path
+    if dest.exists() or dest.is_symlink():
+        raise ExportError(f"Export destination already exists: {file_write.path}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(file_write.content, encoding="utf-8")
+    return file_entry(
+        source=f"<generated:{file_write.path}>",
+        destination=file_write.path,
         path=dest,
     )
 

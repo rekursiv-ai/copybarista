@@ -130,13 +130,30 @@ Import workflows map public changes under a copied destination back to the
 configured `source`, so edits to `package/lib/json.py` can return to
 `shared/json.py`.
 
+`[[files.write]]`:
+
+Generated files to materialize in the staged public tree before transforms run.
+This is for tiny export-only files such as package `__init__.py` markers or
+metadata snippets that do not belong as fake source files.
+
+```toml
+[[files.write]]
+path = "package/lib/web/__init__.py"
+content = "\"\"\"Web helper package.\"\"\"\n"
+```
+
+`path` is relative to the exported public tree. `content` is written as UTF-8.
+Copybarista fails if a generated file collides with another exported file.
+Import workflows treat generated paths as unmapped, so public edits to those
+files must be handled by updating the export config.
+
 ## `[leak_check]`
 
 Leak checks are read-only release gates over the transformed export tree. They
-run after file selection, `[[files.copy]]`, and transforms, but before folder or
-Git destinations are mutated. Use them to catch source-only paths, unrewritten
-monorepo imports, private markers, internal hostnames, or other strings that
-must never land in the public tree.
+run after file selection, `[[files.copy]]`, `[[files.write]]`, and transforms,
+but before folder or Git destinations are mutated. Use them to catch
+source-only paths, unrewritten monorepo imports, private markers, internal
+hostnames, or other strings that must never land in the public tree.
 
 Copybarista reports the rule id, path, and line number. It does not print the
 matched text, which keeps CI logs from echoing secrets.
