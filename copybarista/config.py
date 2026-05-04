@@ -15,7 +15,14 @@ from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import validate_pattern
 
 
-TransformType = Literal["replace", "ruff_format", "strip_block", "move", "omit_lines"]
+TransformType = Literal[
+    "replace",
+    "ruff_format",
+    "strip_block",
+    "move",
+    "omit_lines",
+    "uncomment",
+]
 DEFAULT_GIT_BRANCH: Final = "main"
 
 
@@ -381,6 +388,12 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             if transform.else_marker:
                 lines.append(f"else = {_toml_string(transform.else_marker)}")
             lines.append(f"inclusive = {_toml_bool(transform.inclusive)}")
+        elif transform.type == "omit_lines":
+            lines.append(f"start = {_toml_string(transform.start)}")
+        elif transform.type == "uncomment":
+            lines.append(f"start = {_toml_string(transform.start)}")
+            if transform.end:
+                lines.append(f"end = {_toml_string(transform.end)}")
     return "\n".join(lines) + "\n"
 
 
@@ -542,7 +555,14 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         f"transform[{idx}]",
     )
     ttype = _string(raw_transform, "type")
-    if ttype not in ("replace", "ruff_format", "strip_block", "move", "omit_lines"):
+    if ttype not in (
+        "replace",
+        "ruff_format",
+        "strip_block",
+        "move",
+        "omit_lines",
+        "uncomment",
+    ):
         raise ConfigError(f"Unsupported transform type: {ttype}")
     path = _glob_path(_relative_path(_string(raw_transform, "path"), "transform.path"))
     transform_id = _string(raw_transform, "id", default=f"{idx}:{ttype}:{path}")
@@ -630,6 +650,24 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             type="omit_lines",
             path=path,
             start=start,
+            required=required,
+        )
+    if ttype == "uncomment":
+        _check_keys(
+            raw_transform,
+            {"id", "type", "path", "required", "start", "end"},
+            f"transform[{idx}]",
+        )
+        start = _string(raw_transform, "start")
+        if not start:
+            raise ConfigError("uncomment start marker must be non-empty")
+        end = _string(raw_transform, "end", default="")
+        return Transform(
+            id=transform_id,
+            type="uncomment",
+            path=path,
+            start=start,
+            end=end,
             required=required,
         )
     _check_keys(
