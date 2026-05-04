@@ -12,8 +12,10 @@ from scripts import sync_export_pr
 from scripts.sync_export_pr import (
     ExportRequest,
     _commit_author,
+    _export_public_tree,
     _gh_pr_exists,
     _public_pr_text,
+    _remove_public_validation_artifacts,
     _replace_tree,
     _validate_public,
     _validate_source,
@@ -52,6 +54,27 @@ def test_main_accepts_generic_project_validation_args(
     assert captured[0].release_check_script == Path("scripts/check_release_tree.py")
     assert captured[0].type_check_targets == ("configgle", "tests")
     assert captured[0].smoke_import == "configgle"
+
+
+def test_main_accepts_skip_source_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "packages/example",
+            "--skip-source-validation",
+        ]
+    )
+
+    assert captured[0].skip_source_validation
 
 
 def test_export_pr_body_contains_review_context():
@@ -195,6 +218,32 @@ def test_commit_author_uses_sync_identity():
         _commit_author("copybarista", "copybarista@example.com")
         == "copybarista <copybarista@example.com>"
     )
+
+
+def test_export_public_tree_uses_current_copybarista_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    _export_public_tree(
+        project=Path("/repo/packages/example"),
+        source_dir=Path("/repo"),
+        export_dir=tmp_path / "export",
+        manifest=tmp_path / "manifest.json",
+    )
+
+    assert calls[0][:3] == [sync_export_pr.sys.executable, "-m", "copybarista"]
+    assert "--project" not in calls[0]
 
 
 def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
@@ -362,3 +411,22 @@ def test_validate_public_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert ["uv", "run", "--all-groups", "ty", "check"] in calls
     assert ["uv", "run", "--all-groups", "codespell", "."] in calls
+
+
+def test_remove_public_validation_artifacts_preserves_sources(tmp_path: Path) -> None:
+    (tmp_path / "pkg/__pycache__").mkdir(parents=True)
+    (tmp_path / "pkg/__pycache__/module.cpython-312.pyc").write_bytes(b"pyc")
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / ".pytest_cache/README.md").write_text("cache\n", encoding="utf-8")
+    (tmp_path / ".venv/bin").mkdir(parents=True)
+    (tmp_path / ".venv/bin/python").write_text("python\n", encoding="utf-8")
+    (tmp_path / ".coverage").write_text("coverage\n", encoding="utf-8")
+    (tmp_path / "pkg/module.py").write_text("source\n", encoding="utf-8")
+
+    _remove_public_validation_artifacts(tmp_path)
+
+    assert (tmp_path / "pkg/module.py").read_text(encoding="utf-8") == "source\n"
+    assert not (tmp_path / "pkg/__pycache__").exists()
+    assert not (tmp_path / ".pytest_cache").exists()
+    assert not (tmp_path / ".venv").exists()
+    assert not (tmp_path / ".coverage").exists()
