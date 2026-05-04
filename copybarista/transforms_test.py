@@ -662,9 +662,9 @@ def test_strip_block_if_else_missing_else_marker_raises(tmp_path: Path):
 def test_omit_lines_removes_marked_lines(tmp_path: Path):
     path = tmp_path / "module.py"
     path.write_text(
-        "from foo import Bar  # copybarista:omit\n"
+        "from foo import Bar  # copybarista:internal\n"
         "from baz import Qux\n"
-        "import internal  # copybarista:omit\n"
+        "import internal  # copybarista:internal\n"
         "x = 1\n",
         encoding="utf-8",
     )
@@ -676,7 +676,7 @@ def test_omit_lines_removes_marked_lines(tmp_path: Path):
                 id="omit-internal",
                 type="omit_lines",
                 path="module.py",
-                start="# copybarista:omit",
+                start="# copybarista:internal",
             ),
         ),
     )
@@ -690,8 +690,10 @@ def test_omit_lines_removes_marked_lines(tmp_path: Path):
 
 
 def test_omit_lines_across_multiple_files(tmp_path: Path):
-    (tmp_path / "a.py").write_text("keep\nomit  # copybarista:omit\n", encoding="utf-8")
-    (tmp_path / "b.py").write_text("# copybarista:omit\nkeep\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text(
+        "keep\nomit  # copybarista:internal\n", encoding="utf-8"
+    )
+    (tmp_path / "b.py").write_text("# copybarista:internal\nkeep\n", encoding="utf-8")
 
     (result,) = apply_transforms(
         tmp_path,
@@ -700,7 +702,7 @@ def test_omit_lines_across_multiple_files(tmp_path: Path):
                 id="omit-multi",
                 type="omit_lines",
                 path="*.py",
-                start="# copybarista:omit",
+                start="# copybarista:internal",
             ),
         ),
     )
@@ -722,7 +724,7 @@ def test_omit_lines_required_fails_when_no_marker_found(tmp_path: Path):
                     id="omit-missing",
                     type="omit_lines",
                     path="clean.py",
-                    start="# copybarista:omit",
+                    start="# copybarista:internal",
                 ),
             ),
         )
@@ -739,7 +741,181 @@ def test_omit_lines_optional_allows_no_matches(tmp_path: Path):
                 id="omit-optional",
                 type="omit_lines",
                 path="clean.py",
-                start="# copybarista:omit",
+                start="# copybarista:internal",
+                required=False,
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "x = 1\n"
+    assert result.changed == 0
+    assert result.count == 0
+
+
+def test_uncomment_single_line(tmp_path: Path):
+    path = tmp_path / "setup.cfg"
+    path.write_text(
+        '    "requests",\n    # "imagesize",  # copybarista:external\n    "click",\n',
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-ext",
+                type="uncomment",
+                path="setup.cfg",
+                start="# copybarista:external",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        '    "requests",\n    "imagesize",\n    "click",\n'
+    )
+    assert result.changed == 1
+    assert result.count == 1
+
+
+def test_uncomment_single_line_multiple_matches(tmp_path: Path):
+    path = tmp_path / "deps.txt"
+    path.write_text(
+        "keep\n# foo  # copybarista:external\nmiddle\n# bar  # copybarista:external\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-ext",
+                type="uncomment",
+                path="deps.txt",
+                start="# copybarista:external",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "keep\nfoo\nmiddle\nbar\n"
+    assert result.count == 2
+
+
+def test_uncomment_block(tmp_path: Path):
+    path = tmp_path / "pyproject.toml"
+    path.write_text(
+        "deps = [\n"
+        "# copybarista:external:start\n"
+        '#     "imagesize",\n'
+        '#     "numpy",\n'
+        "# copybarista:external:end\n"
+        "]\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-block",
+                type="uncomment",
+                path="pyproject.toml",
+                start="# copybarista:external:start",
+                end="# copybarista:external:end",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        'deps = [\n    "imagesize",\n    "numpy",\n]\n'
+    )
+    assert result.changed == 1
+    assert result.count == 1
+
+
+def test_uncomment_block_multiple(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "a = 1\n"
+        "# copybarista:external:start\n"
+        "# b = 2\n"
+        "# copybarista:external:end\n"
+        "c = 3\n"
+        "# copybarista:external:start\n"
+        "# d = 4\n"
+        "# copybarista:external:end\n"
+        "e = 5\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-block",
+                type="uncomment",
+                path="config.py",
+                start="# copybarista:external:start",
+                end="# copybarista:external:end",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n"
+    assert result.count == 2
+
+
+def test_uncomment_block_missing_end_raises(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "# copybarista:external:start\n# x = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransformError, match="end marker"):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="uncomment-block",
+                    type="uncomment",
+                    path="config.py",
+                    start="# copybarista:external:start",
+                    end="# copybarista:external:end",
+                ),
+            ),
+        )
+
+
+def test_uncomment_required_fails_when_no_marker_found(tmp_path: Path):
+    (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(TransformError, match="marker"):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="uncomment-missing",
+                    type="uncomment",
+                    path="clean.py",
+                    start="# copybarista:external",
+                ),
+            ),
+        )
+
+
+def test_uncomment_optional_allows_no_matches(tmp_path: Path):
+    path = tmp_path / "clean.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-optional",
+                type="uncomment",
+                path="clean.py",
+                start="# copybarista:external",
                 required=False,
             ),
         ),

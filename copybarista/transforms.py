@@ -88,6 +88,12 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
         )
+    elif transform.type == "uncomment":
+        result = _uncomment(
+            root=root,
+            transform=transform,
+            sources_by_destination=sources_by_destination,
+        )
     else:
         result = _ruff_format(
             root=root,
@@ -231,6 +237,89 @@ def _omit_lines(
             raise TransformError(f"Transformation '{transform.id}' did not find marker")
         raise TransformError(f"Transformation '{transform.id}' matched no files")
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
+
+
+def _uncomment(
+    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+) -> _TransformResult:
+    """Uncomment lines marked for external export."""
+    paths = _matching_files(root=root, pattern=transform.path)
+    changed = 0
+    total_count = 0
+    files: list[TransformFileReport] = []
+    for path in paths:
+        if path.is_symlink():
+            continue
+        original = _read_text(path)
+        updated, count = _uncomment_text(original, transform)
+        if count == 0 or updated == original:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        changed += 1
+        total_count += count
+        files.append(
+            _file_report(
+                root=root,
+                path=path,
+                count=count,
+                sources_by_destination=sources_by_destination,
+            )
+        )
+    if changed == 0 and transform.required:
+        if paths:
+            raise TransformError(f"Transformation '{transform.id}' did not find marker")
+        raise TransformError(f"Transformation '{transform.id}' matched no files")
+    return _TransformResult(changed=changed, count=total_count, files=tuple(files))
+
+
+def _uncomment_text(text: str, transform: Transform) -> tuple[str, int]:
+    """Uncomment single-line markers and block-delimited regions."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+        trailing_newline = True
+    else:
+        trailing_newline = False
+    result: list[str] = []
+    i = 0
+    count = 0
+    while i < len(lines):
+        if transform.end and transform.start in lines[i]:
+            end_idx = None
+            for j in range(i + 1, len(lines)):
+                if transform.end in lines[j]:
+                    end_idx = j
+                    break
+            if end_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' did not find end marker"
+                )
+            result.extend(_uncomment_line(line) for line in lines[i + 1 : end_idx])
+            i = end_idx + 1
+            count += 1
+        elif transform.start in lines[i]:
+            uncommented = lines[i].split(transform.start)[0].rstrip()
+            result.append(_uncomment_line(uncommented))
+            count += 1
+            i += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    final = "\n".join(result)
+    if trailing_newline:
+        final += "\n"
+    return final, count
+
+
+def _uncomment_line(line: str) -> str:
+    """Strip a leading comment prefix from a line, preserving indentation."""
+    stripped = line.lstrip()
+    indent = line[: len(line) - len(stripped)]
+    if stripped.startswith("# "):
+        return indent + stripped[2:]
+    if stripped.startswith("#"):
+        return indent + stripped[1:]
+    return line
 
 
 def _move(
