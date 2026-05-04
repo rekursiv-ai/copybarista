@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from copybarista import transforms
 from copybarista.config import Transform
 from copybarista.errors import TransformError
 from copybarista.manifest import ManifestEntry
@@ -750,6 +751,35 @@ def test_internal_lines_optional_allows_no_matches(tmp_path: Path):
     assert path.read_text(encoding="utf-8") == "x = 1\n"
     assert result.changed == 0
     assert result.count == 0
+
+
+def test_ruff_format_uses_current_python_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    class FakeRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            calls.append(argv)
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", FakeRunner)
+    (tmp_path / "module.py").write_text("x = 1\n", encoding="utf-8")
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="ruff",
+                type="ruff_format",
+                path=".",
+            ),
+        ),
+    )
+
+    assert calls[0][:3] == [transforms.sys.executable, "-m", "ruff"]
+    assert calls[1][:3] == [transforms.sys.executable, "-m", "ruff"]
 
 
 def test_uncomment_single_line(tmp_path: Path):

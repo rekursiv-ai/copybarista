@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import shutil
+import sys
 
-from copybarista.commands import CommandRunner, resolve_executable
+from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
 from copybarista.globs import GlobSet
@@ -366,13 +367,24 @@ def _ruff_format(
         return _TransformResult(changed=0, count=0, files=())
     before = _snapshot_regular_files(root=root, target=target)
     runner = CommandRunner()
-    ruff = resolve_executable("ruff")
     try:
         runner.run(
-            [ruff, "check", "--fix", "--exit-zero", "--no-cache", transform.path],
+            [
+                sys.executable,
+                "-m",
+                "ruff",
+                "check",
+                "--fix",
+                "--exit-zero",
+                "--no-cache",
+                transform.path,
+            ],
             cwd=root,
         )
-        runner.run([ruff, "format", "--no-cache", transform.path], cwd=root)
+        runner.run(
+            [sys.executable, "-m", "ruff", "format", "--no-cache", transform.path],
+            cwd=root,
+        )
     except ExportError as err:
         raise TransformError(
             f"Transformation '{transform.id}' ruff_format failed: {err}"
