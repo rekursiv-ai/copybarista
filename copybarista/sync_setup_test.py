@@ -163,6 +163,7 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
 
     assert settings.sync_user_name == "copybarista"
     assert settings.sync_user_email == "copybarista@example.com"
+    assert settings.sync_token_login == ""
     assert settings.export_prefix == "configgle/export/"
     assert settings.import_prefix == "configgle/import/"
     assert settings.validation_python_versions == ("3.12",)
@@ -263,6 +264,15 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     assert "CONFIGGLE" not in workflow
     assert "sync_configgle" not in workflow
     assert "source/tools/copybarista/scripts/sync_export_pr.py" in workflow
+
+
+def test_export_workflow_can_guard_sync_token_login():
+    sync_actor = "rekursiv-bot"
+    workflow = export_workflow(_settings(sync_token_login=sync_actor))
+
+    assert 'COPYBARISTA_SYNC_TOKEN_LOGIN: "rekursiv-bot"' in workflow
+    assert "gh api user --jq .login" in workflow
+    assert "git author settings cannot change GitHub push or PR attribution" in workflow
 
 
 def test_generated_workflows_keep_readable_line_continuations():

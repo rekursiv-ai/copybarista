@@ -28,9 +28,18 @@ jobs:
       FORBIDDEN_PR_TEXT: @@FORBIDDEN_PR_TEXT@@
       COPYBARISTA_SYNC_USER_NAME: @@SYNC_USER_NAME@@
       COPYBARISTA_SYNC_USER_EMAIL: @@SYNC_USER_EMAIL@@
+      COPYBARISTA_SYNC_TOKEN_LOGIN: @@SYNC_TOKEN_LOGIN@@
       COPYBARISTA_AUTO_MERGE: ${{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}
 
     steps:
+      - name: Verify sync token identity
+        if: env.COPYBARISTA_SYNC_TOKEN_LOGIN != ''
+        run: |
+          token_login="$(gh api user --jq .login)"
+          if [ "$token_login" != "$COPYBARISTA_SYNC_TOKEN_LOGIN" ]; then
+            echo "::error::COPYBARISTA_SYNC_TOKEN authenticates as '$token_login', expected '$COPYBARISTA_SYNC_TOKEN_LOGIN'. Rotate COPYBARISTA_SYNC_TOKEN to a token owned by $COPYBARISTA_SYNC_TOKEN_LOGIN; git author settings cannot change GitHub push or PR attribution."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           path: source
