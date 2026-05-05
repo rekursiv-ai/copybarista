@@ -45,11 +45,44 @@ def test_root_star_does_not_match_nested_path():
     assert globs.matches("pkg/module.pyc")
 
 
-def test_nested_star_requires_at_least_one_directory():
+def test_globstar_slash_matches_zero_or_more_segments():
+    """``**/`` matches zero or more path segments (standard convention)."""
+    globs = GlobSet(include=("**/*.py",))
+
+    assert globs.matches("module.py")
+    assert globs.matches("pkg/module.py")
+    assert globs.matches("pkg/sub/module.py")
+    assert not globs.matches("module.pyc")
+
+
+def test_globstar_exclude_catches_root_files():
+    """``**/*.pyc`` in exclude must also catch root-level .pyc files."""
     globs = GlobSet(include=("**",), exclude=("**/*.pyc",))
 
-    assert globs.matches("module.pyc")
+    assert not globs.matches("module.pyc")
     assert not globs.matches("pkg/module.pyc")
+    assert globs.matches("module.py")
+
+
+def test_prefix_globstar_matches_flat_and_nested():
+    """``dir/**/*.ext`` matches files directly in dir/ and in subdirs."""
+    globs = GlobSet(include=("examples/**/*.py",))
+
+    assert globs.matches("examples/foo.py")
+    assert globs.matches("examples/sub/foo.py")
+    assert globs.matches("examples/a/b/foo.py")
+    assert not globs.matches("examples/foo.txt")
+    assert not globs.matches("other/foo.py")
+
+
+def test_mid_path_globstar_matches_zero_segments():
+    """``a/**/b.py`` matches both ``a/b.py`` and ``a/x/b.py``."""
+    globs = GlobSet(include=("a/**/b.py",))
+
+    assert globs.matches("a/b.py")
+    assert globs.matches("a/x/b.py")
+    assert globs.matches("a/x/y/b.py")
+    assert not globs.matches("b.py")
 
 
 def test_paths_are_normalized_to_forward_slashes():
