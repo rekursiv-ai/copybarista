@@ -60,6 +60,7 @@ class SyncSettings:
       validation_commands: Commands run by public package validation.
       sync_user_name: Commit author name for generated sync commits.
       sync_user_email: Commit author email for generated sync commits.
+      sync_token_login: GitHub login that must own the sync token.
       export_branch_prefix: Optional source-to-public branch prefix.
       import_branch_prefix: Optional public-to-source branch prefix.
 
@@ -78,6 +79,7 @@ class SyncSettings:
     validation_commands: tuple[str, ...] = ()
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
+    sync_token_login: str = ""
     export_branch_prefix: str = ""
     import_branch_prefix: str = ""
 
@@ -160,6 +162,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
         sync_user_email=_optional_str(
             sync, "sync_user_email", default=DEFAULT_SYNC_USER_EMAIL
         ),
+        sync_token_login=_optional_str(sync, "sync_token_login", default=""),
         export_branch_prefix=_optional_str(sync, "export_branch_prefix", default=""),
         import_branch_prefix=_optional_str(sync, "import_branch_prefix", default=""),
     )
@@ -298,6 +301,7 @@ def sync_toml(settings: SyncSettings) -> str:
             "SYNC_LABEL": _toml_str(settings.sync_label),
             "SYNC_USER_NAME": _toml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _toml_str(settings.sync_user_email),
+            "SYNC_TOKEN_LOGIN": _toml_str(settings.sync_token_login),
             "SOURCE_ROOT": _toml_str(settings.source_root),
             "PUBLIC_REPO": _toml_str(settings.public_repo),
             "SOURCE_REPO": _toml_str(settings.source_repo),
@@ -397,6 +401,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "FORBIDDEN_PR_TEXT": _yaml_str(forbidden),
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
+            "SYNC_TOKEN_LOGIN": _yaml_str(settings.sync_token_login),
             "COPYBARISTA_PROJECT_PATH": _sh(project_path),
             "SYNC_EXPORT_SCRIPT": _sh(script_path),
             "SOURCE_ROOT": _sh(settings.source_root),
