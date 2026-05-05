@@ -26,5 +26,11 @@ jobs:
       - name: Build package
         run: uv build --out-dir dist
 
+      - name: Smoke test built wheel
+        run: |
+          wheel="$(ls dist/copybarista-*.whl | head -n 1)"
+          uv run --isolated --with "$wheel" python -c \
+            "import copybarista; from copybarista.cli import main; print('ok')"
+
       - name: Publish package
         uses: pypa/gh-action-pypi-publish@release/v1
