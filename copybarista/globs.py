@@ -121,7 +121,7 @@ def _glob_to_regex(pattern: str, *, min_brace_choices: int = 2) -> str:
         if char == "*":
             if idx + 1 < len(pattern) and pattern[idx + 1] == "*":
                 if idx + 2 < len(pattern) and pattern[idx + 2] == "/":
-                    parts.append("(?:.+/)")
+                    parts.append("(?:.+/)?")  # Match zero or more.
                     idx += 3
                 else:
                     parts.append(".*")
