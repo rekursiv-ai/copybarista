@@ -46,6 +46,11 @@ jobs:
       - name: Test
         run: uv run --all-groups pytest
 
+      - name: CI smoke tests
+        run: |
+          uv run --all-groups pytest -m ci_smoke -o addopts="--durations=20" || \
+            test "$?" = 5
+
       - name: Build package
         run: uv build --out-dir dist
 
