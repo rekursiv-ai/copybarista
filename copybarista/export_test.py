@@ -153,6 +153,7 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
         "from internal.demo import api\n", encoding="utf-8"
     )
     (project / "README.md").write_text("readme\n", encoding="utf-8")
+    (project / ".gitignore").write_text(".venv/\n", encoding="utf-8")
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         """
@@ -164,7 +165,7 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
         [files]
         include = ["**"]
         destination_prefix = "demo"
-        destination_prefix_exclude = ["README.md"]
+        destination_prefix_exclude = [".gitignore", "README.md"]
 
         [[transform]]
         type = "replace"
@@ -183,10 +184,12 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
     )
 
     assert [entry.destination for entry in manifest.files] == [
+        ".gitignore",
         "README.md",
         "demo/__init__.py",
         "demo/pkg/module.py",
     ]
+    assert (tmp_path / "out" / ".gitignore").read_text(encoding="utf-8") == ".venv/\n"
     assert (tmp_path / "out" / "README.md").read_text(encoding="utf-8") == "readme\n"
     assert (tmp_path / "out" / "demo" / "__init__.py").read_text(
         encoding="utf-8"
