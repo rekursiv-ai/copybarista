@@ -12,7 +12,7 @@ import re
 import tomllib
 
 from copybarista.errors import ConfigError, GlobError
-from copybarista.globs import validate_pattern
+from copybarista.globs import Globstar, validate_pattern
 
 
 TransformType = Literal[
@@ -169,6 +169,7 @@ class WorkflowConfig:
     folder: FolderDestination
     git: GitDestination
     leak_check: LeakCheck = LeakCheck()
+    globstar: Globstar = "one_or_more"
 
 
 def load_config(path: Path, *, workflow_name: str = "export") -> WorkflowConfig:
@@ -219,12 +220,13 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         "config",
     )
     workflow = _table(raw, "workflow")
-    _check_keys(workflow, {"name", "mode", "source_root"}, "workflow")
+    _check_keys(workflow, {"name", "mode", "source_root", "globstar"}, "workflow")
     mode = _string(workflow, "mode", default="squash")
     if mode != "squash":
         raise ConfigError("Only workflow.mode = 'squash' is supported")
     source_root = _relative_path(_string(workflow, "source_root"), "source_root")
     name = _string(workflow, "name", default="default")
+    globstar = _globstar(_string(workflow, "globstar", default="one_or_more"))
 
     files = _table(raw, "files")
     _check_keys(
@@ -284,6 +286,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         folder=folder,
         git=git,
         leak_check=_parse_leak_check(raw),
+        globstar=globstar,
     )
 
 
@@ -305,14 +308,20 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
         f"name = {_toml_string(config.name)}",
         f"mode = {_toml_string(config.mode)}",
         f"source_root = {_toml_string(config.source_root)}",
-        "",
-        "[destination.folder]",
-        f"path = {_toml_string(config.folder.path)}",
-        "",
-        "[destination.git]",
-        f"url = {_toml_string(config.git.url)}",
-        f"branch = {_toml_string(config.git.branch)}",
     ]
+    if config.globstar != "one_or_more":
+        lines.append(f"globstar = {_toml_string(config.globstar)}")
+    lines.extend(
+        [
+            "",
+            "[destination.folder]",
+            f"path = {_toml_string(config.folder.path)}",
+            "",
+            "[destination.git]",
+            f"url = {_toml_string(config.git.url)}",
+            f"branch = {_toml_string(config.git.branch)}",
+        ]
+    )
     if config.git.committer_name:
         lines.append(f"committer_name = {_toml_string(config.git.committer_name)}")
     if config.git.committer_email:
@@ -733,6 +742,17 @@ def _glob_path(value: str) -> str:
         return validate_pattern(value)
     except GlobError as err:
         raise ConfigError(str(err)) from err
+
+
+def _globstar(value: str) -> Globstar:
+    """Validate the workflow ``globstar`` setting."""
+    if value == "zero_or_more":
+        return "zero_or_more"
+    if value == "one_or_more":
+        return "one_or_more"
+    raise ConfigError(
+        f"workflow.globstar must be 'zero_or_more' or 'one_or_more', got {value!r}"
+    )
 
 
 def _has_glob_syntax(path: str) -> bool:

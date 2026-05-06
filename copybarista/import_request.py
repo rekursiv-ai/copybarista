@@ -19,7 +19,7 @@ import tempfile
 from copybarista.config import Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError
 from copybarista.export import export_folder
-from copybarista.globs import GlobSet
+from copybarista.globs import GlobSet, Globstar
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
@@ -158,12 +158,16 @@ class PathMapper:
             GlobSet(
                 include=self.config.files.include,
                 exclude=self.config.files.exclude,
+                globstar=self.config.globstar,
             ),
         )
         object.__setattr__(
             self,
             "destination_prefix_exclude",
-            GlobSet(include=self.config.files.destination_prefix_exclude)
+            GlobSet(
+                include=self.config.files.destination_prefix_exclude,
+                globstar=self.config.globstar,
+            )
             if self.config.files.destination_prefix_exclude
             else None,
         )
@@ -214,7 +218,11 @@ class PathMapper:
     def _copied_source_path(self, public_path: str) -> str:
         """Map a public path produced by `[[files.copy]]` back to its source."""
         for file_copy in self.config.files.copy:
-            matcher = GlobSet(include=file_copy.include, exclude=file_copy.exclude)
+            matcher = GlobSet(
+                include=file_copy.include,
+                exclude=file_copy.exclude,
+                globstar=self.config.globstar,
+            )
             if public_path == file_copy.destination:
                 if matcher.matches(Path(file_copy.source).name):
                     return file_copy.source
@@ -392,7 +400,7 @@ class ChangeRequestImporter:
         for transform in reversed(self.config.transforms):
             if transform.type in ("move", "ruff_format"):
                 continue
-            if not _matches_transform(transform, match_path):
+            if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
             if transform.type == "strip_block":
                 raise ImportRequestError(
@@ -468,7 +476,7 @@ class ChangeRequestImporter:
         for transform in reversed(self.config.transforms):
             if transform.type in ("move", "ruff_format"):
                 continue
-            if _matches_transform(transform, match_path):
+            if _matches_transform(transform, match_path, self.config.globstar):
                 if transform.type == "strip_block":
                     raise ImportRequestError(
                         f"Public path requires non-reversible transform "
@@ -566,9 +574,11 @@ def _reverse_move_path(*, public_path: str, transforms: tuple[Transform, ...]) -
     return path.as_posix()
 
 
-def _matches_transform(transform: Transform, public_path: str) -> bool:
+def _matches_transform(
+    transform: Transform, public_path: str, globstar: Globstar
+) -> bool:
     """Return whether a transform applies to a public path."""
-    return GlobSet(include=(transform.path,)).matches(public_path)
+    return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
 
 
 def _has_explicit_reversal(transform: Transform) -> bool:

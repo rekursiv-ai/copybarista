@@ -77,6 +77,7 @@ class WorkflowRunner:
                 matcher=GlobSet(
                     include=self.config.files.include,
                     exclude=self.config.files.exclude,
+                    globstar=self.config.globstar,
                 ),
                 prefixer=DestinationPrefixer.from_config(self.config),
                 source_prefix=self.config.source_root,
@@ -93,6 +94,7 @@ class WorkflowRunner:
                     matcher=GlobSet(
                         include=file_copy.include,
                         exclude=file_copy.exclude,
+                        globstar=self.config.globstar,
                     ),
                     record_phase=record_phase,
                 )
@@ -104,7 +106,10 @@ class WorkflowRunner:
         entries_tuple = tuple(entries)
         transform_started = time.perf_counter()
         reports = apply_transforms(
-            root=staging, transforms=self.config.transforms, files=entries_tuple
+            root=staging,
+            transforms=self.config.transforms,
+            files=entries_tuple,
+            globstar=self.config.globstar,
         )
         entries_tuple = _apply_transform_destinations(
             entries_tuple,
@@ -114,7 +119,11 @@ class WorkflowRunner:
             record_phase, "transforms", time.perf_counter() - transform_started
         )
         leak_started = time.perf_counter()
-        enforce_leak_check(root=staging, policy=self.config.leak_check)
+        enforce_leak_check(
+            root=staging,
+            policy=self.config.leak_check,
+            globstar=self.config.globstar,
+        )
         _record_phase(record_phase, "leak_check", time.perf_counter() - leak_started)
         manifest_started = time.perf_counter()
         files = tuple(
@@ -170,7 +179,10 @@ class DestinationPrefixer:
     def from_config(cls, config: WorkflowConfig) -> DestinationPrefixer:
         """Build a destination prefixer from workflow config."""
         exclude = (
-            GlobSet(include=config.files.destination_prefix_exclude)
+            GlobSet(
+                include=config.files.destination_prefix_exclude,
+                globstar=config.globstar,
+            )
             if config.files.destination_prefix_exclude
             else None
         )

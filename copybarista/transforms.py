@@ -17,7 +17,7 @@ import sys
 from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
-from copybarista.globs import GlobSet
+from copybarista.globs import GlobSet, Globstar
 from copybarista.manifest import ManifestEntry, TransformFileReport, TransformReport
 
 
@@ -25,6 +25,8 @@ def apply_transforms(
     root: Path,
     transforms: tuple[Transform, ...],
     files: tuple[ManifestEntry, ...] = (),
+    *,
+    globstar: Globstar = "one_or_more",
 ) -> tuple[TransformReport, ...]:
     """Apply transforms in config order.
 
@@ -32,6 +34,7 @@ def apply_transforms(
       root: Export staging root.
       transforms: Transforms to apply.
       files: Exported file mapping before transforms.
+      globstar: Workflow ``**`` semantics for transform path globs.
 
     Returns:
       reports: Per-transform execution reports.
@@ -43,6 +46,7 @@ def apply_transforms(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
+            globstar=globstar,
         )
         for transform in transforms
     )
@@ -53,6 +57,7 @@ def apply_transform(
     *,
     transform: Transform,
     sources_by_destination: dict[str, str],
+    globstar: Globstar = "one_or_more",
 ) -> TransformReport:
     """Apply one configured transform and return its report.
 
@@ -60,6 +65,7 @@ def apply_transform(
       root: Export staging root.
       transform: Transform config entry.
       sources_by_destination: Source paths keyed by staged destination path.
+      globstar: Workflow ``**`` semantics for the transform path glob.
 
     Returns:
       report: Transform execution report.
@@ -70,6 +76,7 @@ def apply_transform(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
+            globstar=globstar,
         )
     elif transform.type == "move":
         result = _move(
@@ -82,18 +89,21 @@ def apply_transform(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
+            globstar=globstar,
         )
     elif transform.type == "internal_lines":
         result = _internal_lines(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
+            globstar=globstar,
         )
     elif transform.type == "uncomment":
         result = _uncomment(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
+            globstar=globstar,
         )
     else:
         result = _ruff_format(
@@ -121,14 +131,17 @@ class _TransformResult:
 
 
 def _replace(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+    globstar: Globstar,
 ) -> _TransformResult:
     """Apply a literal replacement and return its change report."""
     if not transform.before:
         raise TransformError(
             f"Transformation '{transform.id}' before must be non-empty"
         )
-    paths = _matching_files(root=root, pattern=transform.path)
+    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
     matched_files = 0
     skipped_symlinks = 0
     changed = 0
@@ -171,10 +184,13 @@ def _replace(
 
 
 def _strip_block(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+    globstar: Globstar,
 ) -> _TransformResult:
     """Remove marker-delimited blocks from matched files."""
-    paths = _matching_files(root=root, pattern=transform.path)
+    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -206,10 +222,13 @@ def _strip_block(
 
 
 def _internal_lines(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+    globstar: Globstar,
 ) -> _TransformResult:
     """Remove every line containing the start marker from matched files."""
-    paths = _matching_files(root=root, pattern=transform.path)
+    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -241,10 +260,13 @@ def _internal_lines(
 
 
 def _uncomment(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+    globstar: Globstar,
 ) -> _TransformResult:
     """Uncomment lines marked for external export."""
-    paths = _matching_files(root=root, pattern=transform.path)
+    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -513,9 +535,9 @@ def _file_report(
     )
 
 
-def _matching_files(root: Path, pattern: str) -> tuple[Path, ...]:
+def _matching_files(root: Path, pattern: str, globstar: Globstar) -> tuple[Path, ...]:
     """Return staged files matched by one supported path glob."""
-    matcher = GlobSet(include=(pattern,))
+    matcher = GlobSet(include=(pattern,), globstar=globstar)
     return tuple(
         path
         for path in sorted(root.rglob("*"))

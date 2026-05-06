@@ -15,7 +15,7 @@ import re
 
 from copybarista.config import ForbiddenPathRule, ForbiddenTextRule, LeakCheck
 from copybarista.errors import LeakCheckError
-from copybarista.globs import GlobSet
+from copybarista.globs import GlobSet, Globstar
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -35,12 +35,15 @@ class LeakViolation:
         return f"{self.rule_id}: {location}: forbidden export content"
 
 
-def check_leaks(*, root: Path, policy: LeakCheck) -> tuple[LeakViolation, ...]:
+def check_leaks(
+    *, root: Path, policy: LeakCheck, globstar: Globstar = "one_or_more"
+) -> tuple[LeakViolation, ...]:
     """Return leak-check violations for a transformed tree.
 
     Args:
       root: Exported tree root to scan.
       policy: Leak-check rules from workflow config.
+      globstar: Workflow ``**`` semantics for rule path globs.
 
     Returns:
       violations: Policy violations in deterministic order.
@@ -52,27 +55,33 @@ def check_leaks(*, root: Path, policy: LeakCheck) -> tuple[LeakViolation, ...]:
     if not root.is_dir():
         raise LeakCheckError(f"Leak check root does not exist: {root}")
     return (
-        *_forbidden_path_violations(root=root, rules=policy.forbidden_path),
-        *_forbidden_text_violations(root=root, rules=policy.forbidden_text),
+        *_forbidden_path_violations(
+            root=root, rules=policy.forbidden_path, globstar=globstar
+        ),
+        *_forbidden_text_violations(
+            root=root, rules=policy.forbidden_text, globstar=globstar
+        ),
     )
 
 
-def enforce_leak_check(*, root: Path, policy: LeakCheck) -> None:
+def enforce_leak_check(
+    *, root: Path, policy: LeakCheck, globstar: Globstar = "one_or_more"
+) -> None:
     """Raise when a transformed tree violates leak-check policy."""
-    violations = check_leaks(root=root, policy=policy)
+    violations = check_leaks(root=root, policy=policy, globstar=globstar)
     if violations:
         lines = "\n".join(violation.format() for violation in violations)
         raise LeakCheckError(f"Leak check failed:\n{lines}")
 
 
 def _forbidden_path_violations(
-    *, root: Path, rules: tuple[ForbiddenPathRule, ...]
+    *, root: Path, rules: tuple[ForbiddenPathRule, ...], globstar: Globstar
 ) -> tuple[LeakViolation, ...]:
     """Return forbidden-path violations."""
     rel_paths = _relative_paths(root)
     violations: list[LeakViolation] = []
     for rule in rules:
-        matcher = GlobSet(include=rule.paths)
+        matcher = GlobSet(include=rule.paths, globstar=globstar)
         violations.extend(
             LeakViolation(
                 rule_id=rule.id,
@@ -86,13 +95,13 @@ def _forbidden_path_violations(
 
 
 def _forbidden_text_violations(
-    *, root: Path, rules: tuple[ForbiddenTextRule, ...]
+    *, root: Path, rules: tuple[ForbiddenTextRule, ...], globstar: Globstar
 ) -> tuple[LeakViolation, ...]:
     """Return forbidden-text violations."""
     rel_paths = _relative_paths(root)
     violations: list[LeakViolation] = []
     for rule in rules:
-        matcher = GlobSet(include=rule.paths, exclude=rule.exclude)
+        matcher = GlobSet(include=rule.paths, exclude=rule.exclude, globstar=globstar)
         pattern = re.compile(rule.pattern, flags=re.MULTILINE)
         for rel in rel_paths:
             path = root / rel

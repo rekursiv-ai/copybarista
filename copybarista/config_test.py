@@ -335,6 +335,67 @@ def test_rejects_unknown_workflow_key(tmp_path: Path):
         load_config(config_path)
 
 
+def test_workflow_defaults_globstar_to_one_or_more(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.globstar == "one_or_more"
+
+
+def test_workflow_can_opt_into_zero_or_more_globstar(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.globstar == "zero_or_more"
+
+
+def test_rejects_unknown_globstar_value(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+        globstar = "infinite"
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="globstar"):
+        load_config(config_path)
+
+
 def test_rejects_unsupported_mode(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
