@@ -10,10 +10,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import Literal
 
 import re
 
 from copybarista.errors import GlobError
+
+
+Globstar = Literal["zero_or_more", "one_or_more"]
+"""Number of path segments matched by ``**`` between separators.
+
+``one_or_more`` mirrors Java ``PathMatcher`` and Copybara: ``**/foo`` requires
+at least one directory ahead of ``foo``. ``zero_or_more`` mirrors bash globstar,
+gitignore, and Python ``glob.glob(..., recursive=True)``: ``**/foo`` also
+matches a root-level ``foo``.
+"""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -29,12 +40,15 @@ class GlobSet:
     Attributes:
       include: Patterns that select paths.
       exclude: Patterns that remove paths after inclusion.
+      globstar: Whether ``**`` between separators matches zero or one or more
+        segments. Defaults to ``one_or_more`` for Copybara parity.
       min_brace_choices: Minimum choices required in `{a,b}` alternation.
 
     """
 
     include: tuple[str, ...]
     exclude: tuple[str, ...] = ()
+    globstar: Globstar = "one_or_more"
     min_brace_choices: int = 2
     _include_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
     _exclude_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
@@ -44,12 +58,20 @@ class GlobSet:
         object.__setattr__(
             self,
             "_include_regex",
-            _compile_all(self.include, min_brace_choices=self.min_brace_choices),
+            _compile_all(
+                self.include,
+                globstar=self.globstar,
+                min_brace_choices=self.min_brace_choices,
+            ),
         )
         object.__setattr__(
             self,
             "_exclude_regex",
-            _compile_all(self.exclude, min_brace_choices=self.min_brace_choices),
+            _compile_all(
+                self.exclude,
+                globstar=self.globstar,
+                min_brace_choices=self.min_brace_choices,
+            ),
         )
 
     def matches(self, path: str) -> bool:
@@ -61,11 +83,15 @@ class GlobSet:
 
 
 def _compile_all(
-    patterns: tuple[str, ...], *, min_brace_choices: int
+    patterns: tuple[str, ...], *, globstar: Globstar, min_brace_choices: int
 ) -> tuple[re.Pattern[str], ...]:
     """Compile supported glob patterns to full-match regexes."""
     return tuple(
-        re.compile(_glob_to_regex(pattern, min_brace_choices=min_brace_choices))
+        re.compile(
+            _glob_to_regex(
+                pattern, globstar=globstar, min_brace_choices=min_brace_choices
+            )
+        )
         for pattern in patterns
     )
 
@@ -107,13 +133,19 @@ def _check_balanced(*, pattern: str, left: str, right: str) -> None:
         raise GlobError(f"Unbalanced glob syntax in pattern: {pattern}")
 
 
-def _glob_to_regex(pattern: str, *, min_brace_choices: int = 2) -> str:
+def _glob_to_regex(
+    pattern: str,
+    *,
+    globstar: Globstar = "one_or_more",
+    min_brace_choices: int = 2,
+) -> str:
     """Translate the supported glob subset to a Python regex.
 
     The returned regex intentionally has no anchors because callers use
     `fullmatch`, which keeps the translation focused on path component rules.
     """
     pattern = validate_pattern(pattern)
+    globstar_slash = ".+/" if globstar == "one_or_more" else "(?:.+/)?"
     parts: list[str] = []
     idx = 0
     while idx < len(pattern):
@@ -121,7 +153,7 @@ def _glob_to_regex(pattern: str, *, min_brace_choices: int = 2) -> str:
         if char == "*":
             if idx + 1 < len(pattern) and pattern[idx + 1] == "*":
                 if idx + 2 < len(pattern) and pattern[idx + 2] == "/":
-                    parts.append("(?:.+/)?")  # Match zero or more.
+                    parts.append(globstar_slash)
                     idx += 3
                 else:
                     parts.append(".*")
@@ -139,6 +171,7 @@ def _glob_to_regex(pattern: str, *, min_brace_choices: int = 2) -> str:
             brace_regex, idx = _brace_regex(
                 pattern=pattern,
                 start=idx,
+                globstar=globstar,
                 min_brace_choices=min_brace_choices,
             )
             parts.append(brace_regex)
@@ -179,7 +212,7 @@ def _escape_char_class(content: str) -> str:
 
 
 def _brace_regex(
-    *, pattern: str, start: int, min_brace_choices: int
+    *, pattern: str, start: int, globstar: Globstar, min_brace_choices: int
 ) -> tuple[str, int]:
     """Translate one supported brace alternation."""
     end = pattern.find("}", start + 1)
@@ -191,7 +224,9 @@ def _brace_regex(
     return (
         "(?:"
         + "|".join(
-            _glob_to_regex(choice, min_brace_choices=min_brace_choices)
+            _glob_to_regex(
+                choice, globstar=globstar, min_brace_choices=min_brace_choices
+            )
             for choice in choices
         )
         + ")",
