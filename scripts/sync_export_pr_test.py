@@ -14,10 +14,12 @@ from scripts.sync_export_pr import (
     PrBodyEntry,
     PrMetadataPatch,
     PrReplayState,
+    SourceAuthor,
     _applied_marker_from_pr_body,
     _commit_author,
     _export_commit_message,
     _export_public_tree,
+    _generated_commit_author,
     _gh_pr_exists,
     _open_or_update_export_pr,
     _parse_pr_metadata_log,
@@ -34,6 +36,17 @@ from scripts.sync_export_pr import (
     export_pr_text,
     replay_pr_metadata,
 )
+
+
+def _metadata_log(
+    message: str,
+    *,
+    commit_sha: str = "abcdef123456",
+    author: str = "Commit Author",
+    email: str = "author@example.com",
+) -> str:
+    """Return one NUL-framed metadata log record."""
+    return f"{commit_sha}\0{author}\0{email}\0{message}\0"
 
 
 def _export_request(tmp_path: Path) -> ExportRequest:
@@ -73,7 +86,7 @@ def _export_request(tmp_path: Path) -> ExportRequest:
 def _pr_state() -> PrReplayState:
     return PrReplayState(
         title="Public title",
-        author="",
+        authors=(),
         body_intro="Public body.",
         body_entries=(),
         applied_source_rev="abc123",
@@ -161,15 +174,12 @@ def test_export_pr_body_accepts_custom_sync_label():
 
 def test_parse_pr_metadata_accepts_append_body():
     patches = _parse_pr_metadata_log(
-        (
-            "abcdef123456\0"
+        _metadata_log(
             "Prepare public export\n\n"
             "Copybarista-PR-Title: Public title\n"
-            "Copybarista-PR-Author: Public author\n"
             "Copybarista-PR-Body-Mode: append\n"
             "Copybarista-PR-Body:\n"
             "Public body text.\n"
-            "\0"
         ),
         forbidden_text=("private",),
     )
@@ -179,10 +189,38 @@ def test_parse_pr_metadata_accepts_append_body():
             commit_sha="abcdef123456",
             scope="",
             title="Public title",
-            author="Public author",
+            author=SourceAuthor(name="Commit Author", email="author@example.com"),
             body="Public body text.",
             body_mode="append",
         ),
+    )
+
+
+def test_parse_pr_metadata_ignores_plain_commit_message():
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Better tool use UX\n\nInternal source-only context."),
+        forbidden_text=("source-only",),
+    )
+
+    assert patches == ()
+
+
+def test_parse_pr_metadata_uses_commit_author_by_default():
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Prepare public export\n\n"
+            "Copybarista-PR-Title: Public title\n"
+            "Copybarista-PR-Body:\n"
+            "Public body text.\n",
+            author="Source Committer",
+            email="source@example.com",
+        ),
+        forbidden_text=(),
+    )
+
+    assert patches[0].author == SourceAuthor(
+        name="Source Committer",
+        email="source@example.com",
     )
 
 
@@ -202,6 +240,8 @@ def test_source_pr_metadata_uses_nul_terminated_git_log(
             0,
             stdout=(
                 "abcdef123456\0"
+                "Source Committer\0"
+                "source@example.com\0"
                 "Copybarista-PR-Title: Public title\n"
                 "Copybarista-PR-Body:\n"
                 "Public body.\n"
@@ -220,19 +260,38 @@ def test_source_pr_metadata_uses_nul_terminated_git_log(
     )
 
     assert calls == [
-        ["git", "log", "-z", "--reverse", "--format=%H%x00%B", "abcdef123456"]
+        [
+            "git",
+            "log",
+            "-z",
+            "--reverse",
+            "--format=%H%x00%aN%x00%aE%x00%B",
+            "abcdef123456",
+        ]
     ]
     assert patches[0].title == "Public title"
+    assert patches[0].author == SourceAuthor(
+        name="Source Committer",
+        email="source@example.com",
+    )
+
+
+def test_parse_pr_metadata_rejects_legacy_author_field():
+    with pytest.raises(sync_export_pr.PrMetadataError, match="use the git author"):
+        _parse_pr_metadata_log(
+            _metadata_log(
+                "Copybarista-PR-Title: Public title\n"
+                "Copybarista-PR-Author: Public author\n"
+            ),
+            forbidden_text=(),
+        )
 
 
 def test_parse_pr_metadata_rejects_duplicate_title():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
         _parse_pr_metadata_log(
-            (
-                "abcdef123456\0"
-                "Copybarista-PR-Title: First\n"
-                "Copybarista-PR-Title: Second\n"
-                "\0"
+            _metadata_log(
+                "Copybarista-PR-Title: First\nCopybarista-PR-Title: Second\n"
             ),
             forbidden_text=(),
         )
@@ -240,8 +299,7 @@ def test_parse_pr_metadata_rejects_duplicate_title():
 
 def test_parse_pr_metadata_keeps_matching_scoped_block():
     patches = _parse_pr_metadata_log(
-        (
-            "abcdef123456\0"
+        _metadata_log(
             "Update exported packages\n\n"
             "Copybarista-PR-Scope: sagent\n"
             "Copybarista-PR-Title: Sagent title\n"
@@ -251,7 +309,6 @@ def test_parse_pr_metadata_keeps_matching_scoped_block():
             "Copybarista-PR-Title: Configgle title\n"
             "Copybarista-PR-Body:\n"
             "Configgle body.\n"
-            "\0"
         ),
         forbidden_text=(),
         scope="configgle",
@@ -262,7 +319,7 @@ def test_parse_pr_metadata_keeps_matching_scoped_block():
             commit_sha="abcdef123456",
             scope="configgle",
             title="Configgle title",
-            author="",
+            author=SourceAuthor(name="Commit Author", email="author@example.com"),
             body="Configgle body.",
             body_mode="append",
         ),
@@ -271,15 +328,13 @@ def test_parse_pr_metadata_keeps_matching_scoped_block():
 
 def test_parse_pr_metadata_keeps_unscoped_and_matching_scoped_blocks():
     patches = _parse_pr_metadata_log(
-        (
-            "abcdef123456\0"
+        _metadata_log(
             "Update exported packages\n\n"
             "Copybarista-PR-Body:\n"
             "Shared body.\n"
             "Copybarista-PR-Scope: sagent\n"
             "Copybarista-PR-Body:\n"
             "Sagent body.\n"
-            "\0"
         ),
         forbidden_text=(),
         scope="sagent",
@@ -291,7 +346,7 @@ def test_parse_pr_metadata_keeps_unscoped_and_matching_scoped_blocks():
 def test_parse_pr_metadata_rejects_body_mode_without_body():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body-Mode"):
         _parse_pr_metadata_log(
-            "abcdef123456\0Copybarista-PR-Body-Mode: append\n\0",
+            _metadata_log("Copybarista-PR-Body-Mode: append\n"),
             forbidden_text=(),
         )
 
@@ -299,7 +354,7 @@ def test_parse_pr_metadata_rejects_body_mode_without_body():
 def test_parse_pr_metadata_rejects_forbidden_text():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
         _parse_pr_metadata_log(
-            ("abcdef123456\0Copybarista-PR-Body:\nMentions private-source.\n\0"),
+            _metadata_log("Copybarista-PR-Body:\nMentions private-source.\n"),
             forbidden_text=("private-source",),
         )
 
@@ -308,7 +363,7 @@ def test_replay_append_body_adds_entries_in_commit_order():
     state = replay_pr_metadata(
         base=PrReplayState(
             title="Default title",
-            author="",
+            authors=(),
             body_intro="Default body.",
             body_entries=(),
             applied_source_rev="",
@@ -320,7 +375,7 @@ def test_replay_append_body_adds_entries_in_commit_order():
                 commit_sha="1111111",
                 scope="",
                 title="",
-                author="",
+                author=SourceAuthor(name="First Author", email="first@example.com"),
                 body="First update.",
                 body_mode="append",
             ),
@@ -328,7 +383,7 @@ def test_replay_append_body_adds_entries_in_commit_order():
                 commit_sha="2222222",
                 scope="",
                 title="",
-                author="",
+                author=SourceAuthor(name="Second Author", email="second@example.com"),
                 body="Second update.",
                 body_mode="append",
             ),
@@ -339,13 +394,17 @@ def test_replay_append_body_adds_entries_in_commit_order():
         PrBodyEntry(commit_sha="1111111", text="First update."),
         PrBodyEntry(commit_sha="2222222", text="Second update."),
     )
+    assert state.authors == (
+        SourceAuthor(name="First Author", email="first@example.com"),
+        SourceAuthor(name="Second Author", email="second@example.com"),
+    )
 
 
 def test_replay_replace_body_resets_previous_append_entries():
     state = replay_pr_metadata(
         base=PrReplayState(
             title="Default title",
-            author="",
+            authors=(),
             body_intro="Default body.",
             body_entries=(PrBodyEntry(commit_sha="1111111", text="Old update."),),
             applied_source_rev="",
@@ -357,7 +416,7 @@ def test_replay_replace_body_resets_previous_append_entries():
                 commit_sha="2222222",
                 scope="",
                 title="New title",
-                author="Dan Becker",
+                author=SourceAuthor(name="Commit Author", email="author@example.com"),
                 body="Replacement body.",
                 body_mode="replace",
             ),
@@ -365,7 +424,9 @@ def test_replay_replace_body_resets_previous_append_entries():
     )
 
     assert state.title == "New title"
-    assert state.author == "Dan Becker"
+    assert state.authors == (
+        SourceAuthor(name="Commit Author", email="author@example.com"),
+    )
     assert state.body_intro == "Replacement body."
     assert state.body_entries == ()
 
@@ -375,7 +436,7 @@ def test_render_pr_body_includes_state_marker_without_raw_source_sha():
     body = _render_pr_body(
         state=PrReplayState(
             title="Public title",
-            author="Dan Becker",
+            authors=(SourceAuthor(name="Commit Author", email="author@example.com"),),
             body_intro="Public summary.",
             body_entries=(PrBodyEntry(commit_sha=source_rev, text="Public update."),),
             applied_source_rev=source_rev,
@@ -387,11 +448,80 @@ def test_render_pr_body_includes_state_marker_without_raw_source_sha():
         publish_source_rev=False,
     )
 
-    assert "Source attribution: Dan Becker" in body
+    assert "Source attribution:" not in body
     assert "### Updates" in body
     assert "Public update." in body
     assert "copybarista:pr-state version=1 applied=sha256:" in body
     assert source_rev not in body
+
+
+def test_render_pr_body_fills_repository_template():
+    source_rev = "abc123abc123"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            authors=(SourceAuthor(name="Commit Author", email="author@example.com"),),
+            body_intro="Public summary.",
+            body_entries=(PrBodyEntry(commit_sha=source_rev, text="Public update."),),
+            applied_source_rev=source_rev,
+            applied_source_digest=_source_rev_digest(source_rev),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+        pr_template=(
+            "## Summary\n\n"
+            "- Describe the change.\n\n"
+            "## Validation\n\n"
+            "- [ ] `ruff check`\n"
+            "- [ ] `pytest`\n\n"
+            "## Notes\n\n"
+            "Mention documentation impact.\n"
+        ),
+    )
+
+    assert "## Summary\n\nPublic summary." in body
+    assert "- Describe the change." not in body
+    assert "- [x] `ruff check`" in body
+    assert "- [x] `pytest`" in body
+    assert "## Notes\n\nMention documentation impact." in body
+    assert "Copybarista export branch: `copybarista/export/main`" in body
+
+
+def test_state_from_pr_body_reads_templated_summary():
+    source_rev = "abc123abc123"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            authors=(SourceAuthor(name="Commit Author", email="author@example.com"),),
+            body_intro="Public summary.",
+            body_entries=(PrBodyEntry(commit_sha=source_rev, text="Public update."),),
+            applied_source_rev=source_rev,
+            applied_source_digest=_source_rev_digest(source_rev),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+        pr_template=(
+            "## Summary\n\n"
+            "## Testing\n\n"
+            "- [ ] `uv run pytest`\n\n"
+            "## Checklist\n\n"
+            "- [ ] I updated docs.\n"
+        ),
+    )
+
+    state = _state_from_pr_body(
+        title="Public title",
+        body=body,
+        default_body="Default body.",
+    )
+
+    assert state.body_intro == "Public summary."
+    assert state.authors == ()
+    assert state.body_entries[0].text == "Public update."
 
 
 def test_render_pr_body_round_trips_multiline_append_entries():
@@ -399,7 +529,7 @@ def test_render_pr_body_round_trips_multiline_append_entries():
     body = _render_pr_body(
         state=PrReplayState(
             title="Public title",
-            author="",
+            authors=(),
             body_intro="Public summary.",
             body_entries=(
                 PrBodyEntry(
@@ -469,6 +599,41 @@ def test_unmarked_existing_branch_replays_current_commit(
     )
 
 
+def test_marked_existing_branch_replays_after_applied_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fake_resolve_source_marker(
+        *, source_dir: Path, marker: str, marker_source: str
+    ) -> str:
+        assert source_dir == tmp_path
+        calls.append(f"{marker_source}:{marker}")
+        return "applied-source"
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_resolve_source_marker",
+        fake_resolve_source_marker,
+    )
+
+    assert (
+        sync_export_pr._replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="applied-digest",
+                replay_base_digest="migration-base-digest",
+                exists=True,
+            ),
+        )
+        == "applied-source"
+    )
+    assert calls == ["generated branch source marker:sha256:applied-digest"]
+
+
 def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
     with pytest.raises(sync_export_pr.PrReplayError, match="Existing generated PR"):
         sync_export_pr._replay_base(
@@ -495,12 +660,17 @@ def test_export_commit_message_contains_replay_markers():
         branch="copybarista/export/main",
         source_digest="source-digest",
         replay_base_digest="base-digest",
+        authors=(
+            SourceAuthor(name="Primary Author", email="primary@example.com"),
+            SourceAuthor(name="Second Author", email="second@example.com"),
+        ),
     )
 
     assert message.startswith("Public title\n\n")
     assert "Copybarista export branch: copybarista/export/main" in message
     assert "copybarista-source-rev-sha256=source-digest" in message
     assert "copybarista-replay-base-sha256=base-digest" in message
+    assert "Co-authored-by: Second Author <second@example.com>" in message
 
 
 def test_no_diff_updates_existing_pr_when_replay_text_changed(
@@ -581,6 +751,20 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
     )
 
     assert calls == []
+
+
+def test_replay_without_metadata_keeps_generic_pr_text():
+    base = PrReplayState(
+        title="Update Sagent export",
+        authors=(),
+        body_intro="Updates the generated Sagent public repository export.",
+        body_entries=(),
+        applied_source_rev="abc123",
+        applied_source_digest=_source_rev_digest("abc123"),
+        metadata_count=0,
+    )
+
+    assert replay_pr_metadata(base=base, patches=()) == base
 
 
 def test_export_pr_text_uses_defaults_without_commit_message_opt_in():
@@ -697,6 +881,28 @@ def test_export_branch_name_rejects_malformed_explicit_branch():
 def test_commit_author_uses_sync_identity():
     assert (
         _commit_author("copybarista", "copybarista@example.com")
+        == "copybarista <copybarista@example.com>"
+    )
+
+
+def test_generated_commit_author_prefers_source_author():
+    assert (
+        _generated_commit_author(
+            authors=(SourceAuthor(name="Source Author", email="source@example.com"),),
+            fallback_name="copybarista",
+            fallback_email="copybarista@example.com",
+        )
+        == "Source Author <source@example.com>"
+    )
+
+
+def test_generated_commit_author_uses_sync_identity_without_metadata():
+    assert (
+        _generated_commit_author(
+            authors=(),
+            fallback_name="copybarista",
+            fallback_email="copybarista@example.com",
+        )
         == "copybarista <copybarista@example.com>"
     )
 

@@ -4,8 +4,11 @@ All notable Copybarista changes are documented here.
 
 ## Unreleased
 
-- Added source commit metadata replay for generated export PR title, body, and
-  source attribution.
+- Added source commit metadata replay for generated export PR title and body,
+  with source authors represented in generated commit author/co-author metadata.
+- Kept ordinary source commit subjects and bodies out of generated PR text
+  unless explicit `Copybarista-PR-*` metadata is present.
+- Added PR template rendering for generated export PR bodies.
 - Added scoped metadata blocks so one source commit can provide different PR
   text for multiple generated package repositories.
 - Added `[pull_request]` package sync settings for PR defaults, required

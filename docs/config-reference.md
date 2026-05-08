@@ -457,8 +457,10 @@ publish_source_rev = false
 ```
 
 `default_title` and `default_body` are used when no commit metadata supplies PR
-text. `require_pr_metadata` makes the export fail if the replay range contains
-no `Copybarista-PR-*` fields. `metadata_source` is currently only
+text. Ordinary commit subjects and bodies are ignored for generated PR text;
+only `Copybarista-PR-Title` and `Copybarista-PR-Body` opt strings into public
+PR rendering. `require_pr_metadata` makes the export fail if the replay range
+contains no `Copybarista-PR-*` fields. `metadata_source` is currently only
 `commit_messages`. `replay_bootstrap_base` is a source revision used for
 one-time migration when an existing generated PR has no replay marker. Existing
 generated branches with no open PR migrate from the current source commit's
@@ -471,16 +473,25 @@ Source commit messages can drive the generated export PR:
 ```text
 Copybarista-PR-Scope: configgle
 Copybarista-PR-Title: Public PR title
-Copybarista-PR-Author: Public source attribution
 Copybarista-PR-Body-Mode: append
 Copybarista-PR-Body:
 Public reviewer context.
 ```
 
-Title and author use latest-value-wins semantics. Body mode defaults to
-`append`; `replace` rewrites the managed PR description. Missing fields preserve
-the previous managed state. Copybarista replays relevant commits on every export
-run, so failed runs can be retried without losing PR text.
+Title uses latest-value-wins semantics. Body mode defaults to `append`;
+`replace` rewrites the managed PR description. Missing fields preserve the
+previous managed state. Source attribution is represented in generated git
+commit author and `Co-authored-by` metadata, not in the PR description.
+`Copybarista-PR-Author` is not supported because attribution comes from git
+author metadata.
+Copybarista replays relevant commits on every export run, so failed runs can be
+retried without losing PR text.
+
+When the target public repository has `.github/PULL_REQUEST_TEMPLATE.md`,
+Copybarista fills the template's `## Summary` section with the managed PR text
+and marks validation/testing checklist items as complete after validation
+passes. Repositories without a PR template use Copybarista's built-in body
+layout.
 
 `Copybarista-PR-Scope` is optional. Use it when one source commit contains
 different public PR text for multiple generated repositories. Each package

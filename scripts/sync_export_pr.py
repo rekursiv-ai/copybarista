@@ -44,6 +44,13 @@ PUBLIC_VALIDATION_ARTIFACT_DIRS = (
     "__pycache__",
 )
 PUBLIC_VALIDATION_ARTIFACT_FILES = (".coverage",)
+PR_TEMPLATE_PATHS = (
+    Path(".github/PULL_REQUEST_TEMPLATE.md"),
+    Path(".github/pull_request_template.md"),
+    Path("PULL_REQUEST_TEMPLATE.md"),
+    Path("pull_request_template.md"),
+)
+PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -153,13 +160,21 @@ class PrReplaySettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SourceAuthor:
+    """One git source author used for generated commit attribution."""
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PrMetadataPatch:
     """One source commit's public PR metadata."""
 
     commit_sha: str
     scope: str
     title: str
-    author: str
+    author: SourceAuthor
     body: str
     body_mode: str
 
@@ -177,7 +192,7 @@ class PrReplayState:
     """Rendered public PR state after replaying source commit metadata."""
 
     title: str
-    author: str
+    authors: tuple[SourceAuthor, ...]
     body_intro: str
     body_entries: tuple[PrBodyEntry, ...]
     applied_source_rev: str
@@ -651,6 +666,7 @@ def _resolve_pr_replay_plan(*, request: ExportRequest) -> PrReplayPlan:
             branch=request.branch,
             sync_label=request.sync_label,
             publish_source_rev=request.replay_settings.publish_source_rev,
+            pr_template=_read_pr_template(request.public_dir),
         ),
         replay_base=replay_base,
         replay_base_digest=_source_rev_digest(replay_base) if replay_base else "",
@@ -726,6 +742,12 @@ def _replay_base(
             f"Branch: {request.branch}. Configure replay_bootstrap_base or rerun "
             "with manual PR text once to migrate the PR."
         )
+    if branch_markers.source_digest:
+        return _resolve_source_marker(
+            source_dir=request.source_dir,
+            marker=f"sha256:{branch_markers.source_digest}",
+            marker_source="generated branch source marker",
+        )
     if branch_markers.replay_base_digest:
         return _resolve_source_marker(
             source_dir=request.source_dir,
@@ -758,7 +780,14 @@ def _source_pr_metadata(
     else:
         revspec = current_source_rev
     result = _run(
-        ["git", "log", "-z", "--reverse", "--format=%H%x00%B", revspec],
+        [
+            "git",
+            "log",
+            "-z",
+            "--reverse",
+            "--format=%H%x00%aN%x00%aE%x00%B",
+            revspec,
+        ],
         cwd=source_dir,
         capture=True,
     )
@@ -807,7 +836,7 @@ def _base_pr_state(
             raise PrReplayError("Existing generated PR body has no Copybarista marker.")
     return PrReplayState(
         title=request.replay_settings.default_title,
-        author="",
+        authors=(),
         body_intro=request.replay_settings.default_body,
         body_entries=(),
         applied_source_rev=current_source_rev,
@@ -838,6 +867,7 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
             branch=branch,
             source_digest=pr_plan.state.applied_source_digest,
             replay_base_digest=pr_plan.replay_base_digest,
+            authors=pr_plan.state.authors,
         ),
         encoding="utf-8",
     )
@@ -856,7 +886,11 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
             "git",
             "commit",
             "--author",
-            _commit_author(request.sync_user_name, request.sync_user_email),
+            _generated_commit_author(
+                authors=pr_plan.state.authors,
+                fallback_name=request.sync_user_name,
+                fallback_email=request.sync_user_email,
+            ),
             "--file",
             str(message_file),
         ],
@@ -962,13 +996,14 @@ def _parse_pr_metadata_log(
 ) -> tuple[PrMetadataPatch, ...]:
     """Parse NUL-framed git log output into PR metadata patches."""
     parts = [part for part in log_output.split("\0") if part]
-    if len(parts) % 2 != 0:
-        raise PrMetadataError("git log PR metadata output was not NUL-framed pairs.")
+    if len(parts) % 4 != 0:
+        raise PrMetadataError("git log PR metadata output was not NUL-framed records.")
     patches: list[PrMetadataPatch] = []
-    for idx in range(0, len(parts), 2):
+    for idx in range(0, len(parts), 4):
         commit_patches = _parse_pr_metadata_message(
             commit_sha=parts[idx],
-            message=parts[idx + 1],
+            commit_author=SourceAuthor(name=parts[idx + 1], email=parts[idx + 2]),
+            message=parts[idx + 3],
             forbidden_text=forbidden_text,
             scope=scope,
         )
@@ -977,7 +1012,12 @@ def _parse_pr_metadata_log(
 
 
 def _parse_pr_metadata_message(
-    *, commit_sha: str, message: str, forbidden_text: tuple[str, ...], scope: str
+    *,
+    commit_sha: str,
+    commit_author: SourceAuthor,
+    message: str,
+    forbidden_text: tuple[str, ...],
+    scope: str,
 ) -> tuple[PrMetadataPatch, ...]:
     """Parse one commit message's Copybarista PR metadata."""
     target_scope = _normalized_scope(scope)
@@ -992,6 +1032,7 @@ def _parse_pr_metadata_message(
         if field == "Copybarista-PR-Scope" and separator:
             patch = _patch_from_metadata_block(
                 commit_sha=commit_sha,
+                commit_author=commit_author,
                 values=values,
                 body="",
                 block_scope=block_scope,
@@ -1021,6 +1062,7 @@ def _parse_pr_metadata_message(
             values["Body"] = body
             patch = _patch_from_metadata_block(
                 commit_sha=commit_sha,
+                commit_author=commit_author,
                 values=values,
                 body=body,
                 block_scope=block_scope,
@@ -1035,7 +1077,13 @@ def _parse_pr_metadata_message(
             continue
         if field.startswith("Copybarista-PR-") and separator:
             name = field.removeprefix("Copybarista-PR-")
-            if name not in {"Title", "Author", "Body-Mode", "Scope"}:
+            if name == "Author":
+                raise _metadata_error(
+                    commit_sha,
+                    name,
+                    "unsupported; use the git author for attribution",
+                )
+            if name not in {"Title", "Body-Mode", "Scope"}:
                 raise _metadata_error(commit_sha, name, "unknown field")
             if name in values:
                 raise _metadata_error(commit_sha, name, "duplicate field")
@@ -1043,6 +1091,7 @@ def _parse_pr_metadata_message(
         idx += 1
     patch = _patch_from_metadata_block(
         commit_sha=commit_sha,
+        commit_author=commit_author,
         values=values,
         body="",
         block_scope=block_scope,
@@ -1057,6 +1106,7 @@ def _parse_pr_metadata_message(
 def _patch_from_metadata_block(
     *,
     commit_sha: str,
+    commit_author: SourceAuthor,
     values: dict[str, str],
     body: str,
     block_scope: str,
@@ -1082,12 +1132,6 @@ def _patch_from_metadata_block(
     )
     _validate_metadata_text(
         commit_sha=commit_sha,
-        field="Author",
-        value=values.get("Author", ""),
-        forbidden_text=forbidden_text,
-    )
-    _validate_metadata_text(
-        commit_sha=commit_sha,
         field="Body",
         value=body,
         forbidden_text=forbidden_text,
@@ -1096,7 +1140,11 @@ def _patch_from_metadata_block(
         commit_sha=commit_sha,
         scope=normalized_block_scope,
         title=values.get("Title", ""),
-        author=values.get("Author", ""),
+        author=_validated_source_author(
+            commit_sha=commit_sha,
+            author=commit_author,
+            forbidden_text=forbidden_text,
+        ),
         body=body,
         body_mode=mode,
     )
@@ -1116,6 +1164,25 @@ def _body_lines_until_next_scope(
     return body_lines, idx
 
 
+def _validated_source_author(
+    *, commit_sha: str, author: SourceAuthor, forbidden_text: tuple[str, ...]
+) -> SourceAuthor:
+    """Return a source author suitable for public git attribution."""
+    if not author.name.strip() or not author.email.strip():
+        raise _metadata_error(
+            commit_sha,
+            "Author",
+            "source commit author name and email are required for attribution",
+        )
+    _validate_metadata_text(
+        commit_sha=commit_sha,
+        field="Author",
+        value=_commit_author(author.name, author.email),
+        forbidden_text=forbidden_text,
+    )
+    return SourceAuthor(name=author.name.strip(), email=author.email.strip())
+
+
 def _normalized_scope(scope: str) -> str:
     """Return a normalized metadata scope label."""
     return scope.strip().casefold()
@@ -1132,6 +1199,7 @@ def replay_pr_metadata(
     for patch in patches:
         entries = state.body_entries
         body_intro = state.body_intro
+        authors = state.authors
         if patch.body_mode == "replace" and patch.body:
             body_intro = patch.body
             entries = ()
@@ -1142,9 +1210,10 @@ def replay_pr_metadata(
                 PrBodyEntry(commit_sha=patch.commit_sha, text=patch.body),
             )
             seen.add(patch.commit_sha)
+        authors = _append_source_author(authors=authors, author=patch.author)
         state = PrReplayState(
             title=patch.title or state.title,
-            author=patch.author or state.author,
+            authors=authors,
             body_intro=body_intro,
             body_entries=entries,
             applied_source_rev=state.applied_source_rev,
@@ -1154,12 +1223,23 @@ def replay_pr_metadata(
     return state
 
 
+def _append_source_author(
+    *, authors: tuple[SourceAuthor, ...], author: SourceAuthor
+) -> tuple[SourceAuthor, ...]:
+    """Append one source author unless an equivalent email is already present."""
+    normalized_email = author.email.casefold()
+    if any(existing.email.casefold() == normalized_email for existing in authors):
+        return authors
+    return (*authors, author)
+
+
 def _render_pr_body(
     *,
     state: PrReplayState,
     branch: str,
     sync_label: str,
     publish_source_rev: bool,
+    pr_template: str = "",
 ) -> str:
     """Render the public PR body and Copybarista replay marker."""
     if not state.title.strip() or not state.body_intro.strip():
@@ -1171,17 +1251,8 @@ def _render_pr_body(
     )
     if marker_value == "sha256:":
         raise PrReplayError("Cannot render PR body without an applied source marker.")
-    lines = [state.body_intro.strip()]
-    if state.author.strip():
-        lines.extend(("", f"Source attribution: {state.author.strip()}"))
-    if state.body_entries:
-        lines.extend(("", "### Updates", ""))
-        for entry in state.body_entries:
-            entry_marker = _entry_marker(entry)
-            if entry_marker:
-                lines.append(entry_marker)
-            lines.extend(_render_body_entry(entry.text))
-    lines.extend(
+    lines = _render_pr_summary_lines(state)
+    footer = "\n".join(
         (
             "",
             "----",
@@ -1193,10 +1264,88 @@ def _render_pr_body(
             f"{PR_MARKER_PREFIX}version={PR_STATE_VERSION} applied={marker_value} -->",
         )
     )
-    body = "\n".join(lines) + "\n"
+    body = (
+        _render_pr_template_body(template=pr_template, summary_lines=lines)
+        if pr_template.strip()
+        else "\n".join(lines)
+    )
+    body = f"{body.rstrip()}\n{footer}\n"
     if body.count(PR_MARKER_PREFIX) != 1:
         raise PrReplayError("Rendered PR body must contain exactly one state marker.")
     return body
+
+
+def _render_pr_summary_lines(state: PrReplayState) -> list[str]:
+    """Return managed reviewer-facing summary lines."""
+    lines = [state.body_intro.strip()]
+    if state.body_entries:
+        lines.extend(("", "### Updates", ""))
+        for entry in state.body_entries:
+            entry_marker = _entry_marker(entry)
+            if entry_marker:
+                lines.append(entry_marker)
+            lines.extend(_render_body_entry(entry.text))
+    return lines
+
+
+def _render_pr_template_body(*, template: str, summary_lines: list[str]) -> str:
+    """Fill a repository PR template without owning non-summary sections."""
+    lines = template.strip("\n").splitlines()
+    result: list[str] = []
+    idx = 0
+    wrote_summary = False
+    while idx < len(lines):
+        heading = _markdown_heading(lines[idx])
+        if heading == "Summary":
+            result.append(lines[idx])
+            result.extend(("", *summary_lines))
+            idx = _next_section(lines, start=idx + 1)
+            wrote_summary = True
+            continue
+        if heading in PR_VALIDATION_TEMPLATE_SECTIONS:
+            result.append(lines[idx])
+            idx += 1
+            while idx < len(lines) and not _markdown_heading(lines[idx]):
+                result.append(_checked_template_line(lines[idx]))
+                idx += 1
+            continue
+        result.append(lines[idx])
+        idx += 1
+    if wrote_summary:
+        return "\n".join(result).rstrip()
+    return "\n".join((*summary_lines, "", *result)).rstrip()
+
+
+def _read_pr_template(public_dir: Path) -> str:
+    """Read the target repository's PR template if it has one."""
+    for relative_path in PR_TEMPLATE_PATHS:
+        path = public_dir / relative_path
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    return ""
+
+
+def _markdown_heading(line: str) -> str:
+    """Return a level-two Markdown heading title."""
+    if not line.startswith("## "):
+        return ""
+    return line.removeprefix("## ").strip()
+
+
+def _next_section(lines: list[str], *, start: int) -> int:
+    """Return the next level-two section index."""
+    idx = start
+    while idx < len(lines) and not _markdown_heading(lines[idx]):
+        idx += 1
+    return idx
+
+
+def _checked_template_line(line: str) -> str:
+    """Mark validation checklist items as completed."""
+    stripped = line.lstrip()
+    if stripped.startswith("- [ ]"):
+        return line.replace("[ ]", "[x]", 1)
+    return line
 
 
 def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplayState:
@@ -1205,21 +1354,14 @@ def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplay
     if not marker:
         raise PrReplayError("Existing generated PR body has no Copybarista marker.")
     content = _body_before_footer(body).strip()
+    content = _summary_section(content) or content
     if not content:
         content = default_body
     intro_text, entries_text = _split_updates_section(content)
-    intro_lines = intro_text.splitlines()
-    author = ""
-    body_lines: list[str] = []
-    for line in intro_lines:
-        if line.startswith("Source attribution: "):
-            author = line.removeprefix("Source attribution: ").strip()
-        else:
-            body_lines.append(line)
     return PrReplayState(
         title=title,
-        author=author,
-        body_intro="\n".join(body_lines).strip() or default_body,
+        authors=(),
+        body_intro=_drop_legacy_source_attribution(intro_text) or default_body,
         body_entries=_parse_body_entries(entries_text),
         applied_source_rev="",
         applied_source_digest=marker.removeprefix("sha256:")
@@ -1227,6 +1369,23 @@ def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplay
         else "",
         metadata_count=0,
     )
+
+
+def _drop_legacy_source_attribution(text: str) -> str:
+    """Remove old PR-body attribution now represented by git metadata."""
+    return "\n".join(
+        line for line in text.splitlines() if not line.startswith("Source attribution:")
+    ).strip()
+
+
+def _summary_section(body: str) -> str:
+    """Return a templated PR body's managed Summary section."""
+    lines = body.splitlines()
+    for idx, line in enumerate(lines):
+        if _markdown_heading(line) == "Summary":
+            end = _next_section(lines, start=idx + 1)
+            return "\n".join(lines[idx + 1 : end]).strip()
+    return ""
 
 
 def _applied_marker_from_pr_body(body: str) -> str:
@@ -1344,7 +1503,7 @@ def _replace_pr_state(
     """Return `state` with selected scalar fields replaced."""
     return PrReplayState(
         title=title or state.title,
-        author=state.author,
+        authors=state.authors,
         body_intro=body_intro or state.body_intro,
         body_entries=state.body_entries,
         applied_source_rev=applied_source_rev or state.applied_source_rev,
@@ -1477,6 +1636,7 @@ def _export_commit_message(
     branch: str,
     source_digest: str,
     replay_base_digest: str,
+    authors: tuple[SourceAuthor, ...] = (),
 ) -> str:
     """Return the generated export commit message with replay markers."""
     lines = [
@@ -1487,6 +1647,10 @@ def _export_commit_message(
         f"copybarista-replay-base-sha256={replay_base_digest}",
         f"copybarista-pr-state-version={PR_STATE_VERSION}",
     ]
+    lines.extend(
+        f"Co-authored-by: {_commit_author(author.name, author.email)}"
+        for author in authors[1:]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -1519,6 +1683,15 @@ def export_branch_name(
 def _commit_author(name: str, email: str) -> str:
     """Return the Git author identity for a generated sync commit."""
     return f"{name} <{email}>"
+
+
+def _generated_commit_author(
+    *, authors: tuple[SourceAuthor, ...], fallback_name: str, fallback_email: str
+) -> str:
+    """Return the primary generated commit author identity."""
+    if authors:
+        return _commit_author(authors[0].name, authors[0].email)
+    return _commit_author(fallback_name, fallback_email)
 
 
 def _git_has_changes(path: Path) -> bool:
