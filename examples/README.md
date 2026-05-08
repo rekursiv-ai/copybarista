@@ -330,9 +330,16 @@ generated public-safe text.
 For scaffolded package sync, prefer the generated workflow from
 `copybarista write-export-workflow`. It uses `[pull_request]` defaults from
 `copybarista.sync.toml` and can replay `Copybarista-PR-*` commit metadata into
-the generated public PR title, body, and source attribution. When one commit
-touches multiple exported packages, use one `Copybarista-PR-Scope: <package>`
-block per package so each public repository receives the right text.
+the generated public PR title and body. Source attribution is represented in
+the generated export commit author and `Co-authored-by` trailers. If the public
+repository has a PR template, Copybarista fills its summary section and keeps
+the template structure. When one commit touches multiple exported packages, use
+one `Copybarista-PR-Scope: <package>` block per package so each public
+repository receives the right text.
+Ordinary commit subjects and bodies are not used as generated PR title/body;
+only the explicit `Copybarista-PR-*` fields are treated as approved public PR
+text. Without matching metadata, the generated workflow keeps the configured
+generic title and body.
 
 Public-to-source sync treats public changes as proposals. The workflow checks
 out the public base and head trees, runs `copybarista import-change`, validates

@@ -231,21 +231,28 @@ copybarista write-export-workflow copybarista.sync.toml \
   --output configgle-export.yml
 ```
 
-Generated export PRs can use public-safe commit metadata for their title,
-source attribution, and body:
+Generated export PRs can use public-safe commit metadata for their title and
+body:
 
 ```text
 Copybarista-PR-Scope: configgle
 Copybarista-PR-Title: Prepare package release checks
-Copybarista-PR-Author: Dan Becker
 Copybarista-PR-Body-Mode: append
 Copybarista-PR-Body:
 Adds release-tree validation and refreshes generated workflow defaults.
 ```
 
 Copybarista replays relevant source commits on every export run. Missing fields
-preserve previous PR state, title/author use latest-value-wins semantics, and
-body entries append unless `Copybarista-PR-Body-Mode: replace` is used. See
+preserve previous PR state, titles use latest-value-wins semantics, and body
+entries append unless `Copybarista-PR-Body-Mode: replace` is used. Source
+attribution is git-native: Copybarista uses replayed source authors as the
+generated export commit author and `Co-authored-by` trailers.
+Ordinary commit subjects and bodies are not used as generated PR text. Only the
+`Copybarista-PR-*` fields opt a string into public PR rendering; if no matching
+metadata is present, Copybarista keeps the configured generic title and body.
+When the public repository has `.github/PULL_REQUEST_TEMPLATE.md`, Copybarista
+fills the template's `## Summary` section and marks validation checklists as
+complete after public validation passes. See
 [GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md#pull-request-text)
 for scoped multi-package blocks, the full commit-message workflow, and privacy
 rules.

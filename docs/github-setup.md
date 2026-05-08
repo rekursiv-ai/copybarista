@@ -174,31 +174,43 @@ namespaces because generated branches are force-updated with
 
 ## Pull Request Text
 
-Generated package export workflows can derive public PR text from source commit
-messages. Add machine-readable fields to the commit message when a source
+Generated package export workflows can replay public PR text from explicit
+machine-readable fields in source commit messages. Add the fields when a source
 change should update the public export PR:
 
 ```text
 Copybarista-PR-Scope: configgle
 Copybarista-PR-Title: Prepare package release checks
-Copybarista-PR-Author: Dan Becker
 Copybarista-PR-Body-Mode: append
 Copybarista-PR-Body:
 Adds release-tree validation and refreshes generated workflow defaults.
 ```
 
-The normal commit subject and body should still be useful on their own. The
-`Copybarista-PR-*` fields are public reviewer text that Copybarista replays
-into the generated export PR.
+The normal commit subject and body should still be useful on their own, but
+Copybarista does not use them as generated PR title/body. This protects against
+accidentally publishing private source context. Only `Copybarista-PR-Title` and
+`Copybarista-PR-Body` are an explicit approval that the string is acceptable in
+a public PR. When no matching metadata is present, Copybarista keeps the
+configured generic title and body.
+
+If the target public repository has `.github/PULL_REQUEST_TEMPLATE.md`,
+Copybarista follows it. Replayed title/body metadata fills the template's
+`## Summary` section, validation/testing checkboxes are marked complete after
+the public checkout validates, and non-validation sections such as notes or
+manual checklists remain in the generated PR body.
 
 Replay rules:
 
 - `Copybarista-PR-Title`: latest value wins.
-- `Copybarista-PR-Author`: latest value wins for source attribution text.
 - `Copybarista-PR-Body-Mode: append`: append this commit's body entry.
 - `Copybarista-PR-Body-Mode: replace`: replace the managed PR description.
 - Missing fields preserve the previous managed PR state.
 - `Copybarista-PR-Scope`: optional package scope for the following block.
+
+Source attribution is not rendered into the PR body. Copybarista uses replayed
+source commit authors as the generated export commit author and
+`Co-authored-by` trailers, while the generated PR actor still comes from
+`COPYBARISTA_SYNC_TOKEN`. `Copybarista-PR-Author` is not supported.
 
 Use `append` for follow-up commits. Use `replace` only when the commit
 intentionally rewrites the whole managed public PR description. The body field
@@ -232,9 +244,7 @@ the next run uses the PR body's applied marker rather than the branch tip, so
 missed PR text is replayed instead of skipped. Generated workflows fetch full
 source history so the replay range is available.
 
-The GitHub PR actor still comes from `COPYBARISTA_SYNC_TOKEN`, not from
-`Copybarista-PR-Author`. Use a bot or app token when generated PRs should appear
-under a bot account.
+Use a bot or app token when generated PRs should appear under a bot account.
 
 Treat commit metadata, manual workflow inputs, and generated defaults as public
 release text:
@@ -418,9 +428,10 @@ gh pr list \
   --json number,title,author,headRefName,url
 ```
 
-The PR author should be the bot account. The generated branch commit should
-show `SYNC_AUTHOR_NAME <SYNC_AUTHOR_EMAIL>` as its Git author and should link
-to the bot account in GitHub:
+The PR author should be the bot account. The generated branch commit uses the
+first replayed source commit author when `Copybarista-PR-*` metadata is present,
+adds additional source authors as `Co-authored-by` trailers, and falls back to
+`SYNC_AUTHOR_NAME <SYNC_AUTHOR_EMAIL>` when no metadata is present:
 
 ```bash
 PR_NUMBER=1
@@ -511,11 +522,12 @@ Use fine-grained tokens with the narrowest repository access that works:
   the public repository is still private.
 
 Git commit authorship and GitHub UI authorship are separate. The sync workflow
-sets the generated branch commit author from `COPYBARISTA_SYNC_USER_NAME` and
-`COPYBARISTA_SYNC_USER_EMAIL`. The PR author, auto-merge actor, and GitHub
-squash-merge author come from the account or GitHub App behind the token. Use a
-machine-user token or GitHub App token if generated PRs and squash commits
-should appear from a bot identity instead of a maintainer account.
+sets the generated branch commit committer from `COPYBARISTA_SYNC_USER_NAME`
+and `COPYBARISTA_SYNC_USER_EMAIL`; the commit author may come from replayed
+source metadata. The PR author, auto-merge actor, and GitHub squash-merge
+author come from the account or GitHub App behind the token. Use a machine-user
+token or GitHub App token if generated PRs and squash commits should appear
+from a bot identity instead of a maintainer account.
 
 The example source-to-public workflow preserves the public repository's
 `.github/` directory, so the reverse-sync workflow remains public-repo-owned.
