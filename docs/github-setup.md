@@ -196,8 +196,9 @@ configured generic title and body.
 If the target public repository has `.github/PULL_REQUEST_TEMPLATE.md`,
 Copybarista follows it. Replayed title/body metadata fills the template's
 `## Summary` section, validation/testing checkboxes are marked complete after
-the public checkout validates, and non-validation sections such as notes or
-manual checklists remain in the generated PR body.
+the public checkout validates, `## Checklist` sections are omitted because
+generated export PRs are automated, and non-validation sections such as notes
+remain in the generated PR body.
 
 Replay rules:
 

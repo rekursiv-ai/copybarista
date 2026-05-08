@@ -490,8 +490,8 @@ retried without losing PR text.
 When the target public repository has `.github/PULL_REQUEST_TEMPLATE.md`,
 Copybarista fills the template's `## Summary` section with the managed PR text
 and marks validation/testing checklist items as complete after validation
-passes. Repositories without a PR template use Copybarista's built-in body
-layout.
+passes. Human `## Checklist` sections are omitted from automated export PRs.
+Repositories without a PR template use Copybarista's built-in body layout.
 
 `Copybarista-PR-Scope` is optional. Use it when one source commit contains
 different public PR text for multiple generated repositories. Each package

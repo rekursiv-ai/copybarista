@@ -50,6 +50,7 @@ PR_TEMPLATE_PATHS = (
     Path("PULL_REQUEST_TEMPLATE.md"),
     Path("pull_request_template.md"),
 )
+PR_DROPPED_TEMPLATE_SECTIONS = frozenset({"Checklist"})
 PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 
@@ -1308,6 +1309,9 @@ def _render_pr_template_body(*, template: str, summary_lines: list[str]) -> str:
             while idx < len(lines) and not _markdown_heading(lines[idx]):
                 result.append(_checked_template_line(lines[idx]))
                 idx += 1
+            continue
+        if heading in PR_DROPPED_TEMPLATE_SECTIONS:
+            idx = _next_section(lines, start=idx + 1)
             continue
         result.append(lines[idx])
         idx += 1

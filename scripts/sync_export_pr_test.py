@@ -476,6 +476,8 @@ def test_render_pr_body_fills_repository_template():
             "## Validation\n\n"
             "- [ ] `ruff check`\n"
             "- [ ] `pytest`\n\n"
+            "## Checklist\n\n"
+            "- [ ] I updated docs.\n\n"
             "## Notes\n\n"
             "Mention documentation impact.\n"
         ),
@@ -486,6 +488,8 @@ def test_render_pr_body_fills_repository_template():
     assert "Public update.\n\n## Validation" in body
     assert "- [x] `ruff check`" in body
     assert "- [x] `pytest`" in body
+    assert "## Checklist" not in body
+    assert "I updated docs." not in body
     assert "## Notes\n\nMention documentation impact." in body
     assert "Copybarista export branch: `copybarista/export/main`" in body
 
