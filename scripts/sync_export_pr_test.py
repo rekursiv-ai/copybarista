@@ -483,6 +483,7 @@ def test_render_pr_body_fills_repository_template():
 
     assert "## Summary\n\nPublic summary." in body
     assert "- Describe the change." not in body
+    assert "Public update.\n\n## Validation" in body
     assert "- [x] `ruff check`" in body
     assert "- [x] `pytest`" in body
     assert "## Notes\n\nMention documentation impact." in body

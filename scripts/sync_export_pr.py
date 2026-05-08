@@ -1298,7 +1298,7 @@ def _render_pr_template_body(*, template: str, summary_lines: list[str]) -> str:
         heading = _markdown_heading(lines[idx])
         if heading == "Summary":
             result.append(lines[idx])
-            result.extend(("", *summary_lines))
+            result.extend(("", *summary_lines, ""))
             idx = _next_section(lines, start=idx + 1)
             wrote_summary = True
             continue
