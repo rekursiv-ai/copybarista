@@ -437,6 +437,56 @@ Render the source-repository export workflow from package sync metadata:
 copybarista write-export-workflow copybarista.sync.toml [--output PATH]
 ```
 
+## `copybarista.sync.toml`
+
+`init-sync` writes package sync metadata to `copybarista.sync.toml`. The
+`[sync]` table identifies the package, public repository, source repository,
+branch prefixes, validation commands, and sync identity used by generated
+GitHub workflows.
+
+The optional `[pull_request]` table controls source-to-public export PR text:
+
+```toml
+[pull_request]
+default_title = "Update Configgle export"
+default_body = "Updates the generated Configgle public repository export."
+require_pr_metadata = false
+metadata_source = "commit_messages"
+replay_bootstrap_base = ""
+publish_source_rev = false
+```
+
+`default_title` and `default_body` are used when no commit metadata supplies PR
+text. `require_pr_metadata` makes the export fail if the replay range contains
+no `Copybarista-PR-*` fields. `metadata_source` is currently only
+`commit_messages`. `replay_bootstrap_base` is a source revision used for
+one-time migration when an existing generated PR has no replay marker. Existing
+generated branches with no open PR migrate from the current source commit's
+parent and write markers on the next export. `publish_source_rev` opts into raw
+source revision markers; leave it false when the public repository should see
+only source-revision digests.
+
+Source commit messages can drive the generated export PR:
+
+```text
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Public PR title
+Copybarista-PR-Author: Public source attribution
+Copybarista-PR-Body-Mode: append
+Copybarista-PR-Body:
+Public reviewer context.
+```
+
+Title and author use latest-value-wins semantics. Body mode defaults to
+`append`; `replace` rewrites the managed PR description. Missing fields preserve
+the previous managed state. Copybarista replays relevant commits on every export
+run, so failed runs can be retried without losing PR text.
+
+`Copybarista-PR-Scope` is optional. Use it when one source commit contains
+different public PR text for multiple generated repositories. Each package
+workflow uses unscoped metadata plus blocks whose scope matches its package
+name; another `Copybarista-PR-Scope:` line starts the next block.
+
 `--json` prints the export manifest to stdout. Without `--json`, successful
 commands are quiet.
 

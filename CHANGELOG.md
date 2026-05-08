@@ -2,6 +2,17 @@
 
 All notable Copybarista changes are documented here.
 
+## Unreleased
+
+- Added source commit metadata replay for generated export PR title, body, and
+  source attribution.
+- Added scoped metadata blocks so one source commit can provide different PR
+  text for multiple generated package repositories.
+- Added `[pull_request]` package sync settings for PR defaults, required
+  metadata, replay bootstrap, and public source-revision marker policy.
+- Updated generated source export workflows to fetch full source history for
+  idempotent PR text replay.
+
 ## 0.1.2 - 2026-05-02
 
 - Added transformed-tree leak checks for forbidden paths and text, including

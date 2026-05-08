@@ -11,18 +11,75 @@ import pytest
 from scripts import sync_export_pr
 from scripts.sync_export_pr import (
     ExportRequest,
+    PrBodyEntry,
+    PrMetadataPatch,
+    PrReplayState,
+    _applied_marker_from_pr_body,
     _commit_author,
+    _export_commit_message,
     _export_public_tree,
     _gh_pr_exists,
+    _open_or_update_export_pr,
+    _parse_pr_metadata_log,
     _public_pr_text,
     _remove_public_validation_artifacts,
+    _render_pr_body,
     _replace_tree,
+    _source_rev_digest,
+    _state_from_pr_body,
     _validate_public,
     _validate_source,
     export_branch_name,
     export_pr_body,
     export_pr_text,
+    replay_pr_metadata,
 )
+
+
+def _export_request(tmp_path: Path) -> ExportRequest:
+    return ExportRequest(
+        source_dir=tmp_path,
+        project_path=Path(),
+        public_dir=tmp_path,
+        target_repo="example/public",
+        base_branch="main",
+        source_sha="abc123",
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        sync_user_name="copybarista",
+        sync_user_email="copybarista@example.com",
+        pr_title="Public title",
+        pr_body="Public body.",
+        manual_pr_title="",
+        manual_pr_body="",
+        replay_settings=sync_export_pr.PrReplaySettings(
+            scope="copybarista",
+            default_title="Public title",
+            default_body="Public body.",
+            require_metadata=False,
+            bootstrap_base="",
+            publish_source_rev=False,
+        ),
+        forbidden_pr_text=(),
+        auto_merge=False,
+        skip_source_validation=False,
+        runner_temp=tmp_path,
+        release_check_script=None,
+        type_check_targets=(".",),
+        smoke_import="",
+    )
+
+
+def _pr_state() -> PrReplayState:
+    return PrReplayState(
+        title="Public title",
+        author="",
+        body_intro="Public body.",
+        body_entries=(),
+        applied_source_rev="abc123",
+        applied_source_digest=_source_rev_digest("abc123"),
+        metadata_count=0,
+    )
 
 
 def test_main_accepts_generic_project_validation_args(
@@ -100,6 +157,430 @@ def test_export_pr_body_accepts_custom_sync_label():
     )
 
     assert "Configgle export branch: `configgle/export/main`" in body
+
+
+def test_parse_pr_metadata_accepts_append_body():
+    patches = _parse_pr_metadata_log(
+        (
+            "abcdef123456\0"
+            "Prepare public export\n\n"
+            "Copybarista-PR-Title: Public title\n"
+            "Copybarista-PR-Author: Public author\n"
+            "Copybarista-PR-Body-Mode: append\n"
+            "Copybarista-PR-Body:\n"
+            "Public body text.\n"
+            "\0"
+        ),
+        forbidden_text=("private",),
+    )
+
+    assert patches == (
+        PrMetadataPatch(
+            commit_sha="abcdef123456",
+            scope="",
+            title="Public title",
+            author="Public author",
+            body="Public body text.",
+            body_mode="append",
+        ),
+    )
+
+
+def test_source_pr_metadata_uses_nul_terminated_git_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "abcdef123456\0"
+                "Copybarista-PR-Title: Public title\n"
+                "Copybarista-PR-Body:\n"
+                "Public body.\n"
+                "\0"
+            ),
+        )
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    patches = sync_export_pr._source_pr_metadata(
+        source_dir=tmp_path,
+        replay_base="",
+        current_source_rev="abcdef123456",
+        forbidden_text=(),
+        scope="",
+    )
+
+    assert calls == [
+        ["git", "log", "-z", "--reverse", "--format=%H%x00%B", "abcdef123456"]
+    ]
+    assert patches[0].title == "Public title"
+
+
+def test_parse_pr_metadata_rejects_duplicate_title():
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
+        _parse_pr_metadata_log(
+            (
+                "abcdef123456\0"
+                "Copybarista-PR-Title: First\n"
+                "Copybarista-PR-Title: Second\n"
+                "\0"
+            ),
+            forbidden_text=(),
+        )
+
+
+def test_parse_pr_metadata_keeps_matching_scoped_block():
+    patches = _parse_pr_metadata_log(
+        (
+            "abcdef123456\0"
+            "Update exported packages\n\n"
+            "Copybarista-PR-Scope: sagent\n"
+            "Copybarista-PR-Title: Sagent title\n"
+            "Copybarista-PR-Body:\n"
+            "Sagent body.\n"
+            "Copybarista-PR-Scope: configgle\n"
+            "Copybarista-PR-Title: Configgle title\n"
+            "Copybarista-PR-Body:\n"
+            "Configgle body.\n"
+            "\0"
+        ),
+        forbidden_text=(),
+        scope="configgle",
+    )
+
+    assert patches == (
+        PrMetadataPatch(
+            commit_sha="abcdef123456",
+            scope="configgle",
+            title="Configgle title",
+            author="",
+            body="Configgle body.",
+            body_mode="append",
+        ),
+    )
+
+
+def test_parse_pr_metadata_keeps_unscoped_and_matching_scoped_blocks():
+    patches = _parse_pr_metadata_log(
+        (
+            "abcdef123456\0"
+            "Update exported packages\n\n"
+            "Copybarista-PR-Body:\n"
+            "Shared body.\n"
+            "Copybarista-PR-Scope: sagent\n"
+            "Copybarista-PR-Body:\n"
+            "Sagent body.\n"
+            "\0"
+        ),
+        forbidden_text=(),
+        scope="sagent",
+    )
+
+    assert tuple(patch.body for patch in patches) == ("Shared body.", "Sagent body.")
+
+
+def test_parse_pr_metadata_rejects_body_mode_without_body():
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body-Mode"):
+        _parse_pr_metadata_log(
+            "abcdef123456\0Copybarista-PR-Body-Mode: append\n\0",
+            forbidden_text=(),
+        )
+
+
+def test_parse_pr_metadata_rejects_forbidden_text():
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
+        _parse_pr_metadata_log(
+            ("abcdef123456\0Copybarista-PR-Body:\nMentions private-source.\n\0"),
+            forbidden_text=("private-source",),
+        )
+
+
+def test_replay_append_body_adds_entries_in_commit_order():
+    state = replay_pr_metadata(
+        base=PrReplayState(
+            title="Default title",
+            author="",
+            body_intro="Default body.",
+            body_entries=(),
+            applied_source_rev="",
+            applied_source_digest="",
+            metadata_count=0,
+        ),
+        patches=(
+            PrMetadataPatch(
+                commit_sha="1111111",
+                scope="",
+                title="",
+                author="",
+                body="First update.",
+                body_mode="append",
+            ),
+            PrMetadataPatch(
+                commit_sha="2222222",
+                scope="",
+                title="",
+                author="",
+                body="Second update.",
+                body_mode="append",
+            ),
+        ),
+    )
+
+    assert state.body_entries == (
+        PrBodyEntry(commit_sha="1111111", text="First update."),
+        PrBodyEntry(commit_sha="2222222", text="Second update."),
+    )
+
+
+def test_replay_replace_body_resets_previous_append_entries():
+    state = replay_pr_metadata(
+        base=PrReplayState(
+            title="Default title",
+            author="",
+            body_intro="Default body.",
+            body_entries=(PrBodyEntry(commit_sha="1111111", text="Old update."),),
+            applied_source_rev="",
+            applied_source_digest="",
+            metadata_count=0,
+        ),
+        patches=(
+            PrMetadataPatch(
+                commit_sha="2222222",
+                scope="",
+                title="New title",
+                author="Dan Becker",
+                body="Replacement body.",
+                body_mode="replace",
+            ),
+        ),
+    )
+
+    assert state.title == "New title"
+    assert state.author == "Dan Becker"
+    assert state.body_intro == "Replacement body."
+    assert state.body_entries == ()
+
+
+def test_render_pr_body_includes_state_marker_without_raw_source_sha():
+    source_rev = "abc123abc123"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            author="Dan Becker",
+            body_intro="Public summary.",
+            body_entries=(PrBodyEntry(commit_sha=source_rev, text="Public update."),),
+            applied_source_rev=source_rev,
+            applied_source_digest=_source_rev_digest(source_rev),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+    )
+
+    assert "Source attribution: Dan Becker" in body
+    assert "### Updates" in body
+    assert "Public update." in body
+    assert "copybarista:pr-state version=1 applied=sha256:" in body
+    assert source_rev not in body
+
+
+def test_render_pr_body_round_trips_multiline_append_entries():
+    source_rev = "abc123abc123"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            author="",
+            body_intro="Public summary.",
+            body_entries=(
+                PrBodyEntry(
+                    commit_sha=source_rev,
+                    text="First line.\nSecond line.",
+                ),
+            ),
+            applied_source_rev=source_rev,
+            applied_source_digest=_source_rev_digest(source_rev),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+    )
+
+    state = _state_from_pr_body(
+        title="Public title",
+        body=body,
+        default_body="Default body.",
+    )
+
+    assert state.body_entries[0].text == "First line.\nSecond line."
+
+
+def test_applied_marker_rejects_multiple_state_markers():
+    body = (
+        "Body\n"
+        "<!-- copybarista:pr-state version=1 applied=sha256:first -->\n"
+        "<!-- copybarista:pr-state version=1 applied=sha256:second -->\n"
+    )
+
+    with pytest.raises(sync_export_pr.PrReplayError, match="multiple"):
+        _applied_marker_from_pr_body(body)
+
+
+def test_applied_marker_rejects_unsupported_version():
+    body = "<!-- copybarista:pr-state version=2 applied=sha256:first -->\n"
+
+    with pytest.raises(sync_export_pr.PrReplayError, match="unsupported"):
+        _applied_marker_from_pr_body(body)
+
+
+def test_unmarked_existing_branch_replays_current_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_source_parent(*, source_dir: Path, rev: str) -> str:
+        assert source_dir == tmp_path
+        assert rev == "source-head"
+        return "source-parent"
+
+    monkeypatch.setattr(sync_export_pr, "_source_parent", fake_source_parent)
+
+    assert (
+        sync_export_pr._replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+        == "source-parent"
+    )
+
+
+def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
+    with pytest.raises(sync_export_pr.PrReplayError, match="Existing generated PR"):
+        sync_export_pr._replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=sync_export_pr.CurrentPr(
+                title="Old title",
+                body="Old body.",
+                number=7,
+                url="https://example.test/pr/7",
+            ),
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+
+
+def test_export_commit_message_contains_replay_markers():
+    message = _export_commit_message(
+        title="Public title",
+        sync_label="Copybarista",
+        branch="copybarista/export/main",
+        source_digest="source-digest",
+        replay_base_digest="base-digest",
+    )
+
+    assert message.startswith("Public title\n\n")
+    assert "Copybarista export branch: copybarista/export/main" in message
+    assert "copybarista-source-rev-sha256=source-digest" in message
+    assert "copybarista-replay-base-sha256=base-digest" in message
+
+
+def test_no_diff_updates_existing_pr_when_replay_text_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _export_request(tmp_path)
+    calls: list[str] = []
+
+    def no_changes(path: Path) -> bool:
+        del path
+        return False
+
+    def record_edit(*, request: ExportRequest, title: str) -> None:
+        del request, title
+        calls.append("edit")
+
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", no_changes)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_edit_export_pr",
+        record_edit,
+    )
+
+    _open_or_update_export_pr(
+        request=request,
+        pr_plan=sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="new body\n",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=sync_export_pr.CurrentPr(
+                title="Public title",
+                body="old body\n",
+                number=12,
+                url="https://example.test/pr/12",
+            ),
+        ),
+    )
+
+    assert calls == ["edit"]
+    assert (tmp_path / "copybarista-pr-body.md").read_text(
+        encoding="utf-8"
+    ) == "new body\n"
+
+
+def test_no_diff_exits_when_no_pr_and_no_tree_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _export_request(tmp_path)
+    calls: list[str] = []
+
+    def no_changes(path: Path) -> bool:
+        del path
+        return False
+
+    def record_edit(*, request: ExportRequest, title: str) -> None:
+        del request, title
+        calls.append("edit")
+
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", no_changes)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_edit_export_pr",
+        record_edit,
+    )
+
+    _open_or_update_export_pr(
+        request=request,
+        pr_plan=sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="new body\n",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        ),
+    )
+
+    assert calls == []
 
 
 def test_export_pr_text_uses_defaults_without_commit_message_opt_in():

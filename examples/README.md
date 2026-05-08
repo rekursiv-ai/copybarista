@@ -327,6 +327,13 @@ reviewable public PR title and body. To run it automatically on source changes,
 add a `push` or `schedule` trigger and replace the required manual inputs with
 generated public-safe text.
 
+For scaffolded package sync, prefer the generated workflow from
+`copybarista write-export-workflow`. It uses `[pull_request]` defaults from
+`copybarista.sync.toml` and can replay `Copybarista-PR-*` commit metadata into
+the generated public PR title, body, and source attribution. When one commit
+touches multiple exported packages, use one `Copybarista-PR-Scope: <package>`
+block per package so each public repository receives the right text.
+
 Public-to-source sync treats public changes as proposals. The workflow checks
 out the public base and head trees, runs `copybarista import-change`, validates
 the source checkout, and opens a source pull request only when the imported
