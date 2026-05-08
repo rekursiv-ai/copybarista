@@ -251,8 +251,9 @@ Ordinary commit subjects and bodies are not used as generated PR text. Only the
 `Copybarista-PR-*` fields opt a string into public PR rendering; if no matching
 metadata is present, Copybarista keeps the configured generic title and body.
 When the public repository has `.github/PULL_REQUEST_TEMPLATE.md`, Copybarista
-fills the template's `## Summary` section and marks validation checklists as
-complete after public validation passes. See
+fills the template's `## Summary` section, marks validation/testing checklists
+as complete after public validation passes, and omits human `## Checklist`
+sections from automated export PRs. See
 [GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md#pull-request-text)
 for scoped multi-package blocks, the full commit-message workflow, and privacy
 rules.

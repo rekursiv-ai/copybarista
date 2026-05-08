@@ -333,7 +333,8 @@ For scaffolded package sync, prefer the generated workflow from
 the generated public PR title and body. Source attribution is represented in
 the generated export commit author and `Co-authored-by` trailers. If the public
 repository has a PR template, Copybarista fills its summary section and keeps
-the template structure. When one commit touches multiple exported packages, use
+the template structure, except human checklist sections are omitted for
+automated export PRs. When one commit touches multiple exported packages, use
 one `Copybarista-PR-Scope: <package>` block per package so each public
 repository receives the right text.
 Ordinary commit subjects and bodies are not used as generated PR title/body;
