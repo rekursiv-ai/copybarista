@@ -210,7 +210,9 @@ Replay rules:
 Source attribution is not rendered into the PR body. Copybarista uses replayed
 source commit authors as the generated export commit author and
 `Co-authored-by` trailers, while the generated PR actor still comes from
-`COPYBARISTA_SYNC_TOKEN`. `Copybarista-PR-Author` is not supported.
+`COPYBARISTA_SYNC_TOKEN`. Before committing source changes, verify
+`git config user.name` and `git config user.email` are the intended public
+attribution. `Copybarista-PR-Author` is not supported.
 
 Use `append` for follow-up commits. Use `replace` only when the commit
 intentionally rewrites the whole managed public PR description. The body field
