@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: source
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -65,8 +66,7 @@ jobs:
             --branch "$EXPORT_BRANCH" \
             --branch-prefix @@EXPORT_BRANCH_PREFIX@@ \
             --sync-label "$SYNC_LABEL" \
-            --pr-title @@PR_TITLE@@ \
-            --pr-body @@PR_BODY@@ \
+@@PR_REPLAY_FLAGS@@ \
             --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \
 @@TYPE_TARGETS@@ \
             --smoke-import @@SMOKE_IMPORT@@ \

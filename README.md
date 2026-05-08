@@ -231,6 +231,25 @@ copybarista write-export-workflow copybarista.sync.toml \
   --output configgle-export.yml
 ```
 
+Generated export PRs can use public-safe commit metadata for their title,
+source attribution, and body:
+
+```text
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Prepare package release checks
+Copybarista-PR-Author: Dan Becker
+Copybarista-PR-Body-Mode: append
+Copybarista-PR-Body:
+Adds release-tree validation and refreshes generated workflow defaults.
+```
+
+Copybarista replays relevant source commits on every export run. Missing fields
+preserve previous PR state, title/author use latest-value-wins semantics, and
+body entries append unless `Copybarista-PR-Body-Mode: replace` is used. See
+[GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md#pull-request-text)
+for scoped multi-package blocks, the full commit-message workflow, and privacy
+rules.
+
 ### Export To A Folder
 
 Use folder export for local inspection, release checks, and tests:
@@ -384,7 +403,8 @@ Copybarista sync is PR-based in both directions:
   the public repository from a generated package export branch, e.g.
   `configgle/export/main`. Reruns can update the same branch so there is one
   active export PR per project branch. The generated branch is replaced with
-  `git push --force-with-lease`.
+  `git push --force-with-lease`. Export PR title/body text is rendered by
+  replaying `Copybarista-PR-*` commit metadata plus configured defaults.
 - Public to source: the public workflow checks out a public base and public
   head, runs `copybarista import-change`, validates the target checkout, and
   opens a source PR from a generated package import branch, e.g.

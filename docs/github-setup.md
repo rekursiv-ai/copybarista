@@ -138,8 +138,9 @@ new active export PR. Generated export branches are replaced with
 `git push --force-with-lease`.
 
 To export automatically after source changes, add `push`, `schedule`, or path
-filters to the source workflow and replace the manual PR title/body inputs with
-generated public-safe text.
+filters to the source workflow. Scaffolded package workflows use configured
+defaults plus replayed `Copybarista-PR-*` commit metadata for public-safe PR
+text.
 
 The public repository owns public-to-source import. The example
 `public-to-source.yml` runs in three situations:
@@ -173,10 +174,70 @@ namespaces because generated branches are force-updated with
 
 ## Pull Request Text
 
-The reusable source-to-public example workflow requires manual `pr_title` and
-`pr_body` inputs. For automatic exports, generate those values in trusted
-source-side code before calling the workflow or helper script. Treat both
-commit messages and manual inputs as public release text:
+Generated package export workflows can derive public PR text from source commit
+messages. Add machine-readable fields to the commit message when a source
+change should update the public export PR:
+
+```text
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Prepare package release checks
+Copybarista-PR-Author: Dan Becker
+Copybarista-PR-Body-Mode: append
+Copybarista-PR-Body:
+Adds release-tree validation and refreshes generated workflow defaults.
+```
+
+The normal commit subject and body should still be useful on their own. The
+`Copybarista-PR-*` fields are public reviewer text that Copybarista replays
+into the generated export PR.
+
+Replay rules:
+
+- `Copybarista-PR-Title`: latest value wins.
+- `Copybarista-PR-Author`: latest value wins for source attribution text.
+- `Copybarista-PR-Body-Mode: append`: append this commit's body entry.
+- `Copybarista-PR-Body-Mode: replace`: replace the managed PR description.
+- Missing fields preserve the previous managed PR state.
+- `Copybarista-PR-Scope`: optional package scope for the following block.
+
+Use `append` for follow-up commits. Use `replace` only when the commit
+intentionally rewrites the whole managed public PR description. The body field
+is multiline and must be the last `Copybarista-PR-*` field in the commit
+message.
+
+Use scoped blocks when one source commit changes multiple exported packages.
+Each generated package workflow passes its package name as the PR scope, so it
+uses unscoped blocks plus blocks whose `Copybarista-PR-Scope` matches that
+package. Another `Copybarista-PR-Scope:` line starts the next block:
+
+```text
+Copybarista-PR-Scope: sagent
+Copybarista-PR-Title: Update Sagent export workflow
+Copybarista-PR-Body:
+Refreshes Sagent's generated export workflow.
+
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Update Configgle export workflow
+Copybarista-PR-Body:
+Refreshes Configgle's generated export workflow.
+```
+
+Leave `Copybarista-PR-Scope` out only when the same metadata should apply to
+every affected export.
+
+Every export run replays the relevant source commits from oldest to newest and
+renders the same PR state. If export validation fails before a public push, no
+public state changes. If the generated branch is pushed but PR editing fails,
+the next run uses the PR body's applied marker rather than the branch tip, so
+missed PR text is replayed instead of skipped. Generated workflows fetch full
+source history so the replay range is available.
+
+The GitHub PR actor still comes from `COPYBARISTA_SYNC_TOKEN`, not from
+`Copybarista-PR-Author`. Use a bot or app token when generated PRs should appear
+under a bot account.
+
+Treat commit metadata, manual workflow inputs, and generated defaults as public
+release text:
 
 - describe the public change, not the private source repository;
 - avoid private repository names, internal team names, private paths, and
@@ -185,9 +246,25 @@ commit messages and manual inputs as public release text:
   counts, workflow names, or private source paths;
 - review the generated public PR before merging it.
 
-For automatic exports, replace the manual inputs with a project-specific script
-that generates public-safe titles and bodies. Keep that script in the source
-repository so it can enforce the private-name policy your project needs.
+Projects can set public PR defaults and replay policy in `copybarista.sync.toml`:
+
+```toml
+[pull_request]
+default_title = "Update Configgle export"
+default_body = "Updates the generated Configgle public repository export."
+require_pr_metadata = false
+metadata_source = "commit_messages"
+replay_bootstrap_base = ""
+publish_source_rev = false
+```
+
+`require_pr_metadata = true` makes exports fail when the replay range contains
+no `Copybarista-PR-*` fields. An existing generated branch with no open PR and
+no replay markers migrates from the current source commit's parent; existing
+unmarked open PRs still require `replay_bootstrap_base` so Copybarista does not
+silently overwrite reviewer-facing text.
+`publish_source_rev = false` keeps public machine markers as source-revision
+digests instead of raw private source SHAs.
 
 Generated export PR bodies should say which export branch they come from and
 that maintainers should not push manual commits to that branch. Manual changes

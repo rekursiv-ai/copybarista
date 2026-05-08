@@ -63,6 +63,12 @@ class SyncSettings:
       sync_token_login: GitHub login that must own the sync token.
       export_branch_prefix: Optional source-to-public branch prefix.
       import_branch_prefix: Optional public-to-source branch prefix.
+      pr_default_title: Default public PR title when commit metadata is absent.
+      pr_default_body: Default public PR body when commit metadata is absent.
+      require_pr_metadata: Whether exports fail when no metadata is replayed.
+      pr_metadata_source: Source of PR metadata. Currently commit_messages only.
+      replay_bootstrap_base: Optional source revision for one-time migrations.
+      publish_source_rev: Whether public markers may include raw source SHAs.
 
     """
 
@@ -82,19 +88,36 @@ class SyncSettings:
     sync_token_login: str = ""
     export_branch_prefix: str = ""
     import_branch_prefix: str = ""
+    pr_default_title: str = ""
+    pr_default_body: str = ""
+    require_pr_metadata: bool = False
+    pr_metadata_source: str = "commit_messages"
+    replay_bootstrap_base: str = ""
+    publish_source_rev: bool = False
 
     def __post_init__(self) -> None:
         """Fill derived validation defaults."""
-        if self.validation_commands:
-            return
-        object.__setattr__(
-            self,
-            "validation_commands",
-            _default_validation_commands(
-                smoke_import=self.smoke_import,
-                type_check_targets=self.type_check_targets,
-            ),
-        )
+        if not self.validation_commands:
+            object.__setattr__(
+                self,
+                "validation_commands",
+                _default_validation_commands(
+                    smoke_import=self.smoke_import,
+                    type_check_targets=self.type_check_targets,
+                ),
+            )
+        if not self.pr_default_title:
+            object.__setattr__(
+                self,
+                "pr_default_title",
+                f"Update {self.sync_label} export",
+            )
+        if not self.pr_default_body:
+            object.__setattr__(
+                self,
+                "pr_default_body",
+                f"Updates the generated {self.sync_label} public repository export.",
+            )
 
     @property
     def branch_slug(self) -> str:
@@ -133,6 +156,10 @@ def load_sync_settings(path: Path) -> SyncSettings:
     if not isinstance(sync, dict):
         raise ConfigError("copybarista.sync.toml must contain a [sync] table.")
     sync = cast("dict[str, object]", sync)
+    pull_request = raw.get("pull_request", {})
+    if not isinstance(pull_request, dict):
+        raise ConfigError("copybarista.sync.toml [pull_request] must be a table.")
+    pull_request = cast("dict[str, object]", pull_request)
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -165,6 +192,36 @@ def load_sync_settings(path: Path) -> SyncSettings:
         sync_token_login=_optional_str(sync, "sync_token_login", default=""),
         export_branch_prefix=_optional_str(sync, "export_branch_prefix", default=""),
         import_branch_prefix=_optional_str(sync, "import_branch_prefix", default=""),
+        pr_default_title=_optional_pr_str(
+            pull_request,
+            "default_title",
+            default="",
+        ),
+        pr_default_body=_optional_pr_str(
+            pull_request,
+            "default_body",
+            default="",
+        ),
+        require_pr_metadata=_optional_pr_bool(
+            pull_request,
+            "require_pr_metadata",
+            default=False,
+        ),
+        pr_metadata_source=_optional_pr_str(
+            pull_request,
+            "metadata_source",
+            default="commit_messages",
+        ),
+        replay_bootstrap_base=_optional_pr_str(
+            pull_request,
+            "replay_bootstrap_base",
+            default="",
+        ),
+        publish_source_rev=_optional_pr_bool(
+            pull_request,
+            "publish_source_rev",
+            default=False,
+        ),
     )
     _validate_settings(settings)
     return settings
@@ -309,6 +366,12 @@ def sync_toml(settings: SyncSettings) -> str:
             "SMOKE_IMPORT": _toml_str(settings.smoke_import),
             "EXPORT_BRANCH_PREFIX": _toml_str(settings.export_prefix),
             "IMPORT_BRANCH_PREFIX": _toml_str(settings.import_prefix),
+            "PR_DEFAULT_TITLE": _toml_str(settings.pr_default_title),
+            "PR_DEFAULT_BODY": _toml_str(settings.pr_default_body),
+            "REQUIRE_PR_METADATA": _toml_bool(settings.require_pr_metadata),
+            "PR_METADATA_SOURCE": _toml_str(settings.pr_metadata_source),
+            "REPLAY_BOOTSTRAP_BASE": _toml_str(settings.replay_bootstrap_base),
+            "PUBLISH_SOURCE_REV": _toml_bool(settings.publish_source_rev),
             "TYPE_CHECK_TARGETS": targets,
             "FORBIDDEN_PR_TEXT": forbidden,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
@@ -382,6 +445,10 @@ def export_workflow(settings: SyncSettings) -> str:
         ],
         indent="            ",
     )
+    pr_replay_flags = _shell_args(
+        _pr_replay_args(settings),
+        indent="            ",
+    )
     forbidden = ",".join(settings.forbidden_pr_text)
     project_path = f"source/{settings.copybarista_project_path}"
     script_path = f"{project_path}/scripts/sync_export_pr.py"
@@ -406,10 +473,9 @@ def export_workflow(settings: SyncSettings) -> str:
             "SYNC_EXPORT_SCRIPT": _sh(script_path),
             "SOURCE_ROOT": _sh(settings.source_root),
             "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
-            "PR_TITLE": _sh(f"Update {settings.sync_label} export"),
-            "PR_BODY": _sh(
-                f"Updates the generated {settings.sync_label} public repository export."
-            ),
+            "PR_DEFAULT_TITLE": _sh(settings.pr_default_title),
+            "PR_DEFAULT_BODY": _sh(settings.pr_default_body),
+            "PR_REPLAY_FLAGS": pr_replay_flags,
             "TYPE_TARGETS": type_targets,
             "SMOKE_IMPORT": _sh(settings.smoke_import),
         },
@@ -657,6 +723,28 @@ def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
     return value
 
 
+def _optional_pr_str(pull_request: dict[str, object], key: str, *, default: str) -> str:
+    """Read an optional string from the pull_request table."""
+    value = pull_request.get(key, default)
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"copybarista.sync.toml [pull_request].{key} must be a string."
+        )
+    return value
+
+
+def _optional_pr_bool(
+    pull_request: dict[str, object], key: str, *, default: bool
+) -> bool:
+    """Read an optional boolean from the pull_request table."""
+    value = pull_request.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"copybarista.sync.toml [pull_request].{key} must be a boolean."
+        )
+    return value
+
+
 def _optional_str_tuple(
     sync: dict[str, object], key: str, *, default: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -729,6 +817,24 @@ def _validate_settings(settings: SyncSettings) -> None:
     for command in settings.validation_commands:
         if "\n" in command or not command.strip():
             raise ConfigError("sync.validation_commands must contain shell commands.")
+    if not settings.pr_default_title.strip():
+        raise ConfigError(
+            "copybarista.sync.toml [pull_request].default_title cannot be empty."
+        )
+    if not settings.pr_default_body.strip():
+        raise ConfigError(
+            "copybarista.sync.toml [pull_request].default_body cannot be empty."
+        )
+    if settings.pr_metadata_source != "commit_messages":
+        raise ConfigError(
+            "copybarista.sync.toml [pull_request].metadata_source must be "
+            "'commit_messages'."
+        )
+    if any(ord(char) < CONTROL_CHAR_BOUND for char in settings.replay_bootstrap_base):
+        raise ConfigError(
+            "copybarista.sync.toml [pull_request].replay_bootstrap_base must not "
+            "contain control characters."
+        )
     _validate_branch_prefix(settings.export_prefix, name="export_branch_prefix")
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
 
@@ -772,14 +878,43 @@ def _shell_lines(args: list[str], *, indent: str) -> str:
     return " \\\n".join(pairs)
 
 
+def _shell_args(args: list[str], *, indent: str) -> str:
+    """Format CLI args as continued shell command lines."""
+    return " \\\n".join(f"{indent}{_sh(arg)}" for arg in args)
+
+
 def _shell_script(commands: tuple[str, ...], *, indent: str) -> str:
     """Indent validation commands for generated workflow YAML."""
     return "\n".join(f"{indent}{command}" for command in commands)
 
 
+def _pr_replay_args(settings: SyncSettings) -> list[str]:
+    """Return source export script flags for PR replay settings."""
+    args = [
+        "--pr-scope",
+        settings.package_name,
+        "--pr-default-title",
+        settings.pr_default_title,
+        "--pr-default-body",
+        settings.pr_default_body,
+    ]
+    if settings.require_pr_metadata:
+        args.append("--require-pr-metadata")
+    if settings.replay_bootstrap_base:
+        args.extend(("--replay-bootstrap-base", settings.replay_bootstrap_base))
+    if settings.publish_source_rev:
+        args.append("--publish-source-rev")
+    return args
+
+
 def _toml_str(value: str) -> str:
     """Return a TOML-compatible quoted string."""
     return json.dumps(value)
+
+
+def _toml_bool(value: bool) -> str:
+    """Return a TOML-compatible boolean."""
+    return "true" if value else "false"
 
 
 def _yaml_str(value: str) -> str:
