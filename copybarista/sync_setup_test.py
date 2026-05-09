@@ -202,6 +202,7 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.pr_metadata_source == "commit_messages"
     assert settings.replay_bootstrap_base == ""
     assert not settings.publish_source_rev
+    assert not settings.refresh_public_lockfile
 
 
 def test_load_sync_settings_reads_pull_request_defaults(tmp_path: Path):
@@ -362,6 +363,12 @@ def test_export_workflow_passes_pr_replay_flags():
     assert "--replay-bootstrap-base" in workflow
     assert "main~10" in workflow
     assert "--publish-source-rev" in workflow
+
+
+def test_export_workflow_can_refresh_public_lockfile():
+    workflow = export_workflow(_settings(refresh_public_lockfile=True))
+
+    assert "--refresh-public-lockfile" in workflow
 
 
 def test_export_workflow_can_guard_sync_token_login():

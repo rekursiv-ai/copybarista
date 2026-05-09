@@ -113,6 +113,7 @@ def _parser() -> argparse.ArgumentParser:
     init_sync.add_argument("--forbidden-pr-text", action="append", default=[])
     init_sync.add_argument("--validation-python-version", action="append", default=[])
     init_sync.add_argument("--validation-command", action="append", default=[])
+    init_sync.add_argument("--refresh-public-lockfile", action="store_true")
     init_sync.add_argument("--sync-user-name", default="copybarista")
     init_sync.add_argument("--sync-user-email", default="copybarista@example.com")
     init_sync.add_argument("--overwrite", action="store_true")
@@ -232,6 +233,7 @@ def _run_init_sync(args: argparse.Namespace) -> None:
         forbidden_pr_text=tuple(args.forbidden_pr_text),
         validation_python_versions=tuple(args.validation_python_version) or ("3.12",),
         validation_commands=tuple(args.validation_command),
+        refresh_public_lockfile=args.refresh_public_lockfile,
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
     )

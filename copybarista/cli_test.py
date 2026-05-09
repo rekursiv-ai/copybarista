@@ -269,6 +269,39 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
     assert "uv run pytest" in workflow
 
 
+def test_cli_init_sync_can_refresh_public_lockfile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "sagent",
+            "--source-root",
+            "packages/sagent",
+            "--public-repo",
+            "example/sagent",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+            "--smoke-import",
+            "sagent",
+            "--refresh-public-lockfile",
+        ]
+    )
+
+    sync_config = (tmp_path / "copybarista.sync.toml").read_text(encoding="utf-8")
+    capsys.readouterr()
+    main(["write-export-workflow", str(tmp_path / "copybarista.sync.toml")])
+    workflow = capsys.readouterr().out
+
+    assert "refresh_public_lockfile = true" in sync_config
+    assert "--refresh-public-lockfile" in workflow
+
+
 def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
     main(
         [

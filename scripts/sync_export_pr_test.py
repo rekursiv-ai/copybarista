@@ -76,6 +76,7 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         ),
         forbidden_pr_text=(),
         auto_merge=False,
+        refresh_public_lockfile=False,
         skip_source_validation=False,
         runner_temp=tmp_path,
         release_check_script=None,
@@ -1086,10 +1087,17 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         public_dir: Path,
         dist_dir: Path,
         release_check_script: Path | None,
+        frozen_sync: bool,
         type_check_targets: tuple[str, ...],
         smoke_import: str,
     ) -> None:
-        del dist_dir, release_check_script, type_check_targets, smoke_import
+        del (
+            dist_dir,
+            release_check_script,
+            frozen_sync,
+            type_check_targets,
+            smoke_import,
+        )
         (public_dir / "uv.lock").write_text("validation lock\n", encoding="utf-8")
 
     def fake_open_or_update_export_pr(
@@ -1123,6 +1131,92 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
 
     assert opened == [""]
     assert not (public_dir / "uv.lock").exists()
+
+
+def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    source_dir = tmp_path / "source"
+    public_dir.mkdir()
+    source_dir.mkdir()
+    calls: list[str] = []
+
+    def fake_resolve_pr_replay_plan(
+        *, request: ExportRequest
+    ) -> sync_export_pr.PrReplayPlan:
+        del request
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="Public body.\n",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_export_public_tree(
+        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    ) -> None:
+        del project, source_dir, manifest
+        (export_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    def fake_refresh_public_lockfile(*, public_dir: Path) -> None:
+        calls.append("lock")
+        (public_dir / "uv.lock").write_text("public lock\n", encoding="utf-8")
+
+    def fake_validate_public(
+        *,
+        public_dir: Path,
+        dist_dir: Path,
+        release_check_script: Path | None,
+        frozen_sync: bool,
+        type_check_targets: tuple[str, ...],
+        smoke_import: str,
+    ) -> None:
+        del dist_dir, release_check_script, type_check_targets, smoke_import
+        assert frozen_sync
+        assert (public_dir / "uv.lock").read_text(encoding="utf-8") == "public lock\n"
+        calls.append("validate")
+
+    def fake_open_or_update_export_pr(
+        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+    ) -> None:
+        del pr_plan
+        assert (request.public_dir / "uv.lock").read_text(encoding="utf-8") == (
+            "public lock\n"
+        )
+        calls.append("open")
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_refresh_public_lockfile",
+        fake_refresh_public_lockfile,
+    )
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fake_open_or_update_export_pr,
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=source_dir,
+            public_dir=public_dir,
+            refresh_public_lockfile=True,
+            skip_source_validation=True,
+        )
+    )
+
+    assert calls == ["lock", "validate", "open"]
 
 
 def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1172,12 +1266,44 @@ def test_validate_public_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
         public_dir=Path("/public"),
         dist_dir=Path("/dist"),
         release_check_script=None,
+        frozen_sync=False,
         type_check_targets=("configgle",),
         smoke_import="",
     )
 
     assert ["uv", "run", "--all-groups", "ty", "check"] in calls
     assert ["uv", "run", "--all-groups", "codespell", "."] in calls
+
+
+def test_validate_public_uses_frozen_sync_when_lockfile_is_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
+        del public_dir, targets
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_run_basedpyright_public",
+        fake_basedpyright_public,
+    )
+
+    _validate_public(
+        public_dir=Path("/public"),
+        dist_dir=Path("/dist"),
+        release_check_script=None,
+        frozen_sync=True,
+        type_check_targets=("configgle",),
+        smoke_import="",
+    )
+
+    assert ["uv", "sync", "--frozen", "--all-groups"] in calls
 
 
 def test_remove_public_validation_artifacts_preserves_sources(tmp_path: Path) -> None:

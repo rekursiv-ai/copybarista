@@ -442,7 +442,10 @@ copybarista write-export-workflow copybarista.sync.toml [--output PATH]
 `init-sync` writes package sync metadata to `copybarista.sync.toml`. The
 `[sync]` table identifies the package, public repository, source repository,
 branch prefixes, validation commands, and sync identity used by generated
-GitHub workflows.
+GitHub workflows. Set `refresh_public_lockfile = true` when the source lockfile
+is private or source-specific but the public export should publish a generated
+`uv.lock`; the export workflow runs `uv lock` in the public checkout before
+validation.
 
 The optional `[pull_request]` table controls source-to-public export PR text:
 
