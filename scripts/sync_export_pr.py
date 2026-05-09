@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
         forbidden_pr_text=forbidden_pr_text,
         auto_merge=_string_bool(args.auto_merge),
+        refresh_public_lockfile=args.refresh_public_lockfile,
         skip_source_validation=args.skip_source_validation,
         runner_temp=Path(args.runner_temp),
         release_check_script=Path(args.release_check_script)
@@ -133,6 +134,7 @@ class ExportRequest:
     replay_settings: PrReplaySettings
     forbidden_pr_text: tuple[str, ...]
     auto_merge: bool
+    refresh_public_lockfile: bool
     skip_source_validation: bool
     runner_temp: Path
     release_check_script: Path | None
@@ -269,6 +271,9 @@ def run_export_sync(request: ExportRequest) -> None:
         )
     _log("Replacing public checkout contents.")
     _replace_tree(source=export_dir, destination=request.public_dir)
+    if request.refresh_public_lockfile:
+        _log("Refreshing public lockfile.")
+        _refresh_public_lockfile(public_dir=request.public_dir)
     _log("Validating public checkout.")
     validation_dir = Path(tempfile.mkdtemp(prefix="copybarista-validate-"))
     try:
@@ -277,6 +282,7 @@ def run_export_sync(request: ExportRequest) -> None:
             public_dir=validation_dir,
             dist_dir=dist_dir,
             release_check_script=request.release_check_script,
+            frozen_sync=request.refresh_public_lockfile,
             type_check_targets=request.type_check_targets,
             smoke_import=request.smoke_import,
         )
@@ -383,6 +389,11 @@ def _parser() -> argparse.ArgumentParser:
         "--auto-merge",
         default=os.environ.get("COPYBARISTA_AUTO_MERGE", "false"),
         help="Enable GitHub PR auto-merge for the generated export branch.",
+    )
+    parser.add_argument(
+        "--refresh-public-lockfile",
+        action="store_true",
+        help="Run uv lock in the exported public checkout before validation.",
     )
     parser.add_argument(
         "--skip-source-validation",
@@ -545,11 +556,17 @@ def _copy_validation_tree(*, source: Path, destination: Path) -> None:
             shutil.copy2(path, target, follow_symlinks=False)
 
 
+def _refresh_public_lockfile(*, public_dir: Path) -> None:
+    """Generate a lockfile from the exported public package metadata."""
+    _run(["uv", "lock"], cwd=public_dir)
+
+
 def _validate_public(
     *,
     public_dir: Path,
     dist_dir: Path,
     release_check_script: Path | None,
+    frozen_sync: bool,
     type_check_targets: tuple[str, ...],
     smoke_import: str,
 ) -> None:
@@ -559,7 +576,10 @@ def _validate_public(
             ["python", "-B", str(release_check_script), ".", "--allow-root-git"],
             cwd=public_dir,
         )
-    _run(["uv", "sync", "--all-groups"], cwd=public_dir)
+    sync_args = ["uv", "sync"]
+    if frozen_sync:
+        sync_args.append("--frozen")
+    _run([*sync_args, "--all-groups"], cwd=public_dir)
     _run(
         ["uv", "run", "--all-groups", "ruff", "check", "--no-fix", "--no-cache", "."],
         cwd=public_dir,

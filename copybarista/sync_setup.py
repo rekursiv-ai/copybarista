@@ -69,6 +69,7 @@ class SyncSettings:
       pr_metadata_source: Source of PR metadata. Currently commit_messages only.
       replay_bootstrap_base: Optional source revision for one-time migrations.
       publish_source_rev: Whether public markers may include raw source SHAs.
+      refresh_public_lockfile: Whether export runs generate a public uv.lock.
 
     """
 
@@ -94,6 +95,7 @@ class SyncSettings:
     pr_metadata_source: str = "commit_messages"
     replay_bootstrap_base: str = ""
     publish_source_rev: bool = False
+    refresh_public_lockfile: bool = False
 
     def __post_init__(self) -> None:
         """Fill derived validation defaults."""
@@ -182,6 +184,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
                 smoke_import=_required_str(sync, "smoke_import"),
                 type_check_targets=_required_str_tuple(sync, "type_check_targets"),
             ),
+        ),
+        refresh_public_lockfile=_optional_sync_bool(
+            sync,
+            "refresh_public_lockfile",
+            default=False,
         ),
         sync_user_name=_optional_str(
             sync, "sync_user_name", default=DEFAULT_SYNC_USER_NAME
@@ -372,6 +379,7 @@ def sync_toml(settings: SyncSettings) -> str:
             "PR_METADATA_SOURCE": _toml_str(settings.pr_metadata_source),
             "REPLAY_BOOTSTRAP_BASE": _toml_str(settings.replay_bootstrap_base),
             "PUBLISH_SOURCE_REV": _toml_bool(settings.publish_source_rev),
+            "REFRESH_PUBLIC_LOCKFILE": _toml_bool(settings.refresh_public_lockfile),
             "TYPE_CHECK_TARGETS": targets,
             "FORBIDDEN_PR_TEXT": forbidden,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
@@ -723,6 +731,14 @@ def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
     return value
 
 
+def _optional_sync_bool(sync: dict[str, object], key: str, *, default: bool) -> bool:
+    """Read an optional boolean from the sync table."""
+    value = sync.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"copybarista.sync.toml sync.{key} must be a boolean.")
+    return value
+
+
 def _optional_pr_str(pull_request: dict[str, object], key: str, *, default: str) -> str:
     """Read an optional string from the pull_request table."""
     value = pull_request.get(key, default)
@@ -904,6 +920,8 @@ def _pr_replay_args(settings: SyncSettings) -> list[str]:
         args.extend(("--replay-bootstrap-base", settings.replay_bootstrap_base))
     if settings.publish_source_rev:
         args.append("--publish-source-rev")
+    if settings.refresh_public_lockfile:
+        args.append("--refresh-public-lockfile")
     return args
 
 

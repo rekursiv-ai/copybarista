@@ -94,6 +94,10 @@ The generated package validation workflow runs package-owned commands from
 `copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
 codespell, full-project ty, basedpyright over `type_check_targets`, pytest, a
 smoke import, and `uv build`.
+Set `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
+lockfile is private or source-specific but the public repository should publish
+a generated `uv.lock`; pair it with `uv sync --frozen --all-groups` in package
+validation commands.
 Use repeated `--validation-python-version` and `--validation-command` flags when
 a package needs a different public correctness contract. `check-sync-config`
 validates that `.github/workflows/package-validation.yml` still matches those
