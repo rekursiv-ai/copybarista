@@ -270,14 +270,19 @@ def run_export_sync(request: ExportRequest) -> None:
     _log("Replacing public checkout contents.")
     _replace_tree(source=export_dir, destination=request.public_dir)
     _log("Validating public checkout.")
-    _validate_public(
-        public_dir=request.public_dir,
-        dist_dir=dist_dir,
-        release_check_script=request.release_check_script,
-        type_check_targets=request.type_check_targets,
-        smoke_import=request.smoke_import,
-    )
-    _remove_public_validation_artifacts(request.public_dir)
+    validation_dir = Path(tempfile.mkdtemp(prefix="copybarista-validate-"))
+    try:
+        _copy_validation_tree(source=request.public_dir, destination=validation_dir)
+        _validate_public(
+            public_dir=validation_dir,
+            dist_dir=dist_dir,
+            release_check_script=request.release_check_script,
+            type_check_targets=request.type_check_targets,
+            smoke_import=request.smoke_import,
+        )
+        _remove_public_validation_artifacts(validation_dir)
+    finally:
+        _delete_path(validation_dir)
     _log("Opening or updating export PR.")
     _open_or_update_export_pr(request=request, pr_plan=pr_plan)
     if request.auto_merge:
@@ -521,6 +526,18 @@ def _replace_tree(*, source: Path, destination: Path) -> None:
             continue
         _delete_path(path)
     for path in source.iterdir():
+        target = destination / path.name
+        if path.is_dir() and not path.is_symlink():
+            shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())
+        else:
+            shutil.copy2(path, target, follow_symlinks=False)
+
+
+def _copy_validation_tree(*, source: Path, destination: Path) -> None:
+    """Copy a public checkout into a disposable validation tree."""
+    for path in source.iterdir():
+        if path.name == ".git":
+            continue
         target = destination / path.name
         if path.is_dir() and not path.is_symlink():
             shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())

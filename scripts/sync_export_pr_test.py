@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import subprocess
@@ -1048,6 +1049,80 @@ def test_replace_tree_preserves_git_and_removes_stale_files(tmp_path: Path):
     assert not (destination / "stale.txt").exists()
     assert not (destination / "pkg/old.py").exists()
     assert (destination / "pkg/module.py").read_text(encoding="utf-8") == "new\n"
+
+
+def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    source_dir = tmp_path / "source"
+    public_dir.mkdir()
+    source_dir.mkdir()
+    (public_dir / "uv.lock").write_text("old lock\n", encoding="utf-8")
+    opened: list[str] = []
+
+    def fake_resolve_pr_replay_plan(
+        *, request: ExportRequest
+    ) -> sync_export_pr.PrReplayPlan:
+        del request
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="Public body.\n",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_export_public_tree(
+        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    ) -> None:
+        del project, source_dir, manifest
+        (export_dir / "pkg").mkdir()
+        (export_dir / "pkg/module.py").write_text("source\n", encoding="utf-8")
+
+    def fake_validate_public(
+        *,
+        public_dir: Path,
+        dist_dir: Path,
+        release_check_script: Path | None,
+        type_check_targets: tuple[str, ...],
+        smoke_import: str,
+    ) -> None:
+        del dist_dir, release_check_script, type_check_targets, smoke_import
+        (public_dir / "uv.lock").write_text("validation lock\n", encoding="utf-8")
+
+    def fake_open_or_update_export_pr(
+        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+    ) -> None:
+        del pr_plan
+        lockfile = request.public_dir / "uv.lock"
+        opened.append(lockfile.read_text(encoding="utf-8") if lockfile.exists() else "")
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fake_open_or_update_export_pr,
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=source_dir,
+            public_dir=public_dir,
+            skip_source_validation=True,
+        )
+    )
+
+    assert opened == [""]
+    assert not (public_dir / "uv.lock").exists()
 
 
 def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
