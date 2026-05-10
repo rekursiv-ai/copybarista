@@ -47,6 +47,7 @@ def export_folder(
             source_ref=source_ref,
             source_root=source_ref / config.source_root,
             replace_existing=force,
+            consume_staging=True,
         )
     return ExportManifest(
         files=staged_tree.files,

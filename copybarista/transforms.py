@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import shutil
 import sys
@@ -18,13 +19,27 @@ from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
 from copybarista.globs import GlobSet, Globstar
-from copybarista.manifest import ManifestEntry, TransformFileReport, TransformReport
+from copybarista.manifest import TransformFileReport, TransformReport
+
+
+class _FileMapping(Protocol):
+    """Source and destination paths for a staged file."""
+
+    @property
+    def source(self) -> str:
+        """Return the original source path."""
+        ...
+
+    @property
+    def destination(self) -> str:
+        """Return the staged destination path."""
+        ...
 
 
 def apply_transforms(
     root: Path,
     transforms: tuple[Transform, ...],
-    files: tuple[ManifestEntry, ...] = (),
+    files: tuple[_FileMapping, ...] = (),
     *,
     globstar: Globstar = "one_or_more",
 ) -> tuple[TransformReport, ...]:

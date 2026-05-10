@@ -45,6 +45,27 @@ def test_folder_destination_reports_created_and_updated(tmp_path: Path):
     assert sorted(path.name for path in destination.iterdir()) == ["README.md"]
 
 
+def test_folder_destination_can_consume_staging(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    source_root = source_ref / "project"
+    source_root.mkdir(parents=True)
+    staging = tmp_path / "stage"
+    destination = tmp_path / "out"
+
+    result = write_folder_destination(
+        _staged_tree(staging),
+        destination=destination,
+        source_ref=source_ref,
+        source_root=source_root,
+        replace_existing=True,
+        consume_staging=True,
+    )
+
+    assert result.status == "created"
+    assert (destination / "README.md").read_text(encoding="utf-8") == "hello\n"
+    assert not staging.exists()
+
+
 def test_folder_destination_rejects_source_root(tmp_path: Path):
     source_ref = tmp_path / "repo"
     source_root = source_ref / "project"

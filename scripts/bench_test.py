@@ -50,7 +50,6 @@ def test_build_report_times_copybarista_export(tmp_path: Path):
         "stage",
         "stage.copy",
         "stage.final_manifest",
-        "stage.initial_manifest",
         "stage.select",
         "stage.transforms",
     }.issubset(report.copybarista.phase_medians_sec)
