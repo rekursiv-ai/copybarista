@@ -35,12 +35,15 @@ def write_folder_destination(
     source_ref: Path,
     source_root: Path,
     replace_existing: bool = False,
+    consume_staging: bool = False,
 ) -> DestinationResult:
     """Replace a local folder with the transformed tree.
 
     Existing destinations require an explicit force flag and still pass
     safety validation. Symlinks are refused before path resolution so a link
-    cannot redirect replacement to an unexpected target.
+    cannot redirect replacement to an unexpected target. Callers that own a
+    temporary staging directory can move it into place to avoid a second full
+    tree copy.
 
     Args:
       staged_tree: Transformed tree to publish.
@@ -48,6 +51,7 @@ def write_folder_destination(
       source_ref: Source checkout root.
       source_root: Source workflow root.
       replace_existing: Whether an existing destination may be replaced.
+      consume_staging: Move the staged tree into place instead of copying it.
 
     Returns:
       result: Destination write status and destination path.
@@ -73,7 +77,10 @@ def write_folder_destination(
             )
         shutil.rmtree(destination)
     validate_staged_symlinks(staged_tree.root)
-    shutil.copytree(staged_tree.root, destination, symlinks=True)
+    if consume_staging:
+        shutil.move(str(staged_tree.root), destination)
+    else:
+        shutil.copytree(staged_tree.root, destination, symlinks=True)
     return DestinationResult(status=status, ref=destination.as_posix())
 
 

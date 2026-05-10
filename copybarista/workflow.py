@@ -41,6 +41,14 @@ class StagedTree:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _StagedFile:
+    """Source and destination pair for files copied into staging."""
+
+    source: str
+    destination: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class WorkflowRunner:
     """Prepare the transformed staged tree for one workflow run."""
 
@@ -145,8 +153,8 @@ class WorkflowRunner:
 
 
 def _apply_transform_destinations(
-    entries: tuple[ManifestEntry, ...], *, config: WorkflowConfig
-) -> tuple[ManifestEntry, ...]:
+    entries: tuple[_StagedFile, ...], *, config: WorkflowConfig
+) -> tuple[_StagedFile, ...]:
     """Update manifest destinations for transforms that relocate staged files."""
     for transform in config.transforms:
         if transform.type != "move":
@@ -155,9 +163,7 @@ def _apply_transform_destinations(
     return entries
 
 
-def _apply_move_destination(
-    entry: ManifestEntry, transform: Transform
-) -> ManifestEntry:
+def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _StagedFile:
     """Return `entry` with its destination rewritten by one move transform."""
     if entry.destination == transform.path:
         return replace(entry, destination=transform.destination)
@@ -203,12 +209,11 @@ def _copy_selected(
     source_prefix: str,
     record_phase: PhaseRecorder | None = None,
     phase_prefix: str = "",
-) -> tuple[ManifestEntry, ...]:
+) -> tuple[_StagedFile, ...]:
     """Copy matching source files into staging and build initial entries."""
     started = time.perf_counter()
     copy_sec = 0.0
-    manifest_sec = 0.0
-    entries: list[ManifestEntry] = []
+    entries: list[_StagedFile] = []
     for path in sorted(source_root.rglob("*")):
         rel = path.relative_to(source_root).as_posix()
         if not matcher.matches(rel):
@@ -228,23 +233,19 @@ def _copy_selected(
         copy_started = time.perf_counter()
         shutil.copy2(path, dest, follow_symlinks=False)
         copy_sec += time.perf_counter() - copy_started
-        manifest_started = time.perf_counter()
         entries.append(
-            file_entry(
+            _StagedFile(
                 source=_source_path(source_prefix=source_prefix, rel=rel),
                 destination=destination,
-                path=dest,
             )
         )
-        manifest_sec += time.perf_counter() - manifest_started
     total_sec = time.perf_counter() - started
     _record_phase(
         record_phase,
         f"{phase_prefix}select",
-        max(total_sec - copy_sec - manifest_sec, 0),
+        max(total_sec - copy_sec, 0),
     )
     _record_phase(record_phase, f"{phase_prefix}copy", copy_sec)
-    _record_phase(record_phase, f"{phase_prefix}initial_manifest", manifest_sec)
     return tuple(entries)
 
 
@@ -256,7 +257,7 @@ def _copy_additional(
     destination: str,
     matcher: GlobSet,
     record_phase: PhaseRecorder | None = None,
-) -> tuple[ManifestEntry, ...]:
+) -> tuple[_StagedFile, ...]:
     """Copy one additional repo-relative source into the staged tree."""
     source_path = (source_ref / source).resolve()
     if not source_path.is_relative_to(source_ref):
@@ -299,8 +300,8 @@ def _copy_file(
     source_path: Path,
     staging: Path,
     destination: str,
-) -> ManifestEntry:
-    """Copy one source file into staging and return its manifest entry."""
+) -> _StagedFile:
+    """Copy one source file into staging and return its file mapping."""
     dest = staging / destination
     if dest.exists() or dest.is_symlink():
         source = source_path.relative_to(source_ref).as_posix()
@@ -309,24 +310,22 @@ def _copy_file(
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, dest, follow_symlinks=False)
-    return file_entry(
+    return _StagedFile(
         source=source_path.relative_to(source_ref).as_posix(),
         destination=destination,
-        path=dest,
     )
 
 
-def _write_generated(staging: Path, file_write: FileWrite) -> ManifestEntry:
-    """Write one generated file into staging and return its manifest entry."""
+def _write_generated(staging: Path, file_write: FileWrite) -> _StagedFile:
+    """Write one generated file into staging and return its file mapping."""
     dest = staging / file_write.path
     if dest.exists() or dest.is_symlink():
         raise ExportError(f"Export destination already exists: {file_write.path}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(file_write.content, encoding="utf-8")
-    return file_entry(
+    return _StagedFile(
         source=f"<generated:{file_write.path}>",
         destination=file_write.path,
-        path=dest,
     )
 
 

@@ -49,9 +49,11 @@ def check_leaks(
       violations: Policy violations in deterministic order.
 
     Raises:
-      LeakCheckError: If `root` is not a directory.
+      LeakCheckError: If `root` is not a directory and policy has rules.
 
     """
+    if not policy.forbidden_path and not policy.forbidden_text:
+        return ()
     if not root.is_dir():
         raise LeakCheckError(f"Leak check root does not exist: {root}")
     return (

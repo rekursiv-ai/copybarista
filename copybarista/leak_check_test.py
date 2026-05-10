@@ -65,6 +65,12 @@ def test_enforce_leak_check_does_not_echo_matched_text(tmp_path: Path):
     assert "token: module.py:1" in str(exc.value)
 
 
+def test_empty_leak_check_policy_does_not_walk_root(tmp_path: Path):
+    missing = tmp_path / "missing"
+
+    assert check_leaks(root=missing, policy=LeakCheck()) == ()
+
+
 def test_text_leak_check_includes_root_files_when_policy_does(tmp_path: Path):
     (tmp_path / "README.md").write_text("contains private_marker\n", encoding="utf-8")
 
