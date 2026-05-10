@@ -17,6 +17,7 @@ from scripts.sync_export_pr import (
     PrReplayState,
     SourceAuthor,
     _applied_marker_from_pr_body,
+    _base_pr_state,
     _commit_author,
     _export_commit_message,
     _export_public_tree,
@@ -433,6 +434,161 @@ def test_replay_replace_body_resets_previous_append_entries():
     assert state.body_entries == ()
 
 
+def test_base_pr_state_recovers_existing_entry_authors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    previous_sha = "1111111"
+    current_sha = "2222222"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            authors=(),
+            body_intro="Public summary.",
+            body_entries=(PrBodyEntry(commit_sha=previous_sha, text="Old update."),),
+            applied_source_rev=previous_sha,
+            applied_source_digest=_source_rev_digest(previous_sha),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+    )
+    request = _export_request(tmp_path)
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["git", "rev-list"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{previous_sha}\n")
+        if argv[:4] == ["git", "show", "-s", "--format=%aN%x00%aE"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="Previous Author\0previous@example.com\n",
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    state = _base_pr_state(
+        request=request,
+        current_pr=sync_export_pr.CurrentPr(
+            title="Public title",
+            body=body,
+            number=7,
+            url="https://example.test/pr/7",
+        ),
+        current_source_rev=current_sha,
+        current_source_digest=_source_rev_digest(current_sha),
+    )
+
+    assert state.authors == (
+        SourceAuthor(name="Previous Author", email="previous@example.com"),
+    )
+    assert "Recovered PR entry author:" in capsys.readouterr().out
+
+
+def test_resolve_pr_replay_plan_logs_replay_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = replace(
+        _export_request(tmp_path),
+        replay_settings=replace(
+            _export_request(tmp_path).replay_settings, scope="sagent"
+        ),
+    )
+
+    def fake_current_source_rev(*, source_dir: Path, fallback: str) -> str:
+        del source_dir, fallback
+        return "222222222222"
+
+    def fake_current_pr(
+        *, branch: str, repo: str, cwd: Path
+    ) -> sync_export_pr.CurrentPr | None:
+        del branch, repo, cwd
+        return None
+
+    def fake_branch_markers(*, branch: str, cwd: Path) -> sync_export_pr.BranchMarkers:
+        del branch, cwd
+        return sync_export_pr.BranchMarkers(
+            source_digest="",
+            replay_base_digest="",
+            exists=True,
+        )
+
+    def fake_replay_base(
+        *,
+        request: ExportRequest,
+        current_source_rev: str,
+        current_pr: sync_export_pr.CurrentPr | None,
+        branch_markers: sync_export_pr.BranchMarkers,
+    ) -> str:
+        del request, current_source_rev, current_pr, branch_markers
+        return "111111111111"
+
+    def fake_source_pr_metadata(
+        *,
+        source_dir: Path,
+        replay_base: str,
+        current_source_rev: str,
+        forbidden_text: tuple[str, ...],
+        scope: str,
+    ) -> tuple[PrMetadataPatch, ...]:
+        del source_dir, replay_base, current_source_rev, forbidden_text, scope
+        return (
+            PrMetadataPatch(
+                commit_sha="222222222222",
+                scope="sagent",
+                title="Public title",
+                author=SourceAuthor(name="Source Author", email="source@example.com"),
+                body="Public update.",
+                body_mode="append",
+            ),
+        )
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_current_source_rev",
+        fake_current_source_rev,
+    )
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_current_pr",
+        fake_current_pr,
+    )
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_branch_markers",
+        fake_branch_markers,
+    )
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_replay_base",
+        fake_replay_base,
+    )
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_source_pr_metadata",
+        fake_source_pr_metadata,
+    )
+
+    plan = sync_export_pr._resolve_pr_replay_plan(request=request)
+
+    assert plan.state.authors == (
+        SourceAuthor(name="Source Author", email="source@example.com"),
+    )
+    output = capsys.readouterr().out
+    assert "PR replay source range: base=1111111 head=2222222" in output
+    assert "scope=sagent branch=copybarista/export/main" in output
+    assert "PR metadata replay: patches=1 commits=1" in output
+    assert "authors=Source Author <source@example.com>" in output
+
+
 def test_render_pr_body_includes_state_marker_without_raw_source_sha():
     source_rev = "abc123abc123"
     body = _render_pr_body(
@@ -559,6 +715,9 @@ def test_render_pr_body_round_trips_multiline_append_entries():
         default_body="Default body.",
     )
 
+    assert (
+        state.body_entries[0].commit_sha == f"sha256:{_source_rev_digest(source_rev)}"
+    )
     assert state.body_entries[0].text == "First line.\nSecond line."
 
 
