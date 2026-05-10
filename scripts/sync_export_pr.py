@@ -666,12 +666,21 @@ def _resolve_pr_replay_plan(*, request: ExportRequest) -> PrReplayPlan:
         current_pr=current_pr,
         branch_markers=branch_markers,
     )
+    _log(
+        "PR replay source range: "
+        f"base={_short_rev(replay_base)} head={_short_rev(current_source_rev)} "
+        f"scope={request.replay_settings.scope or '<all>'} branch={request.branch}"
+    )
     patches = _source_pr_metadata(
         source_dir=request.source_dir,
         replay_base=replay_base,
         current_source_rev=current_source_rev,
         forbidden_text=request.forbidden_pr_text,
         scope=request.replay_settings.scope,
+    )
+    _log(
+        "PR metadata replay: "
+        f"patches={len(patches)} commits={len({patch.commit_sha for patch in patches})}"
     )
     if request.replay_settings.require_metadata and not patches:
         raise PrReplayError(
@@ -696,6 +705,12 @@ def _resolve_pr_replay_plan(*, request: ExportRequest) -> PrReplayPlan:
         state,
         applied_source_rev=current_source_rev,
         applied_source_digest=current_source_digest,
+    )
+    _log(
+        "PR replay result: "
+        f"title={state.title!r} entries={len(state.body_entries)} "
+        f"authors={_format_source_authors(state.authors)} "
+        f"applied=sha256:{state.applied_source_digest[:12]}"
     )
     return PrReplayPlan(
         state=state,
@@ -865,10 +880,24 @@ def _base_pr_state(
     """Return the state used before applying replay patches."""
     if current_pr:
         if _applied_marker_from_pr_body(current_pr.body):
-            return _state_from_pr_body(
+            state = _state_from_pr_body(
                 title=current_pr.title or request.replay_settings.default_title,
                 body=current_pr.body,
                 default_body=request.replay_settings.default_body,
+            )
+            authors = _authors_from_body_entries(
+                source_dir=request.source_dir,
+                entries=state.body_entries,
+                forbidden_text=request.forbidden_pr_text,
+            )
+            return PrReplayState(
+                title=state.title,
+                authors=authors,
+                body_intro=state.body_intro,
+                body_entries=state.body_entries,
+                applied_source_rev=state.applied_source_rev,
+                applied_source_digest=state.applied_source_digest,
+                metadata_count=state.metadata_count,
             )
         if not request.replay_settings.bootstrap_base:
             raise PrReplayError("Existing generated PR body has no Copybarista marker.")
@@ -910,6 +939,17 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         encoding="utf-8",
     )
     _write_pr_body_file(request=request, body=pr_plan.body)
+    _log(
+        "Generated export commit attribution: "
+        f"author={
+            _generated_commit_author(
+                authors=pr_plan.state.authors,
+                fallback_name=request.sync_user_name,
+                fallback_email=request.sync_user_email,
+            )
+        } "
+        f"coauthors={_format_source_authors(pr_plan.state.authors[1:])}"
+    )
 
     _run(["git", "config", "user.name", request.sync_user_name], cwd=request.public_dir)
     _run(
@@ -1221,6 +1261,61 @@ def _validated_source_author(
     return SourceAuthor(name=author.name.strip(), email=author.email.strip())
 
 
+def _authors_from_body_entries(
+    *,
+    source_dir: Path,
+    entries: tuple[PrBodyEntry, ...],
+    forbidden_text: tuple[str, ...],
+) -> tuple[SourceAuthor, ...]:
+    """Recover source authors for replayed PR entries from public-safe markers."""
+    authors: tuple[SourceAuthor, ...] = ()
+    for entry in entries:
+        if not entry.commit_sha:
+            continue
+        commit_sha = _resolve_source_marker(
+            source_dir=source_dir,
+            marker=entry.commit_sha,
+            marker_source="PR body entry marker",
+        )
+        author = _source_author(
+            source_dir=source_dir,
+            commit_sha=commit_sha,
+            forbidden_text=forbidden_text,
+        )
+        authors = _append_source_author(
+            authors=authors,
+            author=author,
+        )
+        _log(
+            "Recovered PR entry author: "
+            f"marker={_short_source_marker(entry.commit_sha)} "
+            f"commit={_short_rev(commit_sha)} "
+            f"author={_format_source_authors((author,))}"
+        )
+    return authors
+
+
+def _source_author(
+    *, source_dir: Path, commit_sha: str, forbidden_text: tuple[str, ...]
+) -> SourceAuthor:
+    """Read and validate the git author for one source commit."""
+    result = _run(
+        ["git", "show", "-s", "--format=%aN%x00%aE", commit_sha],
+        cwd=source_dir,
+        capture=True,
+    )
+    parts = result.stdout.rstrip("\n").split("\0")
+    if len(parts) != 2:
+        raise PrReplayError(
+            f"Cannot parse source author for commit {_short_rev(commit_sha)}."
+        )
+    return _validated_source_author(
+        commit_sha=commit_sha,
+        author=SourceAuthor(name=parts[0], email=parts[1]),
+        forbidden_text=forbidden_text,
+    )
+
+
 def _normalized_scope(scope: str) -> str:
     """Return a normalized metadata scope label."""
     return scope.strip().casefold()
@@ -1269,6 +1364,13 @@ def _append_source_author(
     if any(existing.email.casefold() == normalized_email for existing in authors):
         return authors
     return (*authors, author)
+
+
+def _format_source_authors(authors: tuple[SourceAuthor, ...]) -> str:
+    """Return source authors for workflow diagnostics."""
+    if not authors:
+        return "<none>"
+    return ", ".join(_commit_author(author.name, author.email) for author in authors)
 
 
 def _render_pr_body(
@@ -1590,13 +1692,14 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
             current_marker = _entry_commit_marker(stripped)
             current_lines = []
         elif stripped.startswith("- "):
+            marker = current_marker if not current_lines else ""
             _append_parsed_body_entry(
                 entries=entries,
                 commit_sha=current_marker,
                 lines=current_lines,
             )
             current_lines = [stripped.removeprefix("- ").strip()]
-            current_marker = ""
+            current_marker = marker
         elif line.startswith("  ") and current_lines:
             current_lines.append(line.strip())
         elif stripped:
@@ -1698,6 +1801,11 @@ def _export_commit_message(
 def _short_rev(rev: str) -> str:
     """Return a short revision label for diagnostics."""
     return rev[:7] if rev else "<root>"
+
+
+def _short_source_marker(marker: str) -> str:
+    """Return a compact source marker label for diagnostics."""
+    return marker[:19] if marker.startswith("sha256:") else _short_rev(marker)
 
 
 def _split_commit_message(message: str) -> tuple[str, str]:
