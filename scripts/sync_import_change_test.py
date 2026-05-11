@@ -13,6 +13,7 @@ from scripts.sync_import_change import (
     ImportRequest,
     _commit_author,
     _gh_pr_exists,
+    _run_import_change,
     _string_bool,
     _validate_target,
     import_branch_name,
@@ -50,6 +51,167 @@ def test_main_accepts_generic_project_validation_args(
     assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].copybarista_project_path == Path("tools/copybarista")
     assert captured[0].type_check_targets == ("configgle", "tests")
+    assert not captured[0].refresh_public_lockfile
+
+
+def test_main_accepts_refresh_public_lockfile_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ImportRequest] = []
+
+    def fake_run_import_sync(request: ImportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
+
+    sync_import_change.main(
+        [
+            "--project-path",
+            "packages/configgle",
+            "--public-base-ref",
+            "base",
+            "--public-head-ref",
+            "head",
+            "--refresh-public-lockfile",
+        ]
+    )
+
+    assert captured[0].refresh_public_lockfile
+
+
+def test_import_change_ignores_generated_public_lockfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    public_base = tmp_path / "public-base"
+    public_head = tmp_path / "public-head"
+    target = tmp_path / "target"
+    project = target / "package"
+    for root in (public_base, public_head, project, target / "tools" / "copybarista"):
+        root.mkdir(parents=True)
+    (public_base / "module.py").write_text("base\n", encoding="utf-8")
+    (public_base / "uv.lock").write_text("base lock\n", encoding="utf-8")
+    (public_head / "module.py").write_text("head\n", encoding="utf-8")
+    (public_head / "uv.lock").write_text("head lock\n", encoding="utf-8")
+    (project / "copy.barista.toml").write_text("[workflow]\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        sanitized_base = Path(argv[argv.index("--public-base") + 1])
+        sanitized_head = Path(argv[argv.index("--public-head") + 1])
+        assert sanitized_base != public_base
+        assert sanitized_head != public_head
+        assert (sanitized_base / "module.py").read_text(encoding="utf-8") == "base\n"
+        assert (sanitized_head / "module.py").read_text(encoding="utf-8") == "head\n"
+        assert not (sanitized_base / "uv.lock").exists()
+        assert not (sanitized_head / "uv.lock").exists()
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    _run_import_change(
+        request=ImportRequest(
+            public_base=public_base,
+            public_head=public_head,
+            target_dir=target,
+            target_repo="rekursiv-ai/source",
+            project_path=Path("package"),
+            copybarista_project_path=Path("tools/copybarista"),
+            base_branch="main",
+            public_repo="rekursiv-ai/public",
+            public_sha="abcdef123456",
+            public_base_ref="base",
+            public_head_ref="head",
+            branch="copybarista/import/sha-abcdef123456",
+            sync_label="Package",
+            sync_user_name="copybarista",
+            sync_user_email="copybarista@example.com",
+            report=tmp_path / "report.json",
+            open_pr=False,
+            open_pr_only=False,
+            runner_temp=runner_temp,
+            type_check_targets=(".",),
+            refresh_public_lockfile=True,
+        ),
+        project=project,
+    )
+
+    assert len(calls) == 1
+
+
+def test_run_import_sync_prepares_copybarista_tool_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    target = tmp_path / "target"
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_import_change(*, request: ImportRequest, project: Path) -> None:
+        calls.append(["import", str(project), str(request.target_dir)])
+
+    def fake_validate_target(
+        *,
+        project: Path,
+        type_check_targets: tuple[str, ...],
+    ) -> None:
+        calls.append(["validate", str(project), *type_check_targets])
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run_import_change", fake_import_change)
+    monkeypatch.setattr(sync_import_change, "_validate_target", fake_validate_target)
+
+    sync_import_change.run_import_sync(
+        ImportRequest(
+            public_base=tmp_path / "public-base",
+            public_head=tmp_path / "public-head",
+            target_dir=target,
+            target_repo="rekursiv-ai/source",
+            project_path=Path("package"),
+            copybarista_project_path=Path("tools/copybarista"),
+            base_branch="main",
+            public_repo="rekursiv-ai/public",
+            public_sha="abcdef123456",
+            public_base_ref="base",
+            public_head_ref="head",
+            branch="copybarista/import/sha-abcdef123456",
+            sync_label="Package",
+            sync_user_name="copybarista",
+            sync_user_email="copybarista@example.com",
+            report=tmp_path / "report.json",
+            open_pr=False,
+            open_pr_only=False,
+            runner_temp=tmp_path,
+            type_check_targets=(".",),
+            refresh_public_lockfile=False,
+        )
+    )
+
+    assert calls[0] == [
+        "uv",
+        "--quiet",
+        "--project",
+        str(target / "tools" / "copybarista"),
+        "sync",
+        "--all-groups",
+    ]
+    assert calls[1] == [
+        "uv",
+        "--quiet",
+        "--project",
+        str(target / "package"),
+        "sync",
+        "--all-groups",
+    ]
 
 
 def test_import_change_pr_body_contains_review_context():

@@ -371,6 +371,12 @@ def test_export_workflow_can_refresh_public_lockfile():
     assert "--refresh-public-lockfile" in workflow
 
 
+def test_import_workflow_can_ignore_generated_public_lockfile():
+    workflow = import_workflow(_settings(refresh_public_lockfile=True))
+
+    assert "--refresh-public-lockfile" in workflow
+
+
 def test_export_workflow_can_guard_sync_token_login():
     sync_actor = "rekursiv-bot"
     workflow = export_workflow(_settings(sync_token_login=sync_actor))

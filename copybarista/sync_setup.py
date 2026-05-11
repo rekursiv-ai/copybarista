@@ -512,6 +512,11 @@ def import_workflow(settings: SyncSettings) -> str:
         ],
         indent="            ",
     )
+    refresh_public_lockfile_arg = (
+        "            --refresh-public-lockfile \\\n"
+        if settings.refresh_public_lockfile
+        else ""
+    )
     return _render_template(
         "public-to-source.yml.tmpl",
         {
@@ -524,6 +529,7 @@ def import_workflow(settings: SyncSettings) -> str:
             "EXPORT_BRANCH_MESSAGE_EXPR": _github_expr_str(
                 f"{settings.sync_label} export branch:"
             ),
+            "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
             "TYPE_TARGETS": type_targets,
         },
     )
@@ -608,6 +614,11 @@ def _validate_import_workflow_yaml(
                 '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
                 '--sync-label "$COPYBARISTA_SYNC_LABEL"',
                 "--open-pr false",
+                *(
+                    ("--refresh-public-lockfile",)
+                    if settings.refresh_public_lockfile
+                    else ()
+                ),
             ),
         ),
         (

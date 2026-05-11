@@ -445,7 +445,8 @@ branch prefixes, validation commands, and sync identity used by generated
 GitHub workflows. Set `refresh_public_lockfile = true` when the source lockfile
 is private or source-specific but the public export should publish a generated
 `uv.lock`; the export workflow runs `uv lock` in the public checkout before
-validation.
+validation, and the import workflow ignores that generated `uv.lock` when
+mapping source-owned public changes back to the private checkout.
 
 The optional `[pull_request]` table controls source-to-public export PR text:
 

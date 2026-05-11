@@ -15,6 +15,7 @@ from typing import TextIO
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,7 @@ def main(argv: list[str] | None = None) -> None:
         open_pr_only=args.open_pr_only,
         runner_temp=Path(args.runner_temp),
         type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
+        refresh_public_lockfile=args.refresh_public_lockfile,
     )
     run_import_sync(request)
 
@@ -90,15 +92,21 @@ class ImportRequest:
     open_pr_only: bool
     runner_temp: Path
     type_check_targets: tuple[str, ...]
+    refresh_public_lockfile: bool
 
 
 def run_import_sync(request: ImportRequest) -> None:
     """Import public changes into source, validate, and optionally open a PR."""
     project = request.target_dir / request.project_path
+    copybarista_project = request.target_dir / request.copybarista_project_path
     if request.open_pr_only:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
         return
+    _log("Preparing Copybarista tool environment.")
+    _run(
+        ["uv", "--quiet", "--project", str(copybarista_project), "sync", "--all-groups"]
+    )
     _log("Preparing target source environment.")
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _log("Importing public changes into target source.")
@@ -176,6 +184,11 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         help="Path passed to basedpyright. Repeat for multiple targets.",
     )
+    parser.add_argument(
+        "--refresh-public-lockfile",
+        action="store_true",
+        help="Ignore generated public uv.lock while importing source-owned changes.",
+    )
     return parser
 
 
@@ -183,7 +196,23 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
     """Run `copybarista import-change` and capture its JSON report."""
     copybarista_project = request.target_dir / request.copybarista_project_path
     request.report.parent.mkdir(parents=True, exist_ok=True)
-    with request.report.open("w", encoding="utf-8") as output:
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="copybarista-import-public-",
+            dir=request.runner_temp,
+        ) as tmp,
+        request.report.open("w", encoding="utf-8") as output,
+    ):
+        public_base = _public_tree_for_import(
+            source=request.public_base,
+            destination=Path(tmp) / "public-base",
+            refresh_public_lockfile=request.refresh_public_lockfile,
+        )
+        public_head = _public_tree_for_import(
+            source=request.public_head,
+            destination=Path(tmp) / "public-head",
+            refresh_public_lockfile=request.refresh_public_lockfile,
+        )
         _run(
             [
                 "uv",
@@ -195,9 +224,9 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
                 "import-change",
                 str(project / "copy.barista.toml"),
                 "--public-base",
-                str(request.public_base),
+                str(public_base),
                 "--public-head",
-                str(request.public_head),
+                str(public_head),
                 "--source-base",
                 str(request.target_dir),
                 "--destination",
@@ -206,6 +235,27 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
             ],
             stdout=output,
         )
+
+
+def _public_tree_for_import(
+    *,
+    source: Path,
+    destination: Path,
+    refresh_public_lockfile: bool,
+) -> Path:
+    """Return a public tree suitable for source-owned import verification."""
+    if not refresh_public_lockfile:
+        return source
+    # Public lockfiles generated after export are reproducibility artifacts, not
+    # source-owned files. Dropping them preserves strict verification for the
+    # Copybarista-managed tree without making every reverse import fail.
+    shutil.copytree(
+        source,
+        destination,
+        symlinks=True,
+        ignore=shutil.ignore_patterns(".git", "uv.lock"),
+    )
+    return destination
 
 
 def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> None:

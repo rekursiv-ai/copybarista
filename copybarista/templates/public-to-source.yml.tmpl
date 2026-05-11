@@ -173,7 +173,7 @@ jobs:
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
-@@TYPE_TARGETS@@ \
+@@REFRESH_PUBLIC_LOCKFILE_ARG@@@@TYPE_TARGETS@@ \
             --open-pr false
 
       - name: Open or update target import PR
