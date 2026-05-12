@@ -54,6 +54,7 @@ class SyncSettings:
       source_repo: Source repository in ``owner/name`` form.
       copybarista_project_path: Source path containing the Copybarista project.
       smoke_import: Import target used to validate the exported package.
+      release_check_script: Optional project-relative release tree checker.
       type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
       validation_python_versions: Python versions used by public package validation.
@@ -82,6 +83,7 @@ class SyncSettings:
     smoke_import: str
     type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
+    release_check_script: str = ""
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
     validation_commands: tuple[str, ...] = ()
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
@@ -170,6 +172,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
         source_repo=_required_str(sync, "source_repo"),
         copybarista_project_path=_required_str(sync, "copybarista_project_path"),
         smoke_import=_required_str(sync, "smoke_import"),
+        release_check_script=_optional_str(sync, "release_check_script", default=""),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
         validation_python_versions=_optional_str_tuple(
@@ -371,6 +374,7 @@ def sync_toml(settings: SyncSettings) -> str:
             "SOURCE_REPO": _toml_str(settings.source_repo),
             "COPYBARISTA_PROJECT_PATH": _toml_str(settings.copybarista_project_path),
             "SMOKE_IMPORT": _toml_str(settings.smoke_import),
+            "RELEASE_CHECK_SCRIPT": _toml_str(settings.release_check_script),
             "EXPORT_BRANCH_PREFIX": _toml_str(settings.export_prefix),
             "IMPORT_BRANCH_PREFIX": _toml_str(settings.import_prefix),
             "PR_DEFAULT_TITLE": _toml_str(settings.pr_default_title),
@@ -457,12 +461,19 @@ def export_workflow(settings: SyncSettings) -> str:
         _pr_replay_args(settings),
         indent="            ",
     )
+    release_check_arg = (
+        f"            --release-check-script {_sh(settings.release_check_script)} \\\n"
+        if settings.release_check_script
+        else ""
+    )
     forbidden = ",".join(settings.forbidden_pr_text)
     project_path = f"source/{settings.copybarista_project_path}"
     script_path = f"{project_path}/scripts/sync_export_pr.py"
     return _render_template(
         "source-to-public.yml.tmpl",
         {
+            "WORKFLOW_NAME": _yaml_str(f"Export {settings.sync_label} public repo"),
+            "JOB_NAME": _yaml_str(f"Export {settings.sync_label} and update public PR"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_SCRIPT_PATH": _yaml_str(
                 f"{settings.copybarista_project_path}/scripts/sync_export_pr.py"
@@ -484,6 +495,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "PR_DEFAULT_TITLE": _sh(settings.pr_default_title),
             "PR_DEFAULT_BODY": _sh(settings.pr_default_body),
             "PR_REPLAY_FLAGS": pr_replay_flags,
+            "RELEASE_CHECK_ARG": release_check_arg,
             "TYPE_TARGETS": type_targets,
             "SMOKE_IMPORT": _sh(settings.smoke_import),
         },
@@ -837,6 +849,7 @@ def _validate_settings(settings: SyncSettings) -> None:
     if not settings.type_check_targets:
         raise ConfigError("sync.type_check_targets cannot be empty.")
     _validate_python_module_name(settings.smoke_import, name="smoke_import")
+    _validate_relative_path(settings.release_check_script, name="release_check_script")
     if not settings.validation_python_versions:
         raise ConfigError("sync.validation_python_versions cannot be empty.")
     if not settings.validation_commands:
@@ -873,6 +886,17 @@ def _validate_python_module_name(value: str, *, name: str) -> None:
         raise ConfigError(f"sync.{name} must be a dotted Python module name.")
 
 
+def _validate_relative_path(value: str, *, name: str) -> None:
+    """Reject optional paths that would escape the package checkout."""
+    if not value:
+        return
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ConfigError(f"sync.{name} must be a project-relative path.")
+    if any(ord(char) < CONTROL_CHAR_BOUND for char in value):
+        raise ConfigError(f"sync.{name} must not contain control characters.")
+
+
 def _validate_branch_prefix(prefix: str, *, name: str) -> None:
     """Reject branch prefixes that can overwrite protected or arbitrary refs."""
     if not prefix or prefix in {"main", "master"} or prefix.startswith(("-", "/")):
@@ -907,7 +931,20 @@ def _shell_lines(args: list[str], *, indent: str) -> str:
 
 def _shell_args(args: list[str], *, indent: str) -> str:
     """Format CLI args as continued shell command lines."""
-    return " \\\n".join(f"{indent}{_sh(arg)}" for arg in args)
+    lines: list[str] = []
+    idx = 0
+    while idx < len(args):
+        if (
+            args[idx].startswith("--")
+            and idx + 1 < len(args)
+            and not args[idx + 1].startswith("--")
+        ):
+            lines.append(f"{indent}{_sh(args[idx])} {_sh(args[idx + 1])}")
+            idx += 2
+        else:
+            lines.append(f"{indent}{_sh(args[idx])}")
+            idx += 1
+    return " \\\n".join(lines)
 
 
 def _shell_script(commands: tuple[str, ...], *, indent: str) -> str:

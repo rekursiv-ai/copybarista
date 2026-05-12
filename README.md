@@ -11,7 +11,7 @@
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue.svg">
   <a href="https://pypi.org/project/copybarista/"><img alt="PyPI" src="https://img.shields.io/pypi/v/copybarista.svg"></a>
-  <a href="https://github.com/rekursiv-ai/copybarista/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
+  <a href="https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml"><img alt="CI" src="https://img.shields.io/badge/ci-GitHub%20Actions-blue.svg"></a>
   <a href="https://github.com/rekursiv-ai/copybarista/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
@@ -205,14 +205,17 @@ copybarista init-sync . \
 This writes `copy.barista.toml`, `copybarista.sync.toml`, the public import
 workflow `.github/workflows/sync-to-source.yml`, and the public package
 validation workflow `.github/workflows/package-validation.yml`. The package name
-lives in `copybarista.sync.toml`; script and workflow names stay stable so new
-packages do not need `sync_<package>.py` files or package-specific environment
-names. Use `init-sync --overwrite` only when intentionally regenerating existing
-sync files.
+lives in `copybarista.sync.toml`; generated workflow names identify the package,
+while script file names and environment variable names stay stable. New packages
+do not need `sync_<package>.py` files or package-specific environment names. Use
+`init-sync --overwrite` only when intentionally regenerating existing sync
+files.
 
 The validation workflow runs package-owned commands from `copybarista.sync.toml`.
 By default it syncs dependencies, runs Ruff, codespell, ty, basedpyright,
-pytest, a smoke import, and `uv build`. Override it at setup time when a package
+pytest, a smoke import, and `uv build`. Pass `--release-check-script` when the
+source export workflow should run a project-relative release-tree checker before
+opening the public PR. Override validation commands at setup time when a package
 needs different public correctness gates:
 
 ```bash
@@ -381,7 +384,8 @@ copybarista import-change CONFIG --public-base DIR --public-head DIR \
 copybarista init-sync ROOT --package-name NAME --source-root PATH \
   --public-repo OWNER/REPO --source-repo OWNER/REPO \
   --copybarista-project-path PATH --smoke-import MODULE \
-  [--sync-label LABEL] [--type-check-target PATH] \
+  [--sync-label LABEL] [--release-check-script PATH] \
+  [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] [--validation-python-version VERSION] \
   [--validation-command COMMAND] [--sync-user-name NAME] \
   [--sync-user-email EMAIL] [--overwrite]

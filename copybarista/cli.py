@@ -109,6 +109,7 @@ def _parser() -> argparse.ArgumentParser:
     init_sync.add_argument("--source-repo", required=True)
     init_sync.add_argument("--copybarista-project-path", required=True)
     init_sync.add_argument("--smoke-import", required=True)
+    init_sync.add_argument("--release-check-script", default="")
     init_sync.add_argument("--type-check-target", action="append", default=[])
     init_sync.add_argument("--forbidden-pr-text", action="append", default=[])
     init_sync.add_argument("--validation-python-version", action="append", default=[])
@@ -228,6 +229,7 @@ def _run_init_sync(args: argparse.Namespace) -> None:
         source_repo=args.source_repo,
         copybarista_project_path=args.copybarista_project_path,
         smoke_import=args.smoke_import,
+        release_check_script=args.release_check_script,
         type_check_targets=tuple(args.type_check_target)
         or (args.smoke_import, "tests"),
         forbidden_pr_text=tuple(args.forbidden_pr_text),

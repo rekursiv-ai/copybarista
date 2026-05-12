@@ -65,9 +65,10 @@ The generated public files are:
 - `.github/workflows/package-validation.yml` -- public package correctness
   workflow.
 
-Package identity is data in `copybarista.sync.toml`; file names and workflow
-names stay stable across packages. This avoids `sync_<package>.py` wrappers and
-package-specific environment names. Generated workflows use shared
+Package identity is data in `copybarista.sync.toml`; workflow names identify
+the package, while generated file names stay stable across packages. This
+avoids `sync_<package>.py` wrappers and package-specific environment names.
+Generated workflows use shared
 `COPYBARISTA_` names internally and fill them from `copybarista.sync.toml`:
 
 - `COPYBARISTA_SYNC_TOKEN` -- source workflow token for opening public PRs.
@@ -93,7 +94,10 @@ regenerating existing sync files.
 The generated package validation workflow runs package-owned commands from
 `copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
 codespell, full-project ty, basedpyright over `type_check_targets`, pytest, a
-smoke import, and `uv build`.
+smoke import, and `uv build`. Pass `--release-check-script` during setup, or
+set `release_check_script` in `copybarista.sync.toml`, when the source export
+workflow should run an additional project-relative release-tree checker before
+opening or updating the public PR.
 Set `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
 lockfile is private or source-specific but the public repository should publish
 a generated `uv.lock`; pair it with `uv sync --frozen --all-groups` in package

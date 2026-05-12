@@ -7,13 +7,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      target_repo:
-        description: Repository that receives the import PR.
-        required: true
-      base_branch:
-        description: Base branch for the target repository PR.
-        default: main
-        required: true
       public_base_ref:
         description: Public ref that represents the already-synced base tree.
         default: main
@@ -32,6 +25,18 @@ concurrency:
 jobs:
   import-change:
     name: Import public changes to source
+    runs-on: ubuntu-latest
+    env:
+      DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
+      DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
+      TARGET_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}
+      TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}
+      COPYBARISTA_TOOL_PROJECT_PATH: ${{ vars.COPYBARISTA_TOOL_PROJECT_PATH }}
+      COPYBARISTA_IMPORT_BRANCH_PREFIX: "copybarista/import/"
+      COPYBARISTA_SYNC_LABEL: "Copybarista"
+      COPYBARISTA_SYNC_USER_NAME: "copybarista"
+      COPYBARISTA_SYNC_USER_EMAIL: "rekursiv-bot@rekursiv.ai"
+
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
@@ -42,52 +47,52 @@ jobs:
       (
         github.event_name == 'push' &&
         github.event.before != '0000000000000000000000000000000000000000' &&
-        github.event.head_commit.author.email != (vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com') &&
+        github.event.head_commit.author.email != 'rekursiv-bot@rekursiv.ai' &&
         !contains(github.event.head_commit.message, 'copybarista/export/') &&
         !contains(github.event.head_commit.message, 'Copybarista export branch:')
       )
-    runs-on: ubuntu-latest
-    env:
-      TARGET_REPO: ${{ inputs.target_repo || vars.COPYBARISTA_SOURCE_REPO }}
-      TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}
-      COPYBARISTA_TOOL_PROJECT_PATH: ${{ vars.COPYBARISTA_TOOL_PROJECT_PATH }}
-      BASE_BRANCH: ${{ inputs.base_branch || 'main' }}
-      COPYBARISTA_IMPORT_BRANCH_PREFIX: copybarista/import/
-      COPYBARISTA_SYNC_LABEL: Copybarista
-      COPYBARISTA_SYNC_USER_NAME: ${{ vars.COPYBARISTA_SYNC_USER_NAME || 'copybarista' }}
-      COPYBARISTA_SYNC_USER_EMAIL: ${{ vars.COPYBARISTA_SYNC_USER_EMAIL || 'copybarista@example.com' }}
-      DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
-      DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
 
     steps:
-      - name: Check token
-        env:
-          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
-        run: |
-          if [ -z "$IMPORT_TOKEN" ]; then
-            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
-            exit 1
-          fi
-          if [ -z "$TARGET_REPO" ]; then
-            echo "::error::Set target_repo or COPYBARISTA_SOURCE_REPO."
-            exit 1
-          fi
-          if [ -z "$TARGET_PROJECT_PATH" ]; then
-            echo "::error::Set COPYBARISTA_TARGET_PROJECT_PATH."
-            exit 1
-          fi
-          if [ -z "$COPYBARISTA_TOOL_PROJECT_PATH" ]; then
-            echo "::error::Set COPYBARISTA_TOOL_PROJECT_PATH."
-            exit 1
-          fi
-
       - name: Set sync paths
         run: |
           echo "IMPORT_REPORT=$RUNNER_TEMP/copybarista-import-report.json" >> "$GITHUB_ENV"
           echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/sync_import_change.py" >> "$GITHUB_ENV"
 
+      - id: settings
+        name: Check settings
+        env:
+          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+        run: |
+          missing=false
+          if [ -z "$IMPORT_TOKEN" ]; then
+            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
+            missing=true
+          fi
+          if [ -z "$TARGET_REPO" ]; then
+            echo "::error::Set COPYBARISTA_SOURCE_REPO."
+            missing=true
+          fi
+          if [ -z "$TARGET_PROJECT_PATH" ]; then
+            echo "::error::Set COPYBARISTA_TARGET_PROJECT_PATH."
+            missing=true
+          fi
+          if [ -z "$COPYBARISTA_TOOL_PROJECT_PATH" ]; then
+            echo "::error::Set COPYBARISTA_TOOL_PROJECT_PATH."
+            missing=true
+          fi
+          if [ "$missing" = "true" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            echo "::notice::Public-to-source import is not configured; skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
       - id: refs
         name: Resolve public refs
+        if: steps.settings.outputs.enabled == 'true'
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base_ref="${{ github.event.pull_request.base.sha }}"
@@ -102,7 +107,6 @@ jobs:
             base_ref="${{ github.event.before }}"
             head_ref="${GITHUB_SHA}"
           fi
-
           if [ -z "$base_ref" ] || [ "$base_ref" = "0000000000000000000000000000000000000000" ]; then
             echo "::error::Cannot resolve public base ref for import."
             exit 1
@@ -113,47 +117,46 @@ jobs:
               exit 1
             fi
           done
-
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Check out public base
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.base_ref }}
           path: public-base
-
-      - name: Check out public head
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.head_ref }}
           path: public-head
-
-      - name: Check out target repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
           token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
-          ref: ${{ env.BASE_BRANCH }}
+          ref: main
           path: target
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
+        if: steps.settings.outputs.enabled == 'true'
         with:
           python-version: "3.12"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
+        if: steps.settings.outputs.enabled == 'true'
 
       - name: Capture trusted import helper
+        if: steps.settings.outputs.enabled == 'true'
         run: |
           install -m 600 \
             "target/$COPYBARISTA_TOOL_PROJECT_PATH/scripts/sync_import_change.py" \
             "$TRUSTED_IMPORT_SCRIPT"
 
       - name: Import public tree into target repository
+        if: steps.settings.outputs.enabled == 'true'
         run: |
+          public_base_ref="${{ steps.refs.outputs.base_ref }}"
+          public_head_ref="${{ steps.refs.outputs.head_ref }}"
           uv --quiet --project "target/$COPYBARISTA_TOOL_PROJECT_PATH" run python \
             "$TRUSTED_IMPORT_SCRIPT" \
             --public-base public-base \
@@ -162,11 +165,11 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --project-path "$TARGET_PROJECT_PATH" \
             --copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH" \
-            --base-branch "$BASE_BRANCH" \
+            --base-branch main \
             --public-repo "$GITHUB_REPOSITORY" \
             --public-sha "$GITHUB_SHA" \
-            --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
-            --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
+            --public-base-ref "$public_base_ref" \
+            --public-head-ref "$public_head_ref" \
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
@@ -176,20 +179,22 @@ jobs:
             --open-pr false
 
       - name: Open or update target import PR
-        if: github.event_name != 'pull_request'
+        if: steps.settings.outputs.enabled == 'true' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
         run: |
+          public_base_ref="${{ steps.refs.outputs.base_ref }}"
+          public_head_ref="${{ steps.refs.outputs.head_ref }}"
           python "$TRUSTED_IMPORT_SCRIPT" \
             --target-dir target \
             --target-repo "$TARGET_REPO" \
             --project-path "$TARGET_PROJECT_PATH" \
             --copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH" \
-            --base-branch "$BASE_BRANCH" \
+            --base-branch main \
             --public-repo "$GITHUB_REPOSITORY" \
             --public-sha "$GITHUB_SHA" \
-            --public-base-ref "${{ steps.refs.outputs.base_ref }}" \
-            --public-head-ref "${{ steps.refs.outputs.head_ref }}" \
+            --public-base-ref "$public_base_ref" \
+            --public-head-ref "$public_head_ref" \
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
