@@ -302,6 +302,40 @@ def test_cli_init_sync_can_refresh_public_lockfile(
     assert "--refresh-public-lockfile" in workflow
 
 
+def test_cli_init_sync_can_add_release_check_script(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "copybarista",
+            "--source-root",
+            "packages/copybarista",
+            "--public-repo",
+            "example/copybarista",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+            "--smoke-import",
+            "copybarista",
+            "--release-check-script",
+            "scripts/check_release_tree.py",
+        ]
+    )
+
+    sync_config = (tmp_path / "copybarista.sync.toml").read_text(encoding="utf-8")
+    capsys.readouterr()
+    main(["write-export-workflow", str(tmp_path / "copybarista.sync.toml")])
+    workflow = capsys.readouterr().out
+
+    assert 'release_check_script = "scripts/check_release_tree.py"' in sync_config
+    assert "--release-check-script scripts/check_release_tree.py" in workflow
+
+
 def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
     main(
         [

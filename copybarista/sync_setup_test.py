@@ -203,6 +203,7 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.replay_bootstrap_base == ""
     assert not settings.publish_source_rev
     assert not settings.refresh_public_lockfile
+    assert settings.release_check_script == ""
 
 
 def test_load_sync_settings_reads_pull_request_defaults(tmp_path: Path):
@@ -333,6 +334,8 @@ def test_check_sync_config_rejects_package_validation_drift(tmp_path: Path):
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings())
 
+    assert 'name: "Export Configgle public repo"' in workflow
+    assert 'name: "Export Configgle and update public PR"' in workflow
     assert "configgle/export/main" in workflow
     assert (
         "group: copybarista-export-${{ github.workflow }}-${{ github.ref }}" in workflow
@@ -369,6 +372,12 @@ def test_export_workflow_can_refresh_public_lockfile():
     workflow = export_workflow(_settings(refresh_public_lockfile=True))
 
     assert "--refresh-public-lockfile" in workflow
+
+
+def test_export_workflow_can_run_release_check_script():
+    workflow = export_workflow(_settings(release_check_script="scripts/check.py"))
+
+    assert "--release-check-script scripts/check.py" in workflow
 
 
 def test_import_workflow_can_ignore_generated_public_lockfile():

@@ -416,6 +416,7 @@ copybarista init-sync ROOT \
   --copybarista-project-path PATH \
   --smoke-import MODULE \
   [--sync-label LABEL] \
+  [--release-check-script PATH] \
   [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] \
   [--validation-python-version VERSION] \
@@ -442,11 +443,13 @@ copybarista write-export-workflow copybarista.sync.toml [--output PATH]
 `init-sync` writes package sync metadata to `copybarista.sync.toml`. The
 `[sync]` table identifies the package, public repository, source repository,
 branch prefixes, validation commands, and sync identity used by generated
-GitHub workflows. Set `refresh_public_lockfile = true` when the source lockfile
-is private or source-specific but the public export should publish a generated
-`uv.lock`; the export workflow runs `uv lock` in the public checkout before
-validation, and the import workflow ignores that generated `uv.lock` when
-mapping source-owned public changes back to the private checkout.
+GitHub workflows. Set `release_check_script` to a project-relative checker when
+the source export workflow should validate the exported release tree before
+opening or updating the public PR. Set `refresh_public_lockfile = true` when the
+source lockfile is private or source-specific but the public export should
+publish a generated `uv.lock`; the export workflow runs `uv lock` in the public
+checkout before validation, and the import workflow ignores that generated
+`uv.lock` when mapping source-owned public changes back to the private checkout.
 
 The optional `[pull_request]` table controls source-to-public export PR text:
 
