@@ -885,7 +885,7 @@ def _base_pr_state(
                 body=current_pr.body,
                 default_body=request.replay_settings.default_body,
             )
-            authors = _authors_from_body_entries(
+            body_entries, authors = _recover_body_entries(
                 source_dir=request.source_dir,
                 entries=state.body_entries,
                 forbidden_text=request.forbidden_pr_text,
@@ -894,7 +894,7 @@ def _base_pr_state(
                 title=state.title,
                 authors=authors,
                 body_intro=state.body_intro,
-                body_entries=state.body_entries,
+                body_entries=body_entries,
                 applied_source_rev=state.applied_source_rev,
                 applied_source_digest=state.applied_source_digest,
                 metadata_count=state.metadata_count,
@@ -1261,22 +1261,31 @@ def _validated_source_author(
     return SourceAuthor(name=author.name.strip(), email=author.email.strip())
 
 
-def _authors_from_body_entries(
+def _recover_body_entries(
     *,
     source_dir: Path,
     entries: tuple[PrBodyEntry, ...],
     forbidden_text: tuple[str, ...],
-) -> tuple[SourceAuthor, ...]:
-    """Recover source authors for replayed PR entries from public-safe markers."""
+) -> tuple[tuple[PrBodyEntry, ...], tuple[SourceAuthor, ...]]:
+    """Recover reachable PR body entries and source authors."""
+    recovered_entries: tuple[PrBodyEntry, ...] = ()
     authors: tuple[SourceAuthor, ...] = ()
     for entry in entries:
         if not entry.commit_sha:
+            recovered_entries = (*recovered_entries, entry)
             continue
-        commit_sha = _resolve_source_marker(
+        commit_sha = _maybe_resolve_source_marker(
             source_dir=source_dir,
             marker=entry.commit_sha,
             marker_source="PR body entry marker",
         )
+        if not commit_sha:
+            _log(
+                "Dropped stale PR entry marker: "
+                f"marker={_short_source_marker(entry.commit_sha)}"
+            )
+            continue
+        recovered_entries = (*recovered_entries, entry)
         author = _source_author(
             source_dir=source_dir,
             commit_sha=commit_sha,
@@ -1292,7 +1301,7 @@ def _authors_from_body_entries(
             f"commit={_short_rev(commit_sha)} "
             f"author={_format_source_authors((author,))}"
         )
-    return authors
+    return recovered_entries, authors
 
 
 def _source_author(
@@ -1578,26 +1587,40 @@ def _branch_markers(*, branch: str, cwd: Path) -> BranchMarkers:
 
 def _resolve_source_marker(*, source_dir: Path, marker: str, marker_source: str) -> str:
     """Resolve a public marker back to a private source commit."""
+    commit_sha = _maybe_resolve_source_marker(
+        source_dir=source_dir,
+        marker=marker,
+        marker_source=marker_source,
+    )
+    if commit_sha:
+        return commit_sha
+    raise PrReplayError(
+        f"Cannot resolve {marker_source} digest "
+        f"{marker.removeprefix('sha256:')[:12]} in {source_dir}."
+    )
+
+
+def _maybe_resolve_source_marker(
+    *, source_dir: Path, marker: str, marker_source: str
+) -> str:
+    """Resolve a public marker to a source commit if it remains reachable."""
     if marker.startswith("sha:"):
         return marker.removeprefix("sha:")
     if marker.startswith("sha256:"):
-        return _resolve_source_digest(
+        return _maybe_resolve_source_digest(
             source_dir=source_dir,
             digest=marker.removeprefix("sha256:"),
-            marker_source=marker_source,
         )
     raise PrReplayError(f"{marker_source} has unsupported source marker {marker}.")
 
 
-def _resolve_source_digest(*, source_dir: Path, digest: str, marker_source: str) -> str:
-    """Resolve a source SHA digest by scanning the source checkout history."""
+def _maybe_resolve_source_digest(*, source_dir: Path, digest: str) -> str:
+    """Resolve a source SHA digest if it remains reachable."""
     result = _run(["git", "rev-list", "HEAD"], cwd=source_dir, capture=True)
     for commit_sha in result.stdout.splitlines():
         if _source_rev_digest(commit_sha) == digest:
             return commit_sha
-    raise PrReplayError(
-        f"Cannot resolve {marker_source} digest {digest[:12]} in {source_dir}."
-    )
+    return ""
 
 
 def _source_parent(*, source_dir: Path, rev: str) -> str:
