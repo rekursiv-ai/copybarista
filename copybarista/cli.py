@@ -10,7 +10,9 @@ import json
 import sys
 
 from copybarista.config import load_config
-from copybarista.copy_bara_sky import translate_copy_bara_sky_to_toml
+from copybarista.copy_bara_sky import (
+    translate_copy_bara_sky_to_toml,
+)
 from copybarista.errors import (
     ConfigError,
     CopybaristaError,
@@ -23,7 +25,10 @@ from copybarista.errors import (
 )
 from copybarista.export import export_folder
 from copybarista.git import export_git
-from copybarista.import_request import ImportRequest, import_change_request
+from copybarista.import_request import (
+    ImportRequest,
+    import_change_request,
+)
 from copybarista.leak_check import enforce_leak_check
 from copybarista.sync_setup import (
     SyncSettings,

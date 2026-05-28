@@ -15,11 +15,19 @@ from typing import Protocol
 import shutil
 import time
 
-from copybarista.config import FileWrite, Transform, WorkflowConfig
+from copybarista.config import (
+    FileWrite,
+    Transform,
+    WorkflowConfig,
+)
 from copybarista.errors import ExportError
 from copybarista.globs import GlobSet
 from copybarista.leak_check import enforce_leak_check
-from copybarista.manifest import ManifestEntry, TransformReport, file_entry
+from copybarista.manifest import (
+    ManifestEntry,
+    TransformReport,
+    file_entry,
+)
 from copybarista.transforms import apply_transforms
 
 

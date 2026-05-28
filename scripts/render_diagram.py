@@ -1,4 +1,9 @@
-"""Render a Mermaid (.mmd) source file to a lossless WebP asset.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet run --no-project python3 "$0" "$@"
+Render a Mermaid (.mmd) source file to a lossless WebP asset.
 
 Used to regenerate diagram assets such as ``assets/copybarista-sync.webp``
 from their checked-in Mermaid sources. Lossless WebP keeps diagram strokes
@@ -9,7 +14,8 @@ Requires Node.js (for ``npx``/mermaid-cli) and ``cwebp`` on PATH.
 Usage::
 
     uv run python scripts/render_diagram.py assets/copybarista-sync.mmd
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -77,7 +83,7 @@ def _require_tool(name: str) -> str:
 
 def main() -> None:
     """Parse arguments and render the requested diagram."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
     parser.add_argument(
         "input",
         type=Path,

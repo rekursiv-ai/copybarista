@@ -21,12 +21,25 @@ import shutil
 import tempfile
 import time
 
-from copybarista.commands import CommandResult, CommandRunner, resolve_executable
-from copybarista.config import GitDestination, WorkflowConfig
-from copybarista.destinations import DestinationResult, validate_staged_symlinks
+from copybarista.commands import (
+    CommandResult,
+    CommandRunner,
+    resolve_executable,
+)
+from copybarista.config import (
+    GitDestination,
+    WorkflowConfig,
+)
+from copybarista.destinations import (
+    DestinationResult,
+    validate_staged_symlinks,
+)
 from copybarista.errors import ExportError
 from copybarista.manifest import ExportManifest
-from copybarista.workflow import StagedTree, WorkflowRunner
+from copybarista.workflow import (
+    StagedTree,
+    WorkflowRunner,
+)
 
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")

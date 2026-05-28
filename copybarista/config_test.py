@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from copybarista.config import load_config, workflow_to_toml
+from copybarista.config import (
+    load_config,
+    workflow_to_toml,
+)
 from copybarista.errors import ConfigError
 
 

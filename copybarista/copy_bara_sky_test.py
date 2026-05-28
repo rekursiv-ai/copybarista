@@ -8,7 +8,9 @@ import pytest
 
 from copybarista.cli import main
 from copybarista.config import load_config
-from copybarista.copy_bara_sky import translate_copy_bara_sky_to_toml
+from copybarista.copy_bara_sky import (
+    translate_copy_bara_sky_to_toml,
+)
 from copybarista.errors import ConfigError
 
 

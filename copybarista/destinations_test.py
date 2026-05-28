@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from copybarista.destinations import write_folder_destination
+from copybarista.destinations import (
+    write_folder_destination,
+)
 from copybarista.errors import ExportError
 from copybarista.workflow import StagedTree
 

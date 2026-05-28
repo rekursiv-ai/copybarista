@@ -6,9 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from copybarista.config import ForbiddenPathRule, ForbiddenTextRule, LeakCheck
+from copybarista.config import (
+    ForbiddenPathRule,
+    ForbiddenTextRule,
+    LeakCheck,
+)
 from copybarista.errors import LeakCheckError
-from copybarista.leak_check import check_leaks, enforce_leak_check
+from copybarista.leak_check import (
+    check_leaks,
+    enforce_leak_check,
+)
 
 
 def test_check_leaks_reports_forbidden_paths_and_text(tmp_path: Path):

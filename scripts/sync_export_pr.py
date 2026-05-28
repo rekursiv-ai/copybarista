@@ -1,14 +1,22 @@
-"""Run a source-to-public Copybarista GitHub sync.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../../../.." && pwd)"
+exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" uv --quiet run --no-project --with pyyaml --with ruff python3 "$0" "$@"
+Run a source-to-public Copybarista GitHub sync.
 
 GitHub Actions should stay as a thin wrapper: check out repositories, set up
 Python and uv, pass credentials through `GH_TOKEN`, then call this script. The
 script owns the sync behavior so branch naming, validation, project checks, PR
 body generation, and no-diff handling can be tested outside Actions.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO, cast
 
@@ -16,11 +24,17 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+
+from copybarista.sync_setup import (
+    SyncSettings,
+    load_sync_settings,
+)
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -49,7 +63,11 @@ PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 def main(argv: list[str] | None = None) -> None:
     """Run source-to-public export validation and PR creation."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _apply_project_discovery(argv)
     args = _parser().parse_args(argv)
+    if not args.project_path:
+        _parser().error("--project-path is required")
     forbidden_pr_text = _split_forbidden_text(args.forbidden_pr_text)
     pr_text = export_pr_text(
         title=args.pr_title,
@@ -89,7 +107,7 @@ def main(argv: list[str] | None = None) -> None:
             publish_source_rev=args.publish_source_rev,
         ),
         forbidden_pr_text=forbidden_pr_text,
-        auto_merge=_string_bool(args.auto_merge),
+        auto_merge=args.auto_merge,
         refresh_public_lockfile=args.refresh_public_lockfile,
         skip_source_validation=args.skip_source_validation,
         runner_temp=Path(args.runner_temp),
@@ -98,6 +116,7 @@ def main(argv: list[str] | None = None) -> None:
         else None,
         type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
         smoke_import=args.smoke_import,
+        dry_run=args.dry_run,
     )
     try:
         run_export_sync(request)
@@ -133,6 +152,7 @@ class ExportRequest:
     release_check_script: Path | None
     type_check_targets: tuple[str, ...]
     smoke_import: str
+    dry_run: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -236,12 +256,28 @@ class PrReplayError(RuntimeError):
 
 def run_export_sync(request: ExportRequest) -> None:
     """Validate, export, replace the public checkout, and open/update a PR."""
+    dry_public_dir = None
+    if request.dry_run:
+        dry_public_dir = _clone_public_checkout_for_dry_run(
+            public_dir=request.public_dir
+        )
+        _log(f"Dry run: using temporary public checkout at {dry_public_dir}.")
+        request = replace(request, public_dir=dry_public_dir)
+    try:
+        _run_export_sync(request)
+    finally:
+        if dry_public_dir is not None:
+            _delete_path(dry_public_dir)
+
+
+def _run_export_sync(request: ExportRequest) -> None:
+    """Run export sync against the request's public checkout."""
     project = request.source_dir / request.project_path
     export_dir = Path(tempfile.mkdtemp(prefix="copybarista-public-"))
     manifest = request.runner_temp / "copybarista-manifest.json"
     dist_dir = request.runner_temp / "copybarista-dist"
     _log("Resolving export PR replay state.")
-    pr_plan = _resolve_pr_replay_plan(request=request)
+    pr_plan = _resolve_pr_replay_plan(request=request, pr_template="")
 
     if request.skip_source_validation:
         _log("Skipping source checkout validation.")
@@ -262,6 +298,11 @@ def run_export_sync(request: ExportRequest) -> None:
             root=export_dir,
             script=request.release_check_script,
         )
+    pr_plan = _render_pr_replay_plan_body(
+        request=request,
+        pr_plan=pr_plan,
+        pr_template=_read_pr_template(export_dir),
+    )
     _log("Replacing public checkout contents.")
     _replace_tree(source=export_dir, destination=request.public_dir)
     if request.refresh_public_lockfile:
@@ -281,6 +322,9 @@ def run_export_sync(request: ExportRequest) -> None:
         )
     finally:
         _delete_path(validation_dir)
+    if request.dry_run:
+        _log("Dry run complete; skipped public checkout and GitHub mutations.")
+        return
     _log("Opening or updating export PR.")
     _open_or_update_export_pr(request=request, pr_plan=pr_plan)
     if request.auto_merge:
@@ -292,8 +336,21 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Open or update a Copybarista export PR."
     )
+    parser.add_argument(
+        "project_dir",
+        nargs="?",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a project directory with copy.barista.toml and "
+            "copybarista.sync.toml. When given (or when the current working "
+            "directory contains both files), sync settings are loaded and used "
+            "to fill in --project-path, --source-dir, --public-dir, "
+            "--target-repo, and the sync-derived flags."
+        ),
+    )
     parser.add_argument("--source-dir", default="source")
-    parser.add_argument("--project-path", required=True)
+    parser.add_argument("--project-path", default="")
     parser.add_argument("--public-dir", default="public")
     parser.add_argument("--target-repo", default=os.environ.get("TARGET_REPO", ""))
     parser.add_argument("--base-branch", default=os.environ.get("BASE_BRANCH", "main"))
@@ -362,7 +419,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-message",
-        default=os.environ.get("COPYBARISTA_SOURCE_MESSAGE", ""),
+        default=os.environ.get(
+            "COPYBARISTA_SOURCE_MESSAGE",
+            os.environ.get("GITHUB_EVENT_HEAD_COMMIT_MESSAGE", ""),
+        ),
         help="Source commit message used when commit-message PR text is enabled.",
     )
     parser.add_argument(
@@ -379,13 +439,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--auto-merge",
+        nargs="?",
+        const="true",
         default=os.environ.get("COPYBARISTA_AUTO_MERGE", "false"),
+        type=_string_bool,
         help="Enable GitHub PR auto-merge for the generated export branch.",
     )
     parser.add_argument(
         "--refresh-public-lockfile",
         action="store_true",
         help="Run uv lock in the exported public checkout before validation.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run against a temporary public checkout and skip GitHub mutations.",
     )
     parser.add_argument(
         "--skip-source-validation",
@@ -420,6 +488,84 @@ def _parser() -> argparse.ArgumentParser:
         help="Optional module imported from the built wheel as a smoke test.",
     )
     return parser
+
+
+def _apply_project_discovery(argv: list[str]) -> list[str]:
+    """Return argv augmented with defaults derived from the positional project."""
+    pre_args = _parser().parse_args(argv)
+    if pre_args.project_dir is None:
+        return argv
+    project_dir = pre_args.project_dir.resolve()
+    settings = load_sync_settings(project_dir / "copybarista.sync.toml")
+    return _argv_from_settings(project_dir=project_dir, settings=settings) + argv
+
+
+def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[str]:
+    """Render sync settings as argv defaults to prepend before explicit args."""
+    source_dir = _git_toplevel(project_dir)
+    public_dir = source_dir.parent / settings.public_repo.rsplit("/", 1)[-1]
+    argv = [
+        "--source-dir",
+        str(source_dir),
+        "--project-path",
+        str(project_dir.relative_to(source_dir)),
+        "--public-dir",
+        str(public_dir),
+        "--target-repo",
+        settings.public_repo,
+        "--source-branch",
+        "dry-run",
+        "--branch-prefix",
+        settings.export_prefix,
+        "--sync-label",
+        settings.sync_label,
+        "--sync-user-name",
+        settings.sync_user_name,
+        "--sync-user-email",
+        settings.sync_user_email,
+        "--pr-default-title",
+        settings.pr_default_title,
+        "--pr-default-body",
+        settings.pr_default_body,
+        "--pr-scope",
+        settings.package_name,
+        "--replay-bootstrap-base",
+        settings.replay_bootstrap_base,
+        "--smoke-import",
+        settings.smoke_import,
+        "--require-pr-metadata"
+        if settings.require_pr_metadata
+        else "--no-require-pr-metadata",
+        "--publish-source-rev"
+        if settings.publish_source_rev
+        else "--no-publish-source-rev",
+    ]
+    if settings.refresh_public_lockfile:
+        argv.append("--refresh-public-lockfile")
+    if settings.release_check_script:
+        argv.extend(["--release-check-script", settings.release_check_script])
+    for target in settings.type_check_targets:
+        argv.extend(["--type-check-target", target])
+    for term in settings.forbidden_pr_text:
+        argv.extend(["--forbidden-pr-text", term])
+    return argv
+
+
+def _git_toplevel(start: Path) -> Path:
+    """Return the Git working tree root containing ``start``."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 -- git from PATH.
+        cwd=start,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"Cannot find Git repository containing {start}: "
+            "pass --source-dir or run from within a Git checkout."
+        )
+    return Path(result.stdout.strip())
 
 
 def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> None:
@@ -465,6 +611,7 @@ def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "run",
             "ty",
             "check",
+            ".",
         ],
         cwd=project,
     )
@@ -508,24 +655,13 @@ def _export_public_tree(
 
 def _check_release_tree(*, project: Path, root: Path, script: Path) -> None:
     """Run release-tree policy validation against one tree."""
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "python",
-            str(project / script),
-            str(root),
-        ]
-    )
+    _run([sys.executable, str(project / script), str(root)])
 
 
 def _replace_tree(*, source: Path, destination: Path) -> None:
     """Replace public package contents while preserving repo-owned metadata."""
     for path in destination.iterdir():
-        if path.name in {".git", ".github"}:
+        if path.name == ".git":
             continue
         _delete_path(path)
     for path in source.iterdir():
@@ -546,6 +682,38 @@ def _copy_validation_tree(*, source: Path, destination: Path) -> None:
             shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())
         else:
             shutil.copy2(path, target, follow_symlinks=False)
+
+
+def _clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
+    """Clone the public checkout locally for strict dry-run mutations.
+
+    When ``public_dir`` is absent, initialize an empty public repository so
+    dry-run still exercises the export pipeline without a sibling checkout.
+    """
+    dry_public_dir = Path(tempfile.mkdtemp(prefix="copybarista-dry-public-"))
+    _delete_path(dry_public_dir)
+    if public_dir.is_dir():
+        _run(["git", "clone", "--no-local", str(public_dir), str(dry_public_dir)])
+        return dry_public_dir
+    _log(f"Dry run: public checkout {public_dir} not found; using empty repo.")
+    dry_public_dir.mkdir(parents=True)
+    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=dry_public_dir)
+    _run(
+        [
+            "git",
+            "-c",
+            "user.name=copybarista-dry-run",
+            "-c",
+            "user.email=copybarista@example.com",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        cwd=dry_public_dir,
+    )
+    return dry_public_dir
 
 
 def _refresh_public_lockfile(*, public_dir: Path) -> None:
@@ -632,7 +800,9 @@ def _run_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> N
     )
 
 
-def _resolve_pr_replay_plan(*, request: ExportRequest) -> PrReplayPlan:
+def _resolve_pr_replay_plan(
+    *, request: ExportRequest, pr_template: str
+) -> PrReplayPlan:
     """Resolve the PR title/body by replaying source commit metadata."""
     current_source_rev = _current_source_rev(
         source_dir=request.source_dir,
@@ -697,18 +867,32 @@ def _resolve_pr_replay_plan(*, request: ExportRequest) -> PrReplayPlan:
         f"authors={_format_source_authors(state.authors)} "
         f"applied=sha256:{state.applied_source_digest[:12]}"
     )
-    return PrReplayPlan(
-        state=state,
-        body=_render_pr_body(
+    return _render_pr_replay_plan_body(
+        request=request,
+        pr_plan=PrReplayPlan(
             state=state,
+            body="",
+            replay_base=replay_base,
+            replay_base_digest=_source_rev_digest(replay_base) if replay_base else "",
+            current_pr=current_pr,
+        ),
+        pr_template=pr_template,
+    )
+
+
+def _render_pr_replay_plan_body(
+    *, request: ExportRequest, pr_plan: PrReplayPlan, pr_template: str
+) -> PrReplayPlan:
+    """Render PR body text from resolved replay state."""
+    return replace(
+        pr_plan,
+        body=_render_pr_body(
+            state=pr_plan.state,
             branch=request.branch,
             sync_label=request.sync_label,
             publish_source_rev=request.replay_settings.publish_source_rev,
-            pr_template=_read_pr_template(request.public_dir),
+            pr_template=pr_template,
         ),
-        replay_base=replay_base,
-        replay_base_digest=_source_rev_digest(replay_base) if replay_base else "",
-        current_pr=current_pr,
     )
 
 
@@ -1376,7 +1560,7 @@ def _render_pr_body(
         if publish_source_rev
         else f"sha256:{state.applied_source_digest}"
     )
-    if marker_value == "sha256:":
+    if marker_value in {"sha:", "sha256:"}:
         raise PrReplayError("Cannot render PR body without an applied source marker.")
     lines = _render_pr_summary_lines(state)
     footer = "\n".join(
@@ -1654,20 +1838,22 @@ def _validate_metadata_text(
 def _replace_pr_state(
     state: PrReplayState,
     *,
-    title: str = "",
-    body_intro: str = "",
-    applied_source_rev: str = "",
-    applied_source_digest: str = "",
+    title: str | None = None,
+    body_intro: str | None = None,
+    applied_source_rev: str | None = None,
+    applied_source_digest: str | None = None,
 ) -> PrReplayState:
     """Return `state` with selected scalar fields replaced."""
-    return PrReplayState(
-        title=title or state.title,
-        authors=state.authors,
-        body_intro=body_intro or state.body_intro,
-        body_entries=state.body_entries,
-        applied_source_rev=applied_source_rev or state.applied_source_rev,
-        applied_source_digest=applied_source_digest or state.applied_source_digest,
-        metadata_count=state.metadata_count,
+    return replace(
+        state,
+        title=state.title if title is None else title,
+        body_intro=state.body_intro if body_intro is None else body_intro,
+        applied_source_rev=state.applied_source_rev
+        if applied_source_rev is None
+        else applied_source_rev,
+        applied_source_digest=state.applied_source_digest
+        if applied_source_digest is None
+        else applied_source_digest,
     )
 
 
@@ -1699,7 +1885,7 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
     if not entries_text:
         return ()
     entries: list[PrBodyEntry] = []
-    current_marker = ""
+    current_marker: str | None = ""
     current_lines: list[str] = []
     for line in entries_text.splitlines():
         stripped = line.strip()
@@ -1712,6 +1898,8 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
             current_marker = _entry_commit_marker(stripped)
             current_lines = []
         elif stripped.startswith("- "):
+            if current_marker is None:
+                continue
             marker = current_marker if not current_lines else ""
             _append_parsed_body_entry(
                 entries=entries,
@@ -1733,10 +1921,10 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
 
 
 def _append_parsed_body_entry(
-    *, entries: list[PrBodyEntry], commit_sha: str, lines: list[str]
+    *, entries: list[PrBodyEntry], commit_sha: str | None, lines: list[str]
 ) -> None:
     """Append a parsed body entry if one is in progress."""
-    if not lines:
+    if not lines or commit_sha is None:
         return
     entries.append(PrBodyEntry(commit_sha=commit_sha, text="\n".join(lines).strip()))
 
@@ -1756,12 +1944,12 @@ def _entry_marker(entry: PrBodyEntry) -> str:
     return f"{PR_ENTRY_PREFIX}source=sha256:{_source_rev_digest(entry.commit_sha)} -->"
 
 
-def _entry_commit_marker(line: str) -> str:
+def _entry_commit_marker(line: str) -> str | None:
     """Return the stored public-safe marker for an append entry."""
     for token in line.removeprefix(PR_ENTRY_PREFIX).removesuffix(" -->").split():
         if token.startswith("source="):
             return token.removeprefix("source=")
-    raise PrReplayError("PR body entry marker is missing source.")
+    return None
 
 
 def _write_pr_body_file(*, request: ExportRequest, body: str) -> None:
@@ -1845,6 +2033,11 @@ def export_branch_name(
     if source_branch.strip():
         branch = f"{prefix}{_branch_component(source_branch)}"
     else:
+        if source_sha == "manual":
+            sys.stderr.write(
+                "--branch or --source-branch is required for manual runs.\n"
+            )
+            raise SystemExit(2)
         branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
     return _validated_generated_branch(branch=branch, prefix=prefix)
 
@@ -2003,7 +2196,7 @@ def _run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess while streaming commands for Action logs."""
-    _log("+ " + " ".join(argv))
+    _log("+ " + shlex.join(argv))
     # The caller provides an argument vector, not a shell string.
     result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
         argv,
@@ -2014,6 +2207,7 @@ def _run(
         text=True,
     )
     if check and result.returncode != 0:
+        _write_process_output(result)
         raise SystemExit(result.returncode)
     return result
 

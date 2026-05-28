@@ -19,7 +19,10 @@ from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
 from copybarista.globs import GlobSet, Globstar
-from copybarista.manifest import TransformFileReport, TransformReport
+from copybarista.manifest import (
+    TransformFileReport,
+    TransformReport,
+)
 
 
 class _FileMapping(Protocol):

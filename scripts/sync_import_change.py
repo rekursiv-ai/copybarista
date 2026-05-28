@@ -1,10 +1,18 @@
-"""Run a public-to-source Copybarista GitHub sync.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../../../.." && pwd)"
+exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" uv --quiet run --no-project --with pyyaml --with ruff python3 "$0" "$@"
+Run a public-to-source Copybarista GitHub sync.
 
 The workflow checks out public base/head trees and a target source checkout,
 then calls this script. Keeping the import, validation, branch creation, and PR
 body logic here makes the GitHub Action easier to audit and gives us local unit
 coverage for the behavior that changes over time.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 

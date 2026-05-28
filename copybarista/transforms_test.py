@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sys
+
 import pytest
 
 from copybarista import transforms
@@ -778,8 +780,8 @@ def test_ruff_format_uses_current_python_environment(
         ),
     )
 
-    assert calls[0][:3] == [transforms.sys.executable, "-m", "ruff"]
-    assert calls[1][:3] == [transforms.sys.executable, "-m", "ruff"]
+    assert calls[0][:3] == [sys.executable, "-m", "ruff"]
+    assert calls[1][:3] == [sys.executable, "-m", "ruff"]
 
 
 def test_uncomment_single_line(tmp_path: Path):

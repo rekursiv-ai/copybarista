@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import subprocess
+import sys
 
 import pytest
 
@@ -27,6 +28,7 @@ from scripts.sync_export_pr import (
     _parse_pr_metadata_log,
     _public_pr_text,
     _render_pr_body,
+    _replace_pr_state,
     _replace_tree,
     _source_rev_digest,
     _state_from_pr_body,
@@ -81,6 +83,7 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         release_check_script=None,
         type_check_targets=(".",),
         smoke_import="",
+        dry_run=False,
     )
 
 
@@ -110,6 +113,8 @@ def test_main_accepts_generic_project_validation_args(
         [
             "--project-path",
             "packages/configgle",
+            "--source-branch",
+            "main",
             "--release-check-script",
             "scripts/check_release_tree.py",
             "--type-check-target",
@@ -127,6 +132,204 @@ def test_main_accepts_generic_project_validation_args(
     assert captured[0].smoke_import == "configgle"
 
 
+def test_main_accepts_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "packages/example",
+            "--source-branch",
+            "main",
+            "--dry-run",
+        ]
+    )
+
+    assert captured[0].dry_run
+
+
+def test_main_derives_request_from_project_positional(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project_dir, source_dir = _project_with_sync_settings(tmp_path)
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    def fake_git_toplevel(start: Path) -> Path:
+        del start
+        return source_dir
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
+
+    sync_export_pr.main([str(project_dir), "--dry-run"])
+
+    request = captured[0]
+    assert request.dry_run
+    assert request.source_dir == source_dir
+    assert request.project_path == Path("packages/sagent")
+    assert request.public_dir == source_dir.parent / "sagent"
+    assert request.target_repo == "rekursiv-ai/sagent"
+    assert request.smoke_import == "sagent"
+    assert request.type_check_targets == (".",)
+    assert request.forbidden_pr_text == ("src",)
+    assert request.refresh_public_lockfile
+    assert request.sync_label == "Sagent"
+    assert request.replay_settings.scope == "sagent"
+
+
+def test_main_explicit_flag_overrides_sync_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project_dir, source_dir = _project_with_sync_settings(tmp_path)
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    def fake_git_toplevel(start: Path) -> Path:
+        del start
+        return source_dir
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
+
+    sync_export_pr.main(
+        [str(project_dir), "--dry-run", "--smoke-import", "alt_package"]
+    )
+
+    assert captured[0].smoke_import == "alt_package"
+
+
+def _project_with_sync_settings(tmp_path: Path) -> tuple[Path, Path]:
+    source_dir = tmp_path / "src"
+    project_dir = source_dir / "packages" / "sagent"
+    project_dir.mkdir(parents=True)
+    (project_dir / "copy.barista.toml").write_text("# stub\n", encoding="utf-8")
+    (project_dir / "copybarista.sync.toml").write_text(
+        """\
+[sync]
+package_name = "sagent"
+sync_label = "Sagent"
+sync_user_name = "sagent-bot"
+sync_user_email = "sagent-bot@example.com"
+source_root = "packages/sagent"
+public_repo = "rekursiv-ai/sagent"
+source_repo = "rekursiv-ai/src"
+copybarista_project_path = "packages/copybarista"
+smoke_import = "sagent"
+type_check_targets = ["."]
+forbidden_pr_text = ["src"]
+refresh_public_lockfile = true
+
+[pull_request]
+default_title = "Update Sagent export"
+default_body = "Updates the generated Sagent public repository export."
+""",
+        encoding="utf-8",
+    )
+    return project_dir, source_dir
+
+
+def test_main_accepts_auto_merge_value_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "packages/example",
+            "--source-branch",
+            "main",
+            "--auto-merge=false",
+        ]
+    )
+
+    assert not captured[0].auto_merge
+
+
+def test_main_accepts_auto_merge_as_boolean_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "packages/example",
+            "--source-branch",
+            "main",
+            "--auto-merge",
+        ]
+    )
+
+    assert captured[0].auto_merge
+
+
+def test_main_passes_github_source_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ExportRequest] = []
+    monkeypatch.setenv(
+        "GITHUB_EVENT_HEAD_COMMIT_MESSAGE",
+        "Commit title\n\nCommit body.",
+    )
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.main(
+        [
+            "--project-path",
+            "packages/example",
+            "--source-branch",
+            "main",
+            "--use-source-message-pr-text",
+        ]
+    )
+
+    assert captured[0].pr_title == "Commit title"
+    assert captured[0].pr_body == "Commit body."
+
+
+def test_main_rejects_manual_branch_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        raise AssertionError(request)
+
+    monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+
+    with pytest.raises(SystemExit) as error:
+        sync_export_pr.main(["--project-path", "packages/example"])
+
+    assert error.value.code == 2
+
+
 def test_main_accepts_skip_source_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -141,6 +344,8 @@ def test_main_accepts_skip_source_validation(
         [
             "--project-path",
             "packages/example",
+            "--source-branch",
+            "main",
             "--skip-source-validation",
         ]
     )
@@ -413,6 +618,34 @@ def test_replay_append_body_keeps_multiple_entries_from_same_commit():
     )
 
 
+def test_replace_pr_state_allows_empty_overrides():
+    base = PrReplayState(
+        title="Title",
+        authors=(),
+        body_intro="Body",
+        body_entries=(),
+        applied_source_rev="rev",
+        applied_source_digest="digest",
+        metadata_count=0,
+    )
+
+    assert _replace_pr_state(
+        base,
+        title="",
+        body_intro="",
+        applied_source_rev="",
+        applied_source_digest="",
+    ) == PrReplayState(
+        title="",
+        authors=(),
+        body_intro="",
+        body_entries=(),
+        applied_source_rev="",
+        applied_source_digest="",
+        metadata_count=0,
+    )
+
+
 def test_replay_replace_body_resets_previous_append_entries():
     state = replay_pr_metadata(
         base=PrReplayState(
@@ -619,11 +852,10 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    base_request = _export_request(tmp_path)
     request = replace(
-        _export_request(tmp_path),
-        replay_settings=replace(
-            _export_request(tmp_path).replay_settings, scope="sagent"
-        ),
+        base_request,
+        replay_settings=replace(base_request.replay_settings, scope="sagent"),
     )
 
     def fake_current_source_rev(*, source_dir: Path, fallback: str) -> str:
@@ -700,7 +932,7 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         fake_source_pr_metadata,
     )
 
-    plan = sync_export_pr._resolve_pr_replay_plan(request=request)
+    plan = sync_export_pr._resolve_pr_replay_plan(request=request, pr_template="")
 
     assert plan.state.authors == (
         SourceAuthor(name="Source Author", email="source@example.com"),
@@ -710,6 +942,24 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
     assert "scope=sagent branch=copybarista/export/main" in output
     assert "PR metadata replay: patches=1 commits=1" in output
     assert "authors=Source Author <source@example.com>" in output
+
+
+def test_render_pr_body_rejects_empty_raw_source_marker():
+    with pytest.raises(sync_export_pr.PrReplayError, match="applied source marker"):
+        _render_pr_body(
+            state=PrReplayState(
+                title="Public title",
+                authors=(),
+                body_intro="Public body.",
+                body_entries=(),
+                applied_source_rev="",
+                applied_source_digest="digest",
+                metadata_count=0,
+            ),
+            branch="copybarista/export/main",
+            sync_label="Copybarista",
+            publish_source_rev=True,
+        )
 
 
 def test_render_pr_body_includes_state_marker_without_raw_source_sha():
@@ -842,6 +1092,31 @@ def test_render_pr_body_round_trips_multiline_append_entries():
         state.body_entries[0].commit_sha == f"sha256:{_source_rev_digest(source_rev)}"
     )
     assert state.body_entries[0].text == "First line.\nSecond line."
+
+
+def test_state_from_pr_body_skips_malformed_entry_marker():
+    body = (
+        "## Summary\n\n"
+        "Public summary.\n\n"
+        "### Updates\n\n"
+        "<!-- copybarista:pr-entry -->\n"
+        "- Corrupt old update.\n"
+        "<!-- copybarista:pr-entry source=sha256:reachable -->\n"
+        "- Reachable update.\n\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        "<!-- copybarista:pr-state version=1 applied=sha256:beef -->\n"
+    )
+
+    state = _state_from_pr_body(
+        title="Public title",
+        body=body,
+        default_body="Default body.",
+    )
+
+    assert state.body_entries == (
+        PrBodyEntry(commit_sha="sha256:reachable", text="Reachable update."),
+    )
 
 
 def test_state_from_pr_body_preserves_horizontal_rule_in_summary():
@@ -1309,7 +1584,11 @@ def test_export_public_tree_uses_current_copybarista_env(
         manifest=tmp_path / "manifest.json",
     )
 
-    assert calls[0][:3] == [sync_export_pr.sys.executable, "-m", "copybarista"]
+    assert calls[0][:3] == [
+        sys.executable,
+        "-m",
+        "copybarista",
+    ]
     assert "--project" not in calls[0]
 
 
@@ -1364,7 +1643,7 @@ def test_gh_pr_exists_retries_transient_github_failures(
         return None
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-    monkeypatch.setattr(sync_export_pr.time, "sleep", no_sleep)
+    monkeypatch.setattr("time.sleep", no_sleep)
 
     assert not _gh_pr_exists(
         branch="copybarista/export/main",
@@ -1394,7 +1673,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
         return None
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-    monkeypatch.setattr(sync_export_pr.time, "sleep", no_sleep)
+    monkeypatch.setattr("time.sleep", no_sleep)
 
     with pytest.raises(SystemExit) as error:
         _gh_pr_exists(
@@ -1432,11 +1711,92 @@ def test_replace_tree_preserves_git_and_removes_stale_files(tmp_path: Path):
     _replace_tree(source=source, destination=destination)
 
     assert (destination / ".git/HEAD").read_text(encoding="utf-8")
-    assert (destination / ".github/workflows/import.yml").read_text(encoding="utf-8")
+    assert not (destination / ".github/workflows/import.yml").exists()
     assert (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert not (destination / "stale.txt").exists()
     assert not (destination / "pkg/old.py").exists()
     assert (destination / "pkg/module.py").read_text(encoding="utf-8") == "new\n"
+
+
+def test_run_export_sync_renders_body_with_exported_pr_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    source_dir = tmp_path / "source"
+    public_dir.mkdir()
+    source_dir.mkdir()
+    opened: list[str] = []
+
+    def fake_resolve_pr_replay_plan(
+        *, request: ExportRequest, pr_template: str
+    ) -> sync_export_pr.PrReplayPlan:
+        del request, pr_template
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_export_public_tree(
+        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    ) -> None:
+        del project, source_dir, manifest
+        (export_dir / ".github").mkdir()
+        (export_dir / ".github/PULL_REQUEST_TEMPLATE.md").write_text(
+            "## Summary\n\nExported template placeholder.\n",
+            encoding="utf-8",
+        )
+        (export_dir / "pkg").mkdir()
+        (export_dir / "pkg/module.py").write_text("source\n", encoding="utf-8")
+
+    def fake_validate_public(
+        *,
+        public_dir: Path,
+        dist_dir: Path,
+        release_check_script: Path | None,
+        frozen_sync: bool,
+        type_check_targets: tuple[str, ...],
+        smoke_import: str,
+    ) -> None:
+        del (
+            public_dir,
+            dist_dir,
+            release_check_script,
+            frozen_sync,
+            type_check_targets,
+            smoke_import,
+        )
+
+    def fake_open_or_update_export_pr(
+        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+    ) -> None:
+        del request
+        opened.append(pr_plan.body)
+
+    monkeypatch.setattr(
+        sync_export_pr, "_resolve_pr_replay_plan", fake_resolve_pr_replay_plan
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(
+        sync_export_pr, "_open_or_update_export_pr", fake_open_or_update_export_pr
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=source_dir,
+            public_dir=public_dir,
+            skip_source_validation=True,
+        )
+    )
+
+    assert opened
+    assert opened[0].startswith("## Summary\n\nPublic body.")
+    assert "Exported template placeholder" not in opened[0]
 
 
 def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
@@ -1451,9 +1811,9 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     opened: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest
+        *, request: ExportRequest, pr_template: str
     ) -> sync_export_pr.PrReplayPlan:
-        del request
+        del request, pr_template
         return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="Public body.\n",
@@ -1520,6 +1880,108 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     assert not (public_dir / "uv.lock").exists()
 
 
+def test_run_export_sync_dry_run_uses_temp_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    source_dir = tmp_path / "source"
+    dry_public_dir = tmp_path / "dry-public"
+    public_dir.mkdir()
+    source_dir.mkdir()
+    (public_dir / "existing.txt").write_text("original\n", encoding="utf-8")
+    calls: list[tuple[str, Path]] = []
+
+    def fake_clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
+        calls.append(("clone", public_dir))
+        dry_public_dir.mkdir()
+        (dry_public_dir / "existing.txt").write_text("original\n", encoding="utf-8")
+        return dry_public_dir
+
+    def fake_resolve_pr_replay_plan(
+        *, request: ExportRequest, pr_template: str
+    ) -> sync_export_pr.PrReplayPlan:
+        calls.append(("resolve", request.public_dir))
+        assert pr_template == ""
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="Public body.\n",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_export_public_tree(
+        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    ) -> None:
+        del project, source_dir, manifest
+        calls.append(("export", export_dir))
+        (export_dir / "exported.txt").write_text("exported\n", encoding="utf-8")
+
+    def fake_validate_public(
+        *,
+        public_dir: Path,
+        dist_dir: Path,
+        release_check_script: Path | None,
+        frozen_sync: bool,
+        type_check_targets: tuple[str, ...],
+        smoke_import: str,
+    ) -> None:
+        del (
+            dist_dir,
+            release_check_script,
+            frozen_sync,
+            type_check_targets,
+            smoke_import,
+        )
+        calls.append(("validate", public_dir))
+        assert (public_dir / "exported.txt").read_text(encoding="utf-8") == "exported\n"
+
+    def fail_open_or_update_export_pr(
+        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+    ) -> None:
+        del request, pr_plan
+        raise AssertionError("dry run must not mutate public PR state")
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_clone_public_checkout_for_dry_run",
+        fake_clone_public_checkout_for_dry_run,
+    )
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fail_open_or_update_export_pr,
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=source_dir,
+            public_dir=public_dir,
+            dry_run=True,
+            skip_source_validation=True,
+        )
+    )
+
+    assert (public_dir / "existing.txt").read_text(encoding="utf-8") == "original\n"
+    assert not (public_dir / "exported.txt").exists()
+    assert [(name, path) for name, path in calls if name in {"clone", "resolve"}] == [
+        ("clone", public_dir),
+        ("resolve", dry_public_dir),
+    ]
+    assert calls[-1][0] == "validate"
+    assert calls[-1][1] != public_dir
+    assert not dry_public_dir.exists()
+
+
 def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1531,9 +1993,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
     calls: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest
+        *, request: ExportRequest, pr_template: str
     ) -> sync_export_pr.PrReplayPlan:
-        del request
+        del request, pr_template
         return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="Public body.\n",
@@ -1629,6 +2091,7 @@ def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
         "run",
         "ty",
         "check",
+        ".",
     ] in calls
 
 

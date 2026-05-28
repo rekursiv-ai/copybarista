@@ -8,7 +8,9 @@ import tempfile
 import time
 
 from copybarista.config import WorkflowConfig
-from copybarista.destinations import write_folder_destination
+from copybarista.destinations import (
+    write_folder_destination,
+)
 from copybarista.manifest import ExportManifest
 from copybarista.workflow import WorkflowRunner
 
