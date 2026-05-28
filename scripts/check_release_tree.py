@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet run --no-project python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Validate that an exported Copybarista tree is safe to publish.
 
 This check is intentionally narrower than the normal test suite. It catches
@@ -215,3 +215,4 @@ def _content_paths(root: Path) -> tuple[Path, ...]:
 
 if __name__ == "__main__":
     main()
+# vim: ft=python
