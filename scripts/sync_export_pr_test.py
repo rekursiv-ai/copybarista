@@ -491,6 +491,75 @@ def test_base_pr_state_recovers_existing_entry_authors(
     assert "Recovered PR entry author:" in capsys.readouterr().out
 
 
+def test_base_pr_state_drops_stale_entry_markers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    previous_sha = "1111111"
+    current_sha = "2222222"
+    stale_marker = "sha256:missing"
+    body = (
+        "## Summary\n\n"
+        "Public summary.\n\n"
+        "### Updates\n\n"
+        f"<!-- copybarista:pr-entry source={stale_marker} -->\n"
+        "- Old update.\n"
+        f"<!-- copybarista:pr-entry source=sha256:{_source_rev_digest(previous_sha)} -->\n"
+        "- Reachable update.\n\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        f"<!-- copybarista:pr-state version=1 "
+        f"applied=sha256:{_source_rev_digest(previous_sha)} -->"
+    )
+    request = _export_request(tmp_path)
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["git", "rev-list"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=f"{current_sha}\n{previous_sha}\n",
+            )
+        if argv[:4] == ["git", "show", "-s", "--format=%aN%x00%aE"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="Previous Author\0previous@example.com\n",
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    state = _base_pr_state(
+        request=request,
+        current_pr=sync_export_pr.CurrentPr(
+            title="Public title",
+            body=body,
+            number=7,
+            url="https://example.test/pr/7",
+        ),
+        current_source_rev=current_sha,
+        current_source_digest=_source_rev_digest(current_sha),
+    )
+
+    assert state.authors == (
+        SourceAuthor(name="Previous Author", email="previous@example.com"),
+    )
+    assert state.body_entries == (
+        PrBodyEntry(
+            commit_sha=f"sha256:{_source_rev_digest(previous_sha)}",
+            text="Reachable update.",
+        ),
+    )
+    output = capsys.readouterr().out
+    assert "Dropped stale PR entry marker: marker=sha256:missing" in output
+    assert "Recovered PR entry author:" in output
+
+
 def test_resolve_pr_replay_plan_logs_replay_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

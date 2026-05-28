@@ -3,7 +3,7 @@ name = "copybarista"
 version = "0.1.2"
 description = "Python-first repository subtree export tool."
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [
     {name = "rekursiv.ai"},
@@ -38,9 +38,12 @@ Changelog = "https://github.com/rekursiv-ai/copybarista/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = [
+    "coverage<7.13",
     "pytest>=8",
     "pytest-cov>=7",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.12",
 ]
 
 [dependency-groups]
@@ -50,9 +53,12 @@ lint = [
     "ruff",
 ]
 test = [
+    "coverage<7.13",
     "pytest>=8",
     "pytest-cov>=7",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.12",
 ]
 typing = [
     "basedpyright>=1.10",
