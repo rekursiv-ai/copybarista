@@ -1,9 +1,15 @@
-"""Remove generated Copybarista development artifacts.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet run --no-project python3 "$0" "$@"
+Remove generated Copybarista development artifacts.
 
 The script intentionally deletes only known project-local paths. It avoids a
 generic recursive cleanup so fixture directories that model generated files
 remain available for tests.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -34,7 +40,7 @@ DEFAULT_TARGETS = (
 
 def main() -> None:
     """Run the cleanup command."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
     parser.add_argument(
         "--venv",
         action="store_true",

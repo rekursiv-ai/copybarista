@@ -1,4 +1,9 @@
-"""Validate that an exported Copybarista tree is safe to publish.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet run --no-project python3 "$0" "$@"
+Validate that an exported Copybarista tree is safe to publish.
 
 This check is intentionally narrower than the normal test suite. It catches
 sync mistakes that make PRs hard to review: private fixtures, build artifacts,
@@ -6,7 +11,8 @@ virtual environments, cache directories, bytecode, nested VCS metadata, and
 missing workflow files. Run it against the raw export before replacing the
 public checkout, and run it again in the public repository with
 `--allow-root-git`.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 

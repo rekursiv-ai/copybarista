@@ -218,7 +218,8 @@ when all required checks pass.
 Expected result:
 
 - The workflow exports `packages/widget` into a temporary tree.
-- The public checkout is replaced except for `.git` and `.github`.
+- The public checkout is replaced except for `.git` and `.github`, preserving
+  the public import workflow copied in step 2.
 - Public tests run if `tests/` exists.
 - A PR opens in the public repository from a `copybarista/export/...` branch.
 - Rerunning with the same generated branch replaces the branch with
@@ -317,10 +318,9 @@ source first when it should survive, then run a fresh export.
 
 Source-to-public sync treats the source repository as canonical. The workflow
 exports the configured subtree into a temporary directory, replaces the public
-checkout contents except `.git` and `.github`, validates the result, and opens
-or updates a public pull request. Merging that PR makes the public repository
-match the latest exported source tree while leaving public-repository workflows
-and settings files in place.
+checkout contents except `.git` and `.github`, validates the result, and opens or
+updates a public pull request. Merging that PR makes the public repository match
+the latest exported source tree while preserving the public import workflow.
 
 The example source-to-public workflow is manual-only because it requires a
 reviewable public PR title and body. To run it automatically on source changes,

@@ -1,4 +1,13 @@
-"""Benchmark Copybarista folder export."""
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../../../.." && pwd)"
+exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" uv --quiet run --no-project --with pyyaml --with ruff python3 "$0" "$@"
+Benchmark Copybarista folder export.
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -15,7 +24,9 @@ import tempfile
 import time
 
 from copybarista.config import load_config
-from copybarista.destinations import write_folder_destination
+from copybarista.destinations import (
+    write_folder_destination,
+)
 from copybarista.manifest import ExportManifest
 from copybarista.workflow import WorkflowRunner
 
@@ -171,7 +182,7 @@ def main() -> None:
 
 def _parser() -> argparse.ArgumentParser:
     """Build the benchmark CLI parser."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
     parser.add_argument("config")
     parser.add_argument("source_ref")
     parser.add_argument("--runs", type=int, default=5)

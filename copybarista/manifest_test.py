@@ -7,7 +7,10 @@ from pathlib import Path
 import hashlib
 import json
 
-from copybarista.manifest import ExportManifest, file_entry
+from copybarista.manifest import (
+    ExportManifest,
+    file_entry,
+)
 
 
 def test_manifest_json_omits_elapsed_time_for_determinism():

@@ -13,7 +13,11 @@ from pathlib import Path
 
 import re
 
-from copybarista.config import ForbiddenPathRule, ForbiddenTextRule, LeakCheck
+from copybarista.config import (
+    ForbiddenPathRule,
+    ForbiddenTextRule,
+    LeakCheck,
+)
 from copybarista.errors import LeakCheckError
 from copybarista.globs import GlobSet, Globstar
 

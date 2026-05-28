@@ -16,7 +16,10 @@ from copybarista.config import (
     WorkflowConfig,
 )
 from copybarista.errors import ExportError
-from copybarista.git import export_git, write_git_destination
+from copybarista.git import (
+    export_git,
+    write_git_destination,
+)
 from copybarista.workflow import WorkflowRunner
 
 

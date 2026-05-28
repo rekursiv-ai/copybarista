@@ -343,7 +343,7 @@ def test_gh_pr_exists_retries_transient_github_failures(
         return None
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
-    monkeypatch.setattr(sync_import_change.time, "sleep", no_sleep)
+    monkeypatch.setattr("time.sleep", no_sleep)
 
     assert not _gh_pr_exists(
         branch="copybarista/import/sha-abcdef123456",
@@ -373,7 +373,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
         return None
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
-    monkeypatch.setattr(sync_import_change.time, "sleep", no_sleep)
+    monkeypatch.setattr("time.sleep", no_sleep)
 
     with pytest.raises(SystemExit) as error:
         _gh_pr_exists(

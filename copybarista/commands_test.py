@@ -8,7 +8,10 @@ import sys
 
 import pytest
 
-from copybarista.commands import CommandRunner, resolve_executable
+from copybarista.commands import (
+    CommandRunner,
+    resolve_executable,
+)
 from copybarista.errors import ExportError
 
 
