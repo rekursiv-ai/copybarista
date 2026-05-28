@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet run --no-project python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Render a Mermaid (.mmd) source file to a lossless WebP asset.
 
 Used to regenerate diagram assets such as ``assets/copybarista-sync.webp``
@@ -120,3 +120,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# vim: ft=python

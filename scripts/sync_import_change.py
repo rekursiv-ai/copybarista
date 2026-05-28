@@ -2,9 +2,7 @@
 # ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../../../.." && pwd)"
-exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" uv --quiet run --no-project --with pyyaml --with ruff python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Run a public-to-source Copybarista GitHub sync.
 
 The workflow checks out public base/head trees and a target source checkout,
@@ -629,3 +627,4 @@ def _log(message: str) -> None:
 
 if __name__ == "__main__":
     main()
+# vim: ft=python
