@@ -26,7 +26,6 @@ from scripts.sync_export_pr import (
     _open_or_update_export_pr,
     _parse_pr_metadata_log,
     _public_pr_text,
-    _remove_public_validation_artifacts,
     _render_pr_body,
     _replace_tree,
     _source_rev_digest,
@@ -34,7 +33,6 @@ from scripts.sync_export_pr import (
     _validate_public,
     _validate_source,
     export_branch_name,
-    export_pr_body,
     export_pr_text,
     replay_pr_metadata,
 )
@@ -148,31 +146,6 @@ def test_main_accepts_skip_source_validation(
     )
 
     assert captured[0].skip_source_validation
-
-
-def test_export_pr_body_contains_review_context():
-    body = export_pr_body(
-        description="Publish the latest sync changes.",
-        branch="copybarista/export/main",
-        sync_label="Copybarista",
-    )
-
-    assert "Publish the latest sync changes." in body
-    assert "Copybarista export branch: `copybarista/export/main`" in body
-    assert "Source commit" not in body
-    assert "Exported files" not in body
-    assert "Workflow:" not in body
-    assert "Do not push manual commits to this generated branch." in body
-
-
-def test_export_pr_body_accepts_custom_sync_label():
-    body = export_pr_body(
-        description="Publish the latest sync changes.",
-        branch="configgle/export/main",
-        sync_label="Configgle",
-    )
-
-    assert "Configgle export branch: `configgle/export/main`" in body
 
 
 def test_parse_pr_metadata_accepts_append_body():
@@ -403,6 +376,43 @@ def test_replay_append_body_adds_entries_in_commit_order():
     )
 
 
+def test_replay_append_body_keeps_multiple_entries_from_same_commit():
+    state = replay_pr_metadata(
+        base=PrReplayState(
+            title="Default title",
+            authors=(),
+            body_intro="Default body.",
+            body_entries=(),
+            applied_source_rev="",
+            applied_source_digest="",
+            metadata_count=0,
+        ),
+        patches=(
+            PrMetadataPatch(
+                commit_sha="1111111",
+                scope="",
+                title="",
+                author=SourceAuthor(name="Commit Author", email="author@example.com"),
+                body="Shared update.",
+                body_mode="append",
+            ),
+            PrMetadataPatch(
+                commit_sha="1111111",
+                scope="sagent",
+                title="",
+                author=SourceAuthor(name="Commit Author", email="author@example.com"),
+                body="Scoped update.",
+                body_mode="append",
+            ),
+        ),
+    )
+
+    assert state.body_entries == (
+        PrBodyEntry(commit_sha="1111111", text="Shared update."),
+        PrBodyEntry(commit_sha="1111111", text="Scoped update."),
+    )
+
+
 def test_replay_replace_body_resets_previous_append_entries():
     state = replay_pr_metadata(
         base=PrReplayState(
@@ -489,6 +499,50 @@ def test_base_pr_state_recovers_existing_entry_authors(
         SourceAuthor(name="Previous Author", email="previous@example.com"),
     )
     assert "Recovered PR entry author:" in capsys.readouterr().out
+
+
+def test_base_pr_state_drops_stale_raw_entry_markers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stale_sha = "1111111"
+    body = (
+        "## Summary\n\n"
+        "Public summary.\n\n"
+        "### Updates\n\n"
+        f"<!-- copybarista:pr-entry source=sha:{stale_sha} -->\n"
+        "- Old update.\n\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        f"<!-- copybarista:pr-state version=1 applied=sha256:{_source_rev_digest(stale_sha)} -->"
+    )
+    request = _export_request(tmp_path)
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    state = _base_pr_state(
+        request=request,
+        current_pr=sync_export_pr.CurrentPr(
+            title="Public title",
+            body=body,
+            number=7,
+            url="https://example.test/pr/7",
+        ),
+        current_source_rev="2222222",
+        current_source_digest=_source_rev_digest("2222222"),
+    )
+
+    assert state.body_entries == ()
+    assert "Dropped stale PR entry marker: marker=sha:111" in capsys.readouterr().out
 
 
 def test_base_pr_state_drops_stale_entry_markers(
@@ -790,9 +844,50 @@ def test_render_pr_body_round_trips_multiline_append_entries():
     assert state.body_entries[0].text == "First line.\nSecond line."
 
 
-def test_applied_marker_rejects_multiple_state_markers():
+def test_state_from_pr_body_preserves_horizontal_rule_in_summary():
+    source_rev = "abc123abc123"
+    body = _render_pr_body(
+        state=PrReplayState(
+            title="Public title",
+            authors=(),
+            body_intro="Before\n\n----\n\nAfter",
+            body_entries=(),
+            applied_source_rev=source_rev,
+            applied_source_digest=_source_rev_digest(source_rev),
+            metadata_count=1,
+        ),
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+    )
+
+    state = _state_from_pr_body(
+        title="Public title",
+        body=body,
+        default_body="Default body.",
+    )
+
+    assert state.body_intro == "Before\n\n----\n\nAfter"
+
+
+def test_applied_marker_ignores_marker_text_in_summary():
+    body = (
+        "## Summary\n\n"
+        "See `<!-- copybarista:pr-state version=1 applied=sha256:dead -->`\n"
+        "in the docs.\n\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        "<!-- copybarista:pr-state version=1 applied=sha256:beef -->\n"
+    )
+
+    assert _applied_marker_from_pr_body(body) == "sha256:beef"
+
+
+def test_applied_marker_rejects_multiple_footer_state_markers():
     body = (
         "Body\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
         "<!-- copybarista:pr-state version=1 applied=sha256:first -->\n"
         "<!-- copybarista:pr-state version=1 applied=sha256:second -->\n"
     )
@@ -832,6 +927,37 @@ def test_unmarked_existing_branch_replays_current_commit(
         )
         == "source-parent"
     )
+
+
+def test_branch_markers_fetches_force_updated_remote_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[:2] == ["git", "fetch"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="")
+        if argv[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    assert not sync_export_pr._branch_markers(
+        branch="copybarista/export/main",
+        cwd=tmp_path,
+    ).exists
+    assert calls[0] == [
+        "git",
+        "fetch",
+        "origin",
+        "+refs/heads/copybarista/export/main:refs/remotes/origin/copybarista/export/main",
+    ]
 
 
 def test_marked_existing_branch_replays_after_applied_source(
@@ -1113,6 +1239,25 @@ def test_export_branch_name_rejects_malformed_explicit_branch():
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "copybarista/export/foo.lock/bar",
+        "copybarista/export/.hidden",
+    ],
+)
+def test_export_branch_name_rejects_git_invalid_components(branch: str):
+    with pytest.raises(SystemExit) as error:
+        export_branch_name(
+            explicit=branch,
+            source_branch="main",
+            source_sha="abcdef",
+            prefix="copybarista/export/",
+        )
+
+    assert error.value.code == 2
+
+
 def test_commit_author_uses_sync_identity():
     assert (
         _commit_author("copybarista", "copybarista@example.com")
@@ -1182,6 +1327,20 @@ def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
         repo="rekursiv-ai/copybarista",
         cwd=Path.cwd(),
     )
+
+
+def test_gh_pr_exists_rejects_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    with pytest.raises(sync_export_pr.PrReplayError, match="GitHub PR list"):
+        _gh_pr_exists(
+            branch="copybarista/export/main",
+            repo="rekursiv-ai/copybarista",
+            cwd=Path.cwd(),
+        )
 
 
 def test_gh_pr_exists_retries_transient_github_failures(
@@ -1473,6 +1632,48 @@ def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
     ] in calls
 
 
+def test_validate_public_smoke_import_uses_current_build_wheel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    public_dir = tmp_path / "public"
+    dist_dir = tmp_path / "dist"
+    public_dir.mkdir()
+    dist_dir.mkdir()
+    stale_wheel = dist_dir / "copybarista-0.0.1-py3-none-any.whl"
+    stale_wheel.write_text("old\n", encoding="utf-8")
+    new_wheel = dist_dir / "copybarista-0.0.1-py3-none-any.whl"
+    smoke_wheels: list[str] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["uv", "build"]:
+            new_wheel.parent.mkdir(parents=True, exist_ok=True)
+            new_wheel.write_text("new\n", encoding="utf-8")
+        if argv[:3] == ["uv", "run", "--isolated"]:
+            smoke_wheels.append(argv[argv.index("--with") + 1])
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
+        del public_dir, targets
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_run_basedpyright_public",
+        fake_basedpyright_public,
+    )
+
+    _validate_public(
+        public_dir=public_dir,
+        dist_dir=dist_dir,
+        release_check_script=None,
+        frozen_sync=False,
+        type_check_targets=(".",),
+        smoke_import="copybarista",
+    )
+
+    assert smoke_wheels == [str(new_wheel)]
+
+
 def test_validate_public_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
@@ -1532,22 +1733,3 @@ def test_validate_public_uses_frozen_sync_when_lockfile_is_managed(
     )
 
     assert ["uv", "sync", "--frozen", "--all-groups"] in calls
-
-
-def test_remove_public_validation_artifacts_preserves_sources(tmp_path: Path) -> None:
-    (tmp_path / "pkg/__pycache__").mkdir(parents=True)
-    (tmp_path / "pkg/__pycache__/module.cpython-312.pyc").write_bytes(b"pyc")
-    (tmp_path / ".pytest_cache").mkdir()
-    (tmp_path / ".pytest_cache/README.md").write_text("cache\n", encoding="utf-8")
-    (tmp_path / ".venv/bin").mkdir(parents=True)
-    (tmp_path / ".venv/bin/python").write_text("python\n", encoding="utf-8")
-    (tmp_path / ".coverage").write_text("coverage\n", encoding="utf-8")
-    (tmp_path / "pkg/module.py").write_text("source\n", encoding="utf-8")
-
-    _remove_public_validation_artifacts(tmp_path)
-
-    assert (tmp_path / "pkg/module.py").read_text(encoding="utf-8") == "source\n"
-    assert not (tmp_path / "pkg/__pycache__").exists()
-    assert not (tmp_path / ".pytest_cache").exists()
-    assert not (tmp_path / ".venv").exists()
-    assert not (tmp_path / ".coverage").exists()
