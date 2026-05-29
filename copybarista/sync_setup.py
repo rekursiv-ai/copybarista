@@ -71,6 +71,7 @@ class SyncSettings:
       replay_bootstrap_base: Optional source revision for one-time migrations.
       publish_source_rev: Whether public markers may include raw source SHAs.
       refresh_public_lockfile: Whether export runs generate a public uv.lock.
+      skip_source_validation: Whether export runs skip source-side validation.
 
     """
 
@@ -98,6 +99,7 @@ class SyncSettings:
     replay_bootstrap_base: str = ""
     publish_source_rev: bool = False
     refresh_public_lockfile: bool = False
+    skip_source_validation: bool = False
 
     def __post_init__(self) -> None:
         """Fill derived validation defaults."""
@@ -191,6 +193,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
         refresh_public_lockfile=_optional_sync_bool(
             sync,
             "refresh_public_lockfile",
+            default=False,
+        ),
+        skip_source_validation=_optional_sync_bool(
+            sync,
+            "skip_source_validation",
             default=False,
         ),
         sync_user_name=_optional_str(
@@ -466,6 +473,11 @@ def export_workflow(settings: SyncSettings) -> str:
         if settings.release_check_script
         else ""
     )
+    skip_source_validation_arg = (
+        "            --skip-source-validation \\\n"
+        if settings.skip_source_validation
+        else ""
+    )
     forbidden = ",".join(settings.forbidden_pr_text)
     project_path = f"source/{settings.copybarista_project_path}"
     script_path = f"{project_path}/scripts/sync_export_pr.py"
@@ -488,7 +500,6 @@ def export_workflow(settings: SyncSettings) -> str:
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
             "SYNC_TOKEN_LOGIN": _yaml_str(settings.sync_token_login),
-            "COPYBARISTA_PROJECT_PATH": _sh(project_path),
             "SYNC_EXPORT_SCRIPT": _sh(script_path),
             "SOURCE_ROOT": _sh(settings.source_root),
             "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
@@ -496,6 +507,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "PR_DEFAULT_BODY": _sh(settings.pr_default_body),
             "PR_REPLAY_FLAGS": pr_replay_flags,
             "RELEASE_CHECK_ARG": release_check_arg,
+            "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "TYPE_TARGETS": type_targets,
             "SMOKE_IMPORT": _sh(settings.smoke_import),
         },
@@ -550,7 +562,7 @@ def import_workflow(settings: SyncSettings) -> str:
 def _render_template(name: str, values: dict[str, str]) -> str:
     """Render one package-data template with explicit token replacement."""
     text = (
-        resources.files("copybarista.templates")
+        resources.files(f"{__package__}.templates")
         .joinpath(name)
         .read_text(encoding="utf-8")
     )
