@@ -56,8 +56,10 @@ jobs:
           ref: ${{ env.BASE_BRANCH }}
           path: public
       - name: Open export PR
+        env:
+          PYTHONPATH: source
         run: |
-          uv --quiet --project @@COPYBARISTA_PROJECT_PATH@@ run python \
+          uv --quiet run --no-project --with pyyaml --with ruff python3 \
             @@SYNC_EXPORT_SCRIPT@@ \
             --source-dir source \
             --project-path @@SOURCE_ROOT@@ \
@@ -71,4 +73,4 @@ jobs:
             --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \
 @@RELEASE_CHECK_ARG@@@@TYPE_TARGETS@@ \
             --smoke-import @@SMOKE_IMPORT@@ \
-            --auto-merge="$COPYBARISTA_AUTO_MERGE"
+@@SKIP_SOURCE_VALIDATION_ARG@@            --auto-merge="$COPYBARISTA_AUTO_MERGE"
