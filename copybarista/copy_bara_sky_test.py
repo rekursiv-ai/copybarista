@@ -367,6 +367,60 @@ def test_rejects_core_reverse_move(tmp_path: Path):
         load_config(config_path)
 
 
+def test_accepts_sky_extra_origin_files_as_file_copies(tmp_path: Path):
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", ".codespell-ignore", "typings/cloudpickle/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [core.move(ROOT, "")],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+    assert [(copy.source, copy.destination) for copy in config.files.copy] == [
+        (".codespell-ignore", ".codespell-ignore"),
+        ("typings/cloudpickle", "typings/cloudpickle"),
+    ]
+
+
+def test_accepts_sky_file_move_transform(tmp_path: Path):
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["project/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move("project", ""),
+                core.move("pyproject.public.toml", "pyproject.toml"),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+    assert len(config.transforms) == 1
+    assert config.transforms[0].type == "move"
+    assert config.transforms[0].path == "pyproject.public.toml"
+    assert config.transforms[0].destination == "pyproject.toml"
+
+
 def test_rejects_sky_replace_multiline_without_multiline_true(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -789,12 +843,6 @@ def test_rejects_unsupported_sky_helper_bodies(
             "destination=folder.destination(), origin_files=glob(['src/**']), "
             "transformations=[core.move('project', '')]",
             "outside core.move source root",
-        ),
-        (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['project/**']), "
-            "transformations=[core.move('project', 'out')]",
-            r"core.move\(SOURCE, ''\)",
         ),
         (
             "name='export', origin=folder.origin(), "

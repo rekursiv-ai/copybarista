@@ -16,6 +16,7 @@ import textwrap
 
 from copybarista.config import (
     DEFAULT_GIT_BRANCH,
+    FileCopy,
     Transform,
     WorkflowConfig,
     parse_config,
@@ -87,6 +88,8 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
         if transform.reverse_before or transform.reverse_after:
             raw["reverse_before"] = transform.reverse_before
             raw["reverse_after"] = transform.reverse_after
+    elif transform.type == "move":
+        raw["destination"] = transform.destination
     else:
         raw["start"] = transform.start
         raw["end"] = transform.end
@@ -145,6 +148,7 @@ class TranslatedWorkflow:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     transforms: tuple[Transform, ...]
+    copies: tuple[FileCopy, ...] = ()
     folder_path: str = ""
     git_url: str = ""
     git_branch: str = DEFAULT_GIT_BRANCH
@@ -162,6 +166,15 @@ class TranslatedWorkflow:
             "files": {
                 "include": list(self.include),
                 "exclude": list(self.exclude),
+                "copy": [
+                    {
+                        "source": copy.source,
+                        "destination": copy.destination,
+                        "include": list(copy.include),
+                        "exclude": list(copy.exclude),
+                    }
+                    for copy in self.copies
+                ],
             },
             "destination": {
                 "folder": {"path": self.folder_path},
@@ -317,14 +330,18 @@ class _CopyBaraSkyParser:
         transformations = _object_list(
             kwargs.get("transformations", []), "core.workflow.transformations"
         )
-        move, transforms = self._parse_transformations(transformations)
+        source_root_move, transforms = self._parse_transformations(transformations)
         if "authoring" not in kwargs:
             raise ConfigError("core.workflow.authoring is required")
-        source_root = move.source if move is not None else ""
-        if move is not None and move.destination:
-            raise ConfigError("Only core.move(SOURCE, '') is supported")
+        source_root = source_root_move.source if source_root_move is not None else ""
 
-        include = _strip_prefixes(origin_files.include, source_root)
+        include, copies = _strip_prefixes_and_file_copies(
+            origin_files.include, source_root
+        )
+        if source_root and not include:
+            raise ConfigError(
+                f"origin_files pattern is outside core.move source root: {source_root}"
+            )
         exclude = _strip_prefixes(origin_files.exclude, source_root)
         git_url, git_branch = _git_destination_fields(destination)
         git_committer_name, git_committer_email = _git_author_fields(
@@ -341,6 +358,7 @@ class _CopyBaraSkyParser:
             include=include,
             exclude=exclude,
             transforms=tuple(transforms),
+            copies=tuple(copies),
             git_url=git_url,
             git_branch=git_branch,
             git_committer_name=git_committer_name,
@@ -351,13 +369,25 @@ class _CopyBaraSkyParser:
         self, transformations: list[object]
     ) -> tuple[MoveSpec | None, list[Transform]]:
         """Parse supported workflow transforms."""
-        move: MoveSpec | None = None
+        source_root_move: MoveSpec | None = None
         parsed: list[Transform] = []
         for idx, item in enumerate(transformations, start=1):
             if isinstance(item, MoveSpec):
-                if move is not None:
-                    raise ConfigError("Only one core.move transform is supported")
-                move = item
+                if not item.destination:
+                    if source_root_move is not None:
+                        raise ConfigError(
+                            "Only one core.move(SOURCE, '') transform is supported"
+                        )
+                    source_root_move = item
+                    continue
+                parsed.append(
+                    Transform(
+                        id=f"{idx}:move:{item.source}",
+                        type="move",
+                        path=item.source,
+                        destination=item.destination,
+                    )
+                )
                 continue
             if isinstance(item, Transform):
                 # Transformation order is observable in failure messages.
@@ -380,7 +410,7 @@ class _CopyBaraSkyParser:
                 )
                 continue
             raise ConfigError(f"Unsupported transformation: {item!r}")
-        return move, parsed
+        return source_root_move, parsed
 
     def _eval(self, node: ast.AST, env: dict[str, object]) -> object:
         """Evaluate one supported expression node."""
@@ -768,6 +798,33 @@ def _validate_destination_files(value: object) -> None:
         )
 
 
+def _strip_prefixes_and_file_copies(
+    patterns: tuple[str, ...], source_root: str
+) -> tuple[tuple[str, ...], tuple[FileCopy, ...]]:
+    """Strip source-root globs and preserve extra roots as file-copy entries."""
+    if not source_root:
+        return patterns, ()
+    prefix = f"{source_root.rstrip('/')}/"
+    stripped: list[str] = []
+    copies: list[FileCopy] = []
+    for pattern in patterns:
+        if pattern == source_root:
+            stripped.append("**")
+        elif pattern.startswith(prefix):
+            stripped.append(pattern.removeprefix(prefix))
+        else:
+            copies.append(_file_copy_from_origin_pattern(pattern))
+    return tuple(stripped), tuple(copies)
+
+
+def _file_copy_from_origin_pattern(pattern: str) -> FileCopy:
+    """Translate an extra ``origin_files`` root into a Copybarista file copy."""
+    if pattern.endswith("/**"):
+        source = pattern.removesuffix("/**")
+        return FileCopy(source=source, destination=source)
+    return FileCopy(source=pattern, destination=pattern)
+
+
 def _strip_prefixes(patterns: tuple[str, ...], source_root: str) -> tuple[str, ...]:
     """Strip a moved source root from origin file globs."""
     if not source_root:
@@ -781,7 +838,7 @@ def _strip_prefixes(patterns: tuple[str, ...], source_root: str) -> tuple[str, .
             stripped.append(pattern.removeprefix(prefix))
         else:
             raise ConfigError(
-                f"origin_files pattern is outside core.move source root: {pattern}"
+                f"origin_files exclude pattern is outside core.move source root: {pattern}"
             )
     return tuple(stripped)
 
