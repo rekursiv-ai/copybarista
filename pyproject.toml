@@ -102,6 +102,7 @@ norecursedirs = [
     "*.egg-info",
     "build",
     "dist",
+    ".hypothesis",
 ]
 
 [tool.coverage.run]
