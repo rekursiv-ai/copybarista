@@ -142,6 +142,7 @@ def _assert_public_export(public_root: Path) -> None:
         "README.md",
         "pyproject.toml",
         "tests/__init__.py",
+        "tests/conftest.py",
         "tests/test_widget.py",
         "widget/__init__.py",
     ]
