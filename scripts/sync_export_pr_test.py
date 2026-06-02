@@ -26,6 +26,8 @@ from scripts.sync_export_pr import (
     _gh_pr_exists,
     _open_or_update_export_pr,
     _parse_pr_metadata_log,
+    _postleakcheck_validation,
+    _preleakcheck_validation,
     _public_pr_text,
     _render_pr_body,
     _replace_pr_state,
@@ -33,7 +35,6 @@ from scripts.sync_export_pr import (
     _source_rev_digest,
     _state_from_pr_body,
     _validate_public,
-    _validate_source,
     export_branch_name,
     export_pr_text,
     replay_pr_metadata,
@@ -2068,7 +2069,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
     assert calls == ["lock", "validate", "open"]
 
 
-def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_postleakcheck_validation_runs_ty_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -2081,7 +2084,9 @@ def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
 
-    _validate_source(project=Path("/repo/pkg"), type_check_targets=("configgle",))
+    _postleakcheck_validation(
+        project=Path("/repo/pkg"), type_check_targets=("configgle",)
+    )
 
     assert [
         "uv",
@@ -2093,6 +2098,31 @@ def test_validate_source_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
         "check",
         ".",
     ] in calls
+
+
+def test_preleakcheck_validation_runs_lint_not_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-leak phase runs ruff but defers ty/basedpyright/pytest."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
+        calls.append(["basedpyright", str(project), *targets])
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
+
+    _preleakcheck_validation(project=Path("/repo/pkg"))
+
+    verbs = [argv[5] for argv in calls if len(argv) > 5 and argv[4] == "run"]
+    assert "ruff" in verbs
+    assert "ty" not in verbs
+    assert "pytest" not in verbs
+    assert not any(argv[0] == "basedpyright" for argv in calls)
 
 
 def test_validate_public_smoke_import_uses_current_build_wheel(

@@ -279,16 +279,30 @@ def _run_export_sync(request: ExportRequest) -> None:
 
     if request.skip_source_validation:
         _log("Skipping source checkout validation.")
+        _log("Exporting public tree.")
+        _export_public_tree(
+            project=project,
+            source_dir=request.source_dir,
+            export_dir=export_dir,
+            manifest=manifest,
+        )
     else:
-        _log("Validating source checkout.")
-        _validate_source(project=project, type_check_targets=request.type_check_targets)
-    _log("Exporting public tree.")
-    _export_public_tree(
-        project=project,
-        source_dir=request.source_dir,
-        export_dir=export_dir,
-        manifest=manifest,
-    )
+        _log("Validating source checkout (lint/format).")
+        _preleakcheck_validation(project=project)
+        # Export runs the leak checks; do it before the slow type/test
+        # checks so a leak fails fast rather than after minutes of ty,
+        # basedpyright, and pytest.
+        _log("Exporting public tree (runs leak checks).")
+        _export_public_tree(
+            project=project,
+            source_dir=request.source_dir,
+            export_dir=export_dir,
+            manifest=manifest,
+        )
+        _log("Validating source checkout (types/tests).")
+        _postleakcheck_validation(
+            project=project, type_check_targets=request.type_check_targets
+        )
     if request.release_check_script:
         _log("Checking exported release tree.")
         _check_release_tree(
@@ -566,8 +580,13 @@ def _git_toplevel(start: Path) -> Path:
     return Path(result.stdout.strip())
 
 
-def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> None:
-    """Run source checkout checks before creating a public export."""
+def _preleakcheck_validation(*, project: Path) -> None:
+    """Run the cheap source checks that gate the export.
+
+    These run before the export+leak-check so a lint/format failure
+    surfaces immediately, and before the slow type/test checks so the
+    leak-check (run during export) fails fast ahead of them.
+    """
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _run(
         [
@@ -599,7 +618,12 @@ def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> N
         ],
         cwd=project,
     )
-    _run_basedpyright(project=project, targets=type_check_targets)
+
+
+def _postleakcheck_validation(
+    *, project: Path, type_check_targets: tuple[str, ...]
+) -> None:
+    """Run the slow source checks after the export+leak-check has passed."""
     _run(
         [
             "uv",
@@ -613,6 +637,7 @@ def _validate_source(*, project: Path, type_check_targets: tuple[str, ...]) -> N
         ],
         cwd=project,
     )
+    _run_basedpyright(project=project, targets=type_check_targets)
     _run(
         [
             "uv",
