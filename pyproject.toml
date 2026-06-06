@@ -80,7 +80,7 @@ exclude = ["copybarista/*_test.py"]
 addopts = [
     "--durations=20",
     "-m",
-    "not ci_smoke and not integration and not performance",
+    "not ci_smoke and not cuda and not integration and not performance",
     "--cov=copybarista",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
@@ -90,6 +90,7 @@ pythonpath = ["."]
 timeout = 60
 markers = [
     "ci_smoke: slower package/CLI smoke tests run explicitly in CI",
+    "cuda: tests that require a real CUDA device (deselected by default)",
     "integration: tests that require Git remotes or external CLIs",
     "performance: timing-sensitive tests",
 ]

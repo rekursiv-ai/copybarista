@@ -319,7 +319,7 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "pytest",
             "-q",
             "-m",
-            "not integration",
+            "not cuda and not integration",
         ],
         cwd=project,
     )
