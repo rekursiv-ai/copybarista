@@ -469,6 +469,21 @@ def test_parse_pr_metadata_rejects_legacy_author_field():
         )
 
 
+def test_parse_pr_metadata_skips_unknown_field(
+    capsys: pytest.CaptureFixture[str],
+):
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Copybarista-PR-Description: typo'd field\n"
+            "Copybarista-PR-Title: Public title\n"
+        ),
+        forbidden_text=(),
+    )
+
+    assert patches[0].title == "Public title"
+    assert "Description: unknown field; ignored" in capsys.readouterr().err
+
+
 def test_parse_pr_metadata_rejects_duplicate_title():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
         _parse_pr_metadata_log(

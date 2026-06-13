@@ -1345,7 +1345,14 @@ def _parse_pr_metadata_message(
                     "unsupported; use the git author for attribution",
                 )
             if name not in {"Title", "Body-Mode", "Scope"}:
-                raise _metadata_error(commit_sha, name, "unknown field")
+                # Replay runs against published commits we cannot edit, so a
+                # typo'd field must not wedge the whole export. Skip with a
+                # warning instead of aborting.
+                sys.stderr.write(
+                    f"{_metadata_error(commit_sha, name, 'unknown field; ignored')}\n"
+                )
+                idx += 1
+                continue
             if name in values:
                 raise _metadata_error(commit_sha, name, "duplicate field")
             values[name] = value.strip()
