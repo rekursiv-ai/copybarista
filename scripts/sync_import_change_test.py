@@ -35,8 +35,6 @@ def test_main_accepts_generic_project_validation_args(
         [
             "--project-path",
             "packages/configgle",
-            "--copybarista-project-path",
-            "tools/copybarista",
             "--public-base-ref",
             "base",
             "--public-head-ref",
@@ -49,7 +47,6 @@ def test_main_accepts_generic_project_validation_args(
     )
 
     assert captured[0].project_path == Path("packages/configgle")
-    assert captured[0].copybarista_project_path == Path("tools/copybarista")
     assert captured[0].type_check_targets == ("configgle", "tests")
     assert not captured[0].refresh_public_lockfile
 
@@ -122,7 +119,6 @@ def test_import_change_ignores_generated_public_lockfile(
             target_dir=target,
             target_repo="rekursiv-ai/source",
             project_path=Path("package"),
-            copybarista_project_path=Path("tools/copybarista"),
             base_branch="main",
             public_repo="rekursiv-ai/public",
             public_sha="abcdef123456",
@@ -145,7 +141,7 @@ def test_import_change_ignores_generated_public_lockfile(
     assert len(calls) == 1
 
 
-def test_run_import_sync_prepares_copybarista_tool_environment(
+def test_run_import_sync_prepares_scoped_validation_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -177,7 +173,6 @@ def test_run_import_sync_prepares_copybarista_tool_environment(
             target_dir=target,
             target_repo="rekursiv-ai/source",
             project_path=Path("package"),
-            copybarista_project_path=Path("tools/copybarista"),
             base_branch="main",
             public_repo="rekursiv-ai/public",
             public_sha="abcdef123456",
@@ -196,22 +191,20 @@ def test_run_import_sync_prepares_copybarista_tool_environment(
         )
     )
 
+    # Copybarista is stdlib-only, so no tool-env sync runs. The only sync is the
+    # target source validation env, scoped to lint/test/typecheck groups with
+    # the monorepo-root project deps excluded (no torch/jax/tf/pycairo).
     assert calls[0] == [
-        "uv",
-        "--quiet",
-        "--project",
-        str(target / "tools" / "copybarista"),
-        "sync",
-        "--all-groups",
-    ]
-    assert calls[1] == [
         "uv",
         "--quiet",
         "--project",
         str(target / "package"),
         "sync",
-        "--all-groups",
+        "--no-install-project",
+        "--only-group",
+        "copybarista-import-validation",
     ]
+    assert calls[1] == ["import", str(target / "package"), str(target)]
 
 
 def test_import_change_pr_body_contains_review_context():
@@ -408,6 +401,13 @@ def test_validate_target_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
         "--project",
         "/repo/pkg",
         "run",
+        "--no-sync",
         "ty",
         "check",
     ] in calls
+
+    # Every validation `uv run` must pass --no-sync so it reuses the scoped env
+    # instead of re-syncing the monorepo-root project (torch/jax/tf/pycairo).
+    uv_runs = [c for c in calls if c[:1] == ["uv"] and "run" in c]
+    assert uv_runs
+    assert all("--no-sync" in c for c in uv_runs)
