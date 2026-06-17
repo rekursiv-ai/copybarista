@@ -21,6 +21,35 @@ from scripts.sync_import_change import (
 )
 
 
+def _import_request(*, target_dir: Path) -> ImportRequest:
+    """Build an ImportRequest with placeholder fields.
+
+    For tests that only care about target_dir / project routing.
+    """
+    return ImportRequest(
+        public_base=target_dir / "public-base",
+        public_head=target_dir / "public-head",
+        target_dir=target_dir,
+        target_repo="rekursiv-ai/source",
+        project_path=Path("package"),
+        base_branch="main",
+        public_repo="rekursiv-ai/public",
+        public_sha="abcdef123456",
+        public_base_ref="base",
+        public_head_ref="head",
+        branch="copybarista/import/sha-abcdef123456",
+        sync_label="Package",
+        sync_user_name="copybarista",
+        sync_user_email="copybarista@example.com",
+        report=target_dir / "report.json",
+        open_pr=False,
+        open_pr_only=False,
+        runner_temp=target_dir,
+        type_check_targets=(".",),
+        refresh_public_lockfile=False,
+    )
+
+
 def test_main_accepts_generic_project_validation_args(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -49,6 +78,50 @@ def test_main_accepts_generic_project_validation_args(
     assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].type_check_targets == ("configgle", "tests")
     assert not captured[0].refresh_public_lockfile
+
+
+def test_main_resolves_filesystem_inputs_to_absolute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Copybarista subprocesses run with cwd=target_dir, so relative path inputs
+    # must be made absolute or they double (target/target/...).
+    captured: list[ImportRequest] = []
+
+    def fake_run_import_sync(request: ImportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
+
+    sync_import_change.main(
+        [
+            "--project-path",
+            "pkg",
+            "--target-dir",
+            "target",
+            "--public-base",
+            "pb",
+            "--public-head",
+            "ph",
+            "--report",
+            "r.json",
+            "--runner-temp",
+            "rt",
+            "--public-base-ref",
+            "base",
+            "--public-head-ref",
+            "head",
+        ]
+    )
+
+    req = captured[0]
+    for value in (
+        req.target_dir,
+        req.public_base,
+        req.public_head,
+        req.report,
+        req.runner_temp,
+    ):
+        assert value.is_absolute(), value
 
 
 def test_main_accepts_refresh_public_lockfile_arg(
@@ -136,12 +209,13 @@ def test_import_change_ignores_generated_public_lockfile(
             refresh_public_lockfile=True,
         ),
         project=project,
+        requirements=tmp_path / "copybarista-requirements.txt",
     )
 
     assert len(calls) == 1
 
 
-def test_run_import_sync_prepares_scoped_validation_environment(
+def test_run_import_sync_imports_then_validates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -152,17 +226,41 @@ def test_run_import_sync_prepares_scoped_validation_environment(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    def fake_import_change(*, request: ImportRequest, project: Path) -> None:
-        calls.append(["import", str(project), str(request.target_dir)])
+    def fake_export_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
+        del target_dir  # signature must match for monkeypatch; unused here
+        return runner_temp / "copybarista-requirements.txt"
 
+    def fake_import_change(
+        *, request: ImportRequest, project: Path, requirements: Path
+    ) -> None:
+        calls.append(
+            ["import", str(project), str(request.target_dir), str(requirements)]
+        )
+
+    # Signature must match _validate_target for monkeypatch; some args unused here.
     def fake_validate_target(
         *,
+        request: ImportRequest,
         project: Path,
         type_check_targets: tuple[str, ...],
+        runner_temp: Path,
+        requirements: Path,
     ) -> None:
-        calls.append(["validate", str(project), *type_check_targets])
+        del request  # unused here; present to match the patched signature
+        calls.append(
+            [
+                "validate",
+                str(project),
+                str(runner_temp),
+                str(requirements),
+                *type_check_targets,
+            ]
+        )
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(
+        sync_import_change, "_export_copybarista_requirements", fake_export_requirements
+    )
     monkeypatch.setattr(sync_import_change, "_run_import_change", fake_import_change)
     monkeypatch.setattr(sync_import_change, "_validate_target", fake_validate_target)
 
@@ -191,20 +289,11 @@ def test_run_import_sync_prepares_scoped_validation_environment(
         )
     )
 
-    # Copybarista is stdlib-only, so no tool-env sync runs. The only sync is the
-    # target source validation env, scoped to lint/test/typecheck groups with
-    # the monorepo-root project deps excluded (no torch/jax/tf/pycairo).
-    assert calls[0] == [
-        "uv",
-        "--quiet",
-        "--project",
-        str(target / "package"),
-        "sync",
-        "--no-install-project",
-        "--only-group",
-        "copybarista-import-validation",
-    ]
-    assert calls[1] == ["import", str(target / "package"), str(target)]
+    # Requirements are exported (stubbed), then import, then validate -- both
+    # receive the same pinned requirements path.
+    reqs = str(tmp_path / "copybarista-requirements.txt")
+    assert calls[0] == ["import", str(target / "package"), str(target), reqs]
+    assert calls[1] == ["validate", str(target / "package"), str(tmp_path), reqs, "."]
 
 
 def test_import_change_pr_body_contains_review_context():
@@ -380,34 +469,144 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
     assert "HTTP 504" in capsys.readouterr().err
 
 
-def test_validate_target_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_target_runs_checks_against_exported_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[list[str]] = []
+    tree = Path("/sentinel/validation-tree")
 
     def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
-        calls.append(["basedpyright", str(project), *targets])
+    # Signature must match _export_public_tree for monkeypatch; args unused.
+    def fake_export(
+        *,
+        request: ImportRequest,
+        project: Path,
+        runner_temp: Path,
+        requirements: Path,
+    ) -> Path:
+        del request, project, runner_temp, requirements
+        return tree
+
+    def fake_basedpyright(*, tree: Path, targets: tuple[str, ...]) -> None:
+        calls.append(["basedpyright", str(tree), *targets])
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
     monkeypatch.setattr(sync_import_change, "_run_basedpyright", fake_basedpyright)
 
-    _validate_target(project=Path("/repo/pkg"), type_check_targets=("configgle",))
+    _validate_target(
+        request=_import_request(target_dir=Path("/repo/target")),
+        project=Path("/repo/pkg"),
+        type_check_targets=("configgle",),
+        runner_temp=Path("/sentinel/runner"),
+        requirements=Path("/sentinel/copybarista-requirements.txt"),
+    )
 
+    # The exported public tree is synced once (with the package installed), then
+    # every check runs against it via --project/--no-sync.
     assert [
         "uv",
         "--quiet",
         "--project",
-        "/repo/pkg",
+        str(tree),
+        "sync",
+        "--frozen",
+        "--all-groups",
+    ] in calls
+    assert [
+        "uv",
+        "--quiet",
+        "--project",
+        str(tree),
         "run",
         "--no-sync",
         "ty",
         "check",
     ] in calls
 
-    # Every validation `uv run` must pass --no-sync so it reuses the scoped env
-    # instead of re-syncing the monorepo-root project (torch/jax/tf/pycairo).
     uv_runs = [c for c in calls if c[:1] == ["uv"] and "run" in c]
     assert uv_runs
     assert all("--no-sync" in c for c in uv_runs)
+    assert all(
+        "--project" in c and c[c.index("--project") + 1] == str(tree) for c in uv_runs
+    )
+
+
+def test_export_public_tree_runs_copybarista_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    target = tmp_path / "target"
+    project = target / "package"
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+
+    requirements = tmp_path / "copybarista-requirements.txt"
+    tree = sync_import_change._export_public_tree(
+        request=_import_request(target_dir=target),
+        project=project,
+        runner_temp=runner_temp,
+        requirements=requirements,
+    )
+
+    assert tree == runner_temp / "copybarista-validation-tree"
+    export = calls[0]
+    # Dependency-free copybarista export of the post-import tree to a folder,
+    # using the pinned requirements file.
+    assert "--no-project" in export
+    assert str(requirements) in export
+    assert export[-6:] == [
+        "export",
+        str(project / "copy.barista.toml"),
+        str(target),
+        "--folder-dir",
+        str(tree),
+        "--force",
+    ]
+
+
+def test_export_copybarista_requirements_exports_group_from_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="pyyaml==6.0.3\nruff==0.15.17\n"
+        )
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    target = tmp_path / "target"
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+
+    requirements = sync_import_change._export_copybarista_requirements(
+        target_dir=target, runner_temp=runner_temp
+    )
+
+    assert requirements == (runner_temp / "copybarista-requirements.txt").resolve()
+    assert requirements.read_text() == "pyyaml==6.0.3\nruff==0.15.17\n"
+    # Pins come from the lock via the copybarista group, not a maintained file.
+    assert calls[0] == [
+        "uv",
+        "--quiet",
+        "export",
+        "--only-group",
+        "copybarista",
+        "--no-hashes",
+        "--no-emit-project",
+        "--format",
+        "requirements.txt",
+    ]

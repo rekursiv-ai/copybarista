@@ -29,11 +29,66 @@ import time
 
 
 # Dotted module path of the copybarista package, run via `python -m` with
-# cwd=target_dir. Its on-disk project root (sibling requirements.txt) is derived
-# from this so the trusted-copy script -- which lives elsewhere ($RUNNER_TEMP) --
-# still finds the deps file inside the checkout.
+# cwd=target_dir so the import resolves under the monorepo checkout.
 _COPYBARISTA_MODULE = "copybarista"
-_COPYBARISTA_PROJECT_RELDIR = Path(*_COPYBARISTA_MODULE.split(".")[:-1])
+
+
+def _copybarista_argv(*, requirements: Path) -> list[str]:
+    """Return the argv prefix that runs copybarista dependency-free.
+
+    `uv run --no-project` skips monorepo-root resolution (no torch/jax/tf/
+    pycairo build); --with-requirements supplies copybarista's only third-party
+    deps (see _export_copybarista_requirements). The package imports under its
+    monorepo path, so callers run this with cwd=target_dir. A project
+    dependency-group cannot install here because --group is ignored under
+    --no-project; the group is instead exported to a requirements file.
+
+    `requirements` must be absolute: callers run with cwd=target_dir, so a
+    relative path would be resolved twice (target/target/...).
+    """
+    return [
+        "uv",
+        "--quiet",
+        "run",
+        "--no-project",
+        "--with-requirements",
+        str(requirements),
+        "python",
+        "-m",
+        _COPYBARISTA_MODULE,
+    ]
+
+
+def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
+    """Export the `copybarista` dependency group from the lock to a pinned file.
+
+    `uv run --with-requirements` consults no lockfile, so to keep copybarista's
+    standalone deps reproducible (and matched to the monorepo) we export the
+    `copybarista` group from the checkout's uv.lock into a requirements file and
+    feed that. This is the single source of truth -- no separately maintained
+    version pins.
+    """
+    requirements = (runner_temp / "copybarista-requirements.txt").resolve()
+    requirements.write_text(
+        _run(
+            [
+                "uv",
+                "--quiet",
+                "export",
+                "--only-group",
+                "copybarista",
+                "--no-hashes",
+                "--no-emit-project",
+                "--format",
+                "requirements.txt",
+            ],
+            cwd=target_dir,
+            capture=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    return requirements
+
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_LABEL = "Copybarista"
@@ -49,10 +104,13 @@ GITHUB_RETRY_DELAY_SEC = 2
 def main(argv: list[str] | None = None) -> None:
     """Run public-to-source import validation and optional PR creation."""
     args = _parser().parse_args(argv)
+    # Resolve filesystem inputs to absolute paths. Copybarista subprocesses run
+    # with cwd=target_dir; relative path args would otherwise be resolved a
+    # second time against that cwd (target/target/...).
     request = ImportRequest(
-        public_base=Path(args.public_base),
-        public_head=Path(args.public_head),
-        target_dir=Path(args.target_dir),
+        public_base=Path(args.public_base).resolve(),
+        public_head=Path(args.public_head).resolve(),
+        target_dir=Path(args.target_dir).resolve(),
         target_repo=args.target_repo,
         project_path=Path(args.project_path),
         base_branch=args.base_branch,
@@ -68,10 +126,10 @@ def main(argv: list[str] | None = None) -> None:
         sync_label=args.sync_label,
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
-        report=Path(args.report),
+        report=Path(args.report).resolve(),
         open_pr=_string_bool(args.open_pr),
         open_pr_only=args.open_pr_only,
-        runner_temp=Path(args.runner_temp),
+        runner_temp=Path(args.runner_temp).resolve(),
         type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
         refresh_public_lockfile=args.refresh_public_lockfile,
     )
@@ -111,28 +169,19 @@ def run_import_sync(request: ImportRequest) -> None:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
         return
-    # Copybarista itself is stdlib-only, so it needs no environment sync. The
-    # target source env is synced for the `copybarista-import-validation` group
-    # only (the ruff/ty/basedpyright/pytest toolchain) -- never the monorepo-root
-    # project deps (torch, jax, tf, pycairo, ...), which a CPU import runner
-    # cannot and need not build.
-    _log("Preparing target source validation environment.")
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "sync",
-            "--no-install-project",
-            "--only-group",
-            "copybarista-import-validation",
-        ]
+    requirements = _export_copybarista_requirements(
+        target_dir=request.target_dir, runner_temp=request.runner_temp
     )
     _log("Importing public changes into target source.")
-    _run_import_change(request=request, project=project)
+    _run_import_change(request=request, project=project, requirements=requirements)
     _log("Validating target checkout.")
-    _validate_target(project=project, type_check_targets=request.type_check_targets)
+    _validate_target(
+        request=request,
+        project=project,
+        type_check_targets=request.type_check_targets,
+        runner_temp=request.runner_temp,
+        requirements=requirements,
+    )
     if request.open_pr:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
@@ -207,7 +256,9 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_import_change(*, request: ImportRequest, project: Path) -> None:
+def _run_import_change(
+    *, request: ImportRequest, project: Path, requirements: Path
+) -> None:
     """Run `copybarista import-change` and capture its JSON report."""
     request.report.parent.mkdir(parents=True, exist_ok=True)
     with (
@@ -227,29 +278,10 @@ def _run_import_change(*, request: ImportRequest, project: Path) -> None:
             destination=Path(tmp) / "public-head",
             refresh_public_lockfile=request.refresh_public_lockfile,
         )
-        # Copybarista imports under its monorepo package path. Run it with
-        # `uv run --no-project` (no project resolution, so the monorepo-root
-        # deps -- torch, jax, tf, pycairo, ... -- are never built) from the loop
-        # checkout root (cwd=target_dir) so `python -m` resolves the package.
-        # Copybarista's third-party deps live in one place: requirements.txt
-        # next to the package, supplied via --with-requirements (a project
-        # group is unavailable here because --no-project disables groups).
-        # All path args are absolute, so the cwd change is safe.
+        # All path args are absolute, so running with cwd=target_dir is safe.
         _run(
             [
-                "uv",
-                "--quiet",
-                "run",
-                "--no-project",
-                "--with-requirements",
-                str(
-                    request.target_dir
-                    / _COPYBARISTA_PROJECT_RELDIR
-                    / "requirements.txt"
-                ),
-                "python",
-                "-m",
-                _COPYBARISTA_MODULE,
+                *_copybarista_argv(requirements=requirements),
                 "import-change",
                 str(project / "copy.barista.toml"),
                 "--public-base",
@@ -288,18 +320,51 @@ def _public_tree_for_import(
     return destination
 
 
-def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> None:
-    """Run source checkout checks after importing public changes."""
-    # Every `uv run` below passes --no-sync to reuse the scoped validation env
-    # prepared in run_import_sync. Without it, `uv run` re-syncs the full
-    # monorepo-root project and rebuilds the ML stack (torch/jax/tf/pycairo) on
-    # the CPU import runner -- the failure this whole path exists to avoid.
+def _validate_target(
+    *,
+    request: ImportRequest,
+    project: Path,
+    type_check_targets: tuple[str, ...],
+    runner_temp: Path,
+    requirements: Path,
+) -> None:
+    """Validate the imported change by checking its exported public tree.
+
+    The imported tree under ``project`` is monorepo-form (``loop.*`` imports,
+    monorepo-root deps). Validating it directly would require the monorepo
+    environment -- including the ML stack (torch, jax, tf, pycairo, ...) a CPU
+    import runner cannot build. Instead this exports the public-form tree (the
+    artifact actually published: ``sagent.*`` imports, public ``pyproject.toml``
+    / ``uv.lock``) and runs lint/type/test against *that*. The exported env has
+    the package's real runtime deps but never the monorepo ML stack, so a CPU
+    runner validates exactly what ships.
+    """
+    tree = _export_public_tree(
+        request=request,
+        project=project,
+        runner_temp=runner_temp,
+        requirements=requirements,
+    )
+    # Sync the exported public env (installs the package + all groups). Torch
+    # and friends stay out: they live behind an opt-in extra in the public
+    # pyproject, not the default dependency set.
     _run(
         [
             "uv",
             "--quiet",
             "--project",
-            str(project),
+            str(tree),
+            "sync",
+            "--frozen",
+            "--all-groups",
+        ]
+    )
+    _run(
+        [
+            "uv",
+            "--quiet",
+            "--project",
+            str(tree),
             "run",
             "--no-sync",
             "ruff",
@@ -308,14 +373,14 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "--no-cache",
             ".",
         ],
-        cwd=project,
+        cwd=tree,
     )
     _run(
         [
             "uv",
             "--quiet",
             "--project",
-            str(project),
+            str(tree),
             "run",
             "--no-sync",
             "ruff",
@@ -324,28 +389,19 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "--no-cache",
             ".",
         ],
-        cwd=project,
+        cwd=tree,
     )
-    _run_basedpyright(project=project, targets=type_check_targets)
+    _run_basedpyright(tree=tree, targets=type_check_targets)
     _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "--no-sync",
-            "ty",
-            "check",
-        ],
-        cwd=project,
+        ["uv", "--quiet", "--project", str(tree), "run", "--no-sync", "ty", "check"],
+        cwd=tree,
     )
     _run(
         [
             "uv",
             "--quiet",
             "--project",
-            str(project),
+            str(tree),
             "run",
             "--no-sync",
             "pytest",
@@ -353,24 +409,51 @@ def _validate_target(*, project: Path, type_check_targets: tuple[str, ...]) -> N
             "-m",
             "not cuda and not integration",
         ],
-        cwd=project,
+        cwd=tree,
     )
 
 
-def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
-    """Run basedpyright for one target source checkout."""
+def _export_public_tree(
+    *, request: ImportRequest, project: Path, runner_temp: Path, requirements: Path
+) -> Path:
+    """Export the public-form tree for the imported project and return its path.
+
+    Runs ``copybarista export`` (dependency-free) against the post-import source
+    checkout, producing the transformed public package (``sagent.*`` imports,
+    public ``pyproject.toml`` / ``uv.lock``) under a fresh directory.
+    """
+    tree = runner_temp / "copybarista-validation-tree"
+    if tree.exists():
+        shutil.rmtree(tree)
+    _run(
+        [
+            *_copybarista_argv(requirements=requirements),
+            "export",
+            str(project / "copy.barista.toml"),
+            str(request.target_dir),
+            "--folder-dir",
+            str(tree),
+            "--force",
+        ],
+        cwd=request.target_dir,
+    )
+    return tree
+
+
+def _run_basedpyright(*, tree: Path, targets: tuple[str, ...]) -> None:
+    """Run basedpyright against the exported public tree."""
     _run(
         [
             "uv",
             "--quiet",
             "--project",
-            str(project),
+            str(tree),
             "run",
             "--no-sync",
             "basedpyright",
             *targets,
         ],
-        cwd=project,
+        cwd=tree,
     )
 
 
