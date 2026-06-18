@@ -566,6 +566,79 @@ def test_parses_explicit_replace_reversal(tmp_path: Path):
     assert config.transforms[0].reverse_after == "internal import"
 
 
+def _regex_groups_config(body: str) -> str:
+    """Wrap a single replace transform body in a minimal workflow config."""
+    return (
+        '[workflow]\nname = "demo"\nmode = "squash"\nsource_root = "project"\n\n'
+        '[files]\ninclude = ["**"]\n\n'
+        '[[transform]]\ntype = "replace"\npath = "pkg/*.py"\n' + body
+    )
+
+
+def test_parses_and_round_trips_regex_groups(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "internal.pkg.${s}"\n'
+            'after = "pkg.${s}"\n'
+            'regex_groups = { s = "[A-Za-z_]" }\n'
+            "required = false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.transforms[0].regex_groups == (("s", "[A-Za-z_]"),)
+    # Serialization preserves the binding so config round-trips.
+    assert 'regex_groups = { s = "[A-Za-z_]" }' in workflow_to_toml(config)
+
+
+def test_rejects_invalid_regex_groups_pattern(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "internal.pkg.${s}"\n'
+            'after = "pkg.${s}"\n'
+            'regex_groups = { s = "[unterminated" }\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="not valid regex"):
+        load_config(config_path)
+
+
+def test_rejects_non_string_regex_groups_pattern(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "internal.pkg.${s}"\nafter = "pkg.${s}"\nregex_groups = { s = 7 }\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must be a string"):
+        load_config(config_path)
+
+
+def test_rejects_regex_groups_with_explicit_reversal(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "internal.pkg.${s}"\n'
+            'after = "pkg.${s}"\n'
+            'regex_groups = { s = "[A-Za-z_]" }\n'
+            'reverse_before = "pkg"\n'
+            'reverse_after = "internal.pkg"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="mutually exclusive"):
+        load_config(config_path)
+
+
 def test_rejects_unknown_transform_type(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(

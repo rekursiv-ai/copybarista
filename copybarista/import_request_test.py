@@ -923,6 +923,114 @@ def test_merge_import_three_way_merges_independent_drift(tmp_path: Path):
     )
 
 
+def test_merge_import_regex_groups_reverse_only_rewrites_module_tokens(
+    tmp_path: Path,
+):
+    """A ``regex_groups`` reverse rewrites module tokens, never lookalikes.
+
+    The reverse of ``widget`` -> ``acme.internal.widget`` must rewrite the real
+    module references (``from widget``, ``widget.x``) yet leave intact every
+    public ``widget`` that is not a module token: an identifier substring
+    (``widget_state``), a dotfile (``.widget``), and prose (``a widget model``).
+    The source drifts so the merge path runs a full reverse rather than the
+    skipped fast path -- exercising the bug class that a plain ``str.replace``
+    reverse silently corrupts.
+    """
+    paths = _regex_groups_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from widget import api\n"
+        "HEAD = 1\n"
+        "x = widget.providers.load()\n"
+        "self.widget_state = 'base'\n"
+        'rules = root / ".widget" / "rules"\n'
+        '"""Configure a widget model here."""\n',
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == (
+        "from acme.internal.widget import api\n"
+        "HEAD = 1\n"
+        "x = acme.internal.widget.providers.load()\n"
+        "self.widget_state = 'base'\n"
+        'rules = root / ".widget" / "rules"\n'
+        '"""Configure a widget model here."""\n'
+        "LOCAL = 9\n"
+    )
+
+
+def _regex_groups_fixture(tmp_path: Path) -> _FixturePaths:
+    """Build a fixture using Copybara-style ``regex_groups`` namespace rewrites."""
+    source_base = tmp_path / "source-base"
+    source_project = source_base / "internal/demo"
+    (source_project / "pkg").mkdir(parents=True)
+    (source_project / "pkg/module.py").write_text(
+        "from acme.internal.widget import api\n"
+        "x = acme.internal.widget.providers.load()\n"
+        "self.widget_state = 'base'\n"
+        'rules = root / ".widget" / "rules"\n'
+        '"""Configure a widget model here."""\n'
+        "LOCAL = 9\n",
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/module.py").write_text(
+        "from widget import api\n"
+        "x = widget.providers.load()\n"
+        "self.widget_state = 'base'\n"
+        'rules = root / ".widget" / "rules"\n'
+        '"""Configure a widget model here."""\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "acme.internal.widget.${s}"
+        after = "widget.${s}"
+        regex_groups = { s = "[A-Za-z_]" }
+        required = false
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from acme.internal.widget "
+        after = "from widget "
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    return _FixturePaths(
+        config=config, public_base=public_base, source_base=source_base
+    )
+
+
 def test_merge_import_reports_conflicting_drift(tmp_path: Path):
     """Merge import raises and lists files whose drift conflicts with head."""
     paths = _fixture(tmp_path)

@@ -21,6 +21,7 @@ from copybarista.config import Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
+from copybarista.template import compile_replace
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
@@ -534,21 +535,20 @@ class ChangeRequestImporter:
                     f"Public path requires text reversal but is not UTF-8: "
                     f"{public_path}"
                 ) from err
-            # Strict imports use this guard as a proxy for "is the reversal
-            # unambiguous". Merge imports establish that ground truth directly by
-            # comparing the source's actual export to the public base/head, so
-            # the heuristic is both redundant and wrong here (the source
-            # legitimately already carries exported text from prior drift).
-            if not self.merge_import:
+            # A regex_groups transform anchors its reverse symmetrically, so the
+            # reversal is unambiguous by construction -- no heuristic guard.
+            # For a plain literal transform, strict imports use this guard as a
+            # proxy for "is the reversal unambiguous"; merge imports establish
+            # that ground truth directly by comparing the source's actual export
+            # to the public base/head, so the heuristic is redundant and wrong
+            # there (the source legitimately carries exported text from drift).
+            if not transform.regex_groups and not self.merge_import:
                 self._check_injective_reverse(
                     public_path=public_path,
                     transform=transform,
                     text=text,
                 )
-            content = text.replace(
-                _reverse_before(transform),
-                _reverse_after(transform),
-            ).encode()
+            content = _reverse_replace(transform=transform, text=text).encode()
         return content
 
     def _check_injective_reverse(
@@ -780,6 +780,36 @@ def _reverse_after(transform: Transform) -> str:
     if _has_explicit_reversal(transform):
         return transform.reverse_after
     return transform.before
+
+
+def _reverse_replace(*, transform: Transform, text: str) -> str:
+    """Apply one transform's reverse replacement to public text.
+
+    A ``regex_groups`` transform reverses by swapping its ``before`` and
+    ``after`` templates and re-running the same compiled-template machinery
+    (Copybara ``Replace.reverse()``). The boundary anchors declared in the
+    groups therefore apply symmetrically, so a non-injective literal token (a
+    short public package name) is reversed only where the anchors say it is a
+    real module reference -- never inside an identifier (``pkg_x``) or dotfile
+    (``.pkg``). A plain literal transform falls back to ``str.replace``.
+
+    Args:
+      transform: Transform whose reverse replacement to apply.
+      text: Public-side text to reverse.
+
+    Returns:
+      reversed_text: ``text`` with the reverse replacement applied.
+
+    """
+    reverse_before = _reverse_before(transform)
+    reverse_after = _reverse_after(transform)
+    if transform.regex_groups:
+        return compile_replace(
+            before=reverse_before,
+            after=reverse_after,
+            regex_groups=transform.regex_groups,
+        ).apply(text)
+    return text.replace(reverse_before, reverse_after)
 
 
 def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
