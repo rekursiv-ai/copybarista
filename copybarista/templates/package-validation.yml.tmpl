@@ -3,11 +3,19 @@ name: Package validation
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "**"
   push:
     branches: [main]
+    paths:
+      - "**"
 
 permissions:
   contents: read
+
+concurrency:
+  group: package-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:

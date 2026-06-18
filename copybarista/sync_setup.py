@@ -680,7 +680,6 @@ def _validate_import_workflow_yaml(
             (
                 '--target-repo "$TARGET_REPO"',
                 '--project-path "$TARGET_PROJECT_PATH"',
-                '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
                 '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
                 '--sync-label "$COPYBARISTA_SYNC_LABEL"',
                 "--open-pr false",
@@ -696,7 +695,6 @@ def _validate_import_workflow_yaml(
             (
                 '--target-repo "$TARGET_REPO"',
                 '--project-path "$TARGET_PROJECT_PATH"',
-                '--copybarista-project-path "$COPYBARISTA_TOOL_PROJECT_PATH"',
                 '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"',
                 '--sync-label "$COPYBARISTA_SYNC_LABEL"',
                 "--open-pr-only",
