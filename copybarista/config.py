@@ -156,6 +156,16 @@ class Transform:
     # Copybara's ``core.transform([...], reversal=[])`` (a declared no-op
     # reversal).
     reversible: bool = True
+    # Ordered ``(name, regex)`` interpolation bindings for ``replace``. When set,
+    # ``before``/``after`` are templates: literal text matches verbatim and
+    # ``${name}`` matches/re-emits the named group. The same machinery runs
+    # forward and reverse (reverse swaps before/after), so a boundary anchor
+    # declared in a group applies symmetrically -- the mechanism Copybara's
+    # ``core.replace(regex_groups=...)`` uses to make a non-injective token
+    # rewrite (a long internal namespace <-> a short public package name)
+    # reversible without corrupting identifier substrings (``pkg_state``) or
+    # dotfiles (``.pkg``).
+    regex_groups: tuple[tuple[str, str], ...] = ()
     destination: str = ""
 
 
@@ -398,6 +408,12 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
                 lines.append(f"reverse_after = {_toml_string(transform.reverse_after)}")
             if not transform.reversible:
                 lines.append("reversible = false")
+            if transform.regex_groups:
+                rendered = ", ".join(
+                    f"{name} = {_toml_string(pattern)}"
+                    for name, pattern in transform.regex_groups
+                )
+                lines.append(f"regex_groups = {{ {rendered} }}")
         elif transform.type == "move":
             lines.append(f"destination = {_toml_string(transform.destination)}")
         elif transform.type == "strip_block":
@@ -548,6 +564,33 @@ def _parse_file_write(idx: int, raw_write: object) -> FileWrite:
     return FileWrite(path=path, content=_string(raw_write, "content"))
 
 
+def _parse_regex_groups(
+    raw_transform: dict[str, object],
+) -> tuple[tuple[str, str], ...]:
+    """Parse the optional ``regex_groups`` inline table for a replace transform.
+
+    Each entry binds an interpolation name to a regex string. Insertion order is
+    preserved so serialization round-trips. Each pattern is compiled to fail
+    fast on invalid regex.
+    """
+    raw = raw_transform.get("regex_groups", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("replace regex_groups must be a table")
+    raw = cast("dict[str, object]", raw)
+    groups: list[tuple[str, str]] = []
+    for name, pattern in raw.items():
+        if not isinstance(pattern, str):
+            raise ConfigError(f"replace regex_groups.{name} must be a string")
+        try:
+            re.compile(pattern)
+        except re.error as err:
+            raise ConfigError(
+                f"replace regex_groups.{name} is not valid regex: {pattern}"
+            ) from err
+        groups.append((name, pattern))
+    return tuple(groups)
+
+
 def _parse_transform(idx: int, raw_transform: object) -> Transform:
     """Parse one `[[transform]]` table into a typed transform config."""
     if not isinstance(raw_transform, dict):
@@ -561,6 +604,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             "path",
             "required",
             "reversible",
+            "regex_groups",
             "before",
             "after",
             "reverse_before",
@@ -595,6 +639,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
                 "path",
                 "required",
                 "reversible",
+                "regex_groups",
                 "before",
                 "after",
                 "reverse_before",
@@ -613,6 +658,12 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             )
         if "reverse_before" in raw_transform and not reverse_before:
             raise ConfigError("replace reverse_before must be non-empty")
+        regex_groups = _parse_regex_groups(raw_transform)
+        if regex_groups and (reverse_before or reverse_after):
+            raise ConfigError(
+                "replace regex_groups and reverse_before/reverse_after are "
+                "mutually exclusive"
+            )
         return Transform(
             id=transform_id,
             type="replace",
@@ -623,6 +674,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             reverse_after=reverse_after,
             required=required,
             reversible=_bool(raw_transform, "reversible", default=True),
+            regex_groups=regex_groups,
         )
     if ttype == "move":
         _check_keys(

@@ -23,6 +23,7 @@ from copybarista.manifest import (
     TransformFileReport,
     TransformReport,
 )
+from copybarista.template import compile_replace
 
 
 class _FileMapping(Protocol):
@@ -154,11 +155,20 @@ def _replace(
     sources_by_destination: dict[str, str],
     globstar: Globstar,
 ) -> _TransformResult:
-    """Apply a literal replacement and return its change report."""
+    """Apply a literal or regex-group replacement and return its change report."""
     if not transform.before:
         raise TransformError(
             f"Transformation '{transform.id}' before must be non-empty"
         )
+    template = (
+        compile_replace(
+            before=transform.before,
+            after=transform.after,
+            regex_groups=transform.regex_groups,
+        )
+        if transform.regex_groups
+        else None
+    )
     paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
     matched_files = 0
     skipped_symlinks = 0
@@ -171,11 +181,13 @@ def _replace(
             continue
         matched_files += 1
         original = _read_text(path)
-        replacements = original.count(transform.before)
-        if replacements == 0:
-            continue
-        updated = original.replace(transform.before, transform.after)
-        if updated == original:
+        if template is not None:
+            replacements = template.count(original)
+            updated = template.apply(original)
+        else:
+            replacements = original.count(transform.before)
+            updated = original.replace(transform.before, transform.after)
+        if replacements == 0 or updated == original:
             continue
         path.write_text(updated, encoding="utf-8")
         changed += 1
