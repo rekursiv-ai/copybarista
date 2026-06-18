@@ -187,7 +187,7 @@ jobs:
           # public code). The PR step needs git auth to push the import branch,
           # so configure a token auth header scoped to this target checkout only.
           auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          git -C target config http."https://github.com/$TARGET_REPO.git/".extraheader \
+          git -C target config http."https://github.com/".extraheader \
             "AUTHORIZATION: basic $auth_header"
           uv --quiet run --no-project python "$TRUSTED_IMPORT_SCRIPT" \
             --target-dir target \
