@@ -40,6 +40,11 @@ CONTROL_CHAR_BOUND = 32
 DEFAULT_SYNC_USER_NAME = "copybarista"
 DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
 DEFAULT_VALIDATION_PYTHON_VERSIONS = ("3.12",)
+# System (apt) packages installed before both public package validation and
+# public-to-source import validation. Both workflows run the same test suite, so
+# they MUST provision the same system tools; rendering this single setting into
+# both generated workflows keeps their environments aligned by construction.
+DEFAULT_SYSTEM_PACKAGES = ("ripgrep", "fd-find")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -59,6 +64,9 @@ class SyncSettings:
       forbidden_pr_text: Public PR title/body terms rejected before export.
       validation_python_versions: Python versions used by public package validation.
       validation_commands: Commands run by public package validation.
+      system_packages: apt packages installed before BOTH validation workflows.
+          Both run the same test suite, so the same tools must be present in
+          each; one setting renders into both workflows to prevent env drift.
       sync_user_name: Commit author name for generated sync commits.
       sync_user_email: Commit author email for generated sync commits.
       sync_token_login: GitHub login that must own the sync token.
@@ -87,6 +95,7 @@ class SyncSettings:
     release_check_script: str = ""
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
     validation_commands: tuple[str, ...] = ()
+    system_packages: tuple[str, ...] = DEFAULT_SYSTEM_PACKAGES
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
     sync_token_login: str = ""
@@ -181,6 +190,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
             sync,
             "validation_python_versions",
             default=DEFAULT_VALIDATION_PYTHON_VERSIONS,
+        ),
+        system_packages=_optional_str_tuple(
+            sync,
+            "system_packages",
+            default=DEFAULT_SYSTEM_PACKAGES,
         ),
         validation_commands=_optional_str_tuple(
             sync,
@@ -437,6 +451,7 @@ def package_validation_workflow(settings: SyncSettings) -> str:
         {
             "STRATEGY": strategy,
             "PYTHON_SETUP": python_setup,
+            "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
             "COMMANDS": commands,
         },
     )
@@ -554,8 +569,39 @@ def import_workflow(settings: SyncSettings) -> str:
                 f"{settings.sync_label} export branch:"
             ),
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
+            "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
             "TYPE_TARGETS": type_targets,
         },
+    )
+
+
+def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
+    """Render the apt system-package install step for a validation workflow.
+
+    Both the public package-validation workflow and the public-to-source import
+    workflow run the same test suite and therefore need the same system tools.
+    Rendering this single step into both keeps their environments aligned.
+
+    Args:
+      packages: apt package names to install (e.g. ``ripgrep``, ``fd-find``).
+      guarded: Whether to gate the step on the import workflow's ``enabled``
+          output (the import workflow runs steps conditionally; package
+          validation does not).
+
+    Returns:
+      step_yaml: The rendered ``steps`` entry, trailing newline included, or an
+          empty string when no packages are requested.
+
+    """
+    if not packages:
+        return ""
+    guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
+    names = " ".join(packages)
+    return (
+        "      - name: Install system packages\n"
+        f"{guard}"
+        "        run: sudo apt-get update && sudo apt-get install -y "
+        f"--no-install-recommends {names}\n"
     )
 
 
@@ -664,6 +710,9 @@ def _validate_import_workflow_yaml(
     for text in ("sync_import_change.py", "GH_TOKEN"):
         if text not in step_text:
             raise ConfigError(f"sync-to-source.yml must reference {text}.")
+    _assert_installs_system_packages(
+        steps=steps, packages=settings.system_packages, workflow="sync-to-source.yml"
+    )
 
 
 def _validate_package_validation_workflow_yaml(
@@ -713,6 +762,31 @@ def _validate_package_validation_workflow_yaml(
             "package-validation.yml Validate package commands must match "
             "validation_commands."
         )
+    _assert_installs_system_packages(
+        steps=steps,
+        packages=settings.system_packages,
+        workflow="package-validation.yml",
+    )
+
+
+def _assert_installs_system_packages(
+    *, steps: list[object], packages: tuple[str, ...], workflow: str
+) -> None:
+    """Assert a workflow's steps install every configured system package.
+
+    Both validation workflows run the same test suite, so each must provision the
+    same system tools; this check fails the config if either workflow drifts from
+    ``system_packages``.
+    """
+    if not packages:
+        return
+    step_text = "\n".join(str(step) for step in steps)
+    for package in packages:
+        if package not in step_text:
+            raise ConfigError(
+                f"{workflow} must install system package {package!r} "
+                "(see system_packages)."
+            )
 
 
 def _workflow_step_run(steps: list[object], name: str) -> str:

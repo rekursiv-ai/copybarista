@@ -19,6 +19,6 @@ jobs:
         with:
 @@PYTHON_SETUP@@
       - uses: astral-sh/setup-uv@v5
-      - name: Validate package
+@@SYSTEM_DEPS@@      - name: Validate package
         run: |
 @@COMMANDS@@
