@@ -145,7 +145,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         if: steps.settings.outputs.enabled == 'true'
 
-      - name: Capture trusted import helper
+@@SYSTEM_DEPS@@      - name: Capture trusted import helper
         if: steps.settings.outputs.enabled == 'true'
         run: |
           install -m 600 \
