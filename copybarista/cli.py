@@ -103,6 +103,12 @@ def _parser() -> argparse.ArgumentParser:
     import_change.add_argument("--destination", required=True)
     import_change.add_argument("--workflow", default="export")
     import_change.add_argument("--no-verify", action="store_true")
+    import_change.add_argument(
+        "--merge-import",
+        action="store_true",
+        help="Three-way merge each change instead of requiring the source to "
+        "reproduce the public base exactly.",
+    )
     import_change.add_argument("--json", action="store_true")
 
     init_sync = sub.add_parser("init-sync", help="Write package sync scaffolding")
@@ -218,6 +224,7 @@ def _run_import_change(args: argparse.Namespace) -> None:
             source_base=Path(args.source_base),
             destination=Path(args.destination),
             verify=not args.no_verify,
+            merge_import=args.merge_import,
         )
     )
     if args.json:

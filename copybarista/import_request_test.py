@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import shutil
 import stat
+import subprocess
 
 import pytest
 
@@ -18,6 +19,7 @@ from copybarista.import_request import (
     ImportRequest,
     PathMapper,
     TreeSnapshot,
+    _three_way_merge,
     import_change_request,
 )
 
@@ -613,6 +615,36 @@ def test_import_rejects_strip_block_paths(tmp_path: Path):
         )
 
 
+def test_import_allows_strip_block_glob_match_without_block(tmp_path: Path):
+    """A strip_block transform that finds no block in the source file is a
+    no-op, so importing a public change to that file must succeed.
+
+    Copybara treats a transform that changes nothing as a no-op rather than an
+    error (see Replace.java: ``TransformationStatus.noop(... "was a no-op
+    because it didn't ...")`` and the same in FilterReplace.java). Copybarista's
+    importer previously rejected any path merely *matching* a strip_block glob,
+    even when the file contained no block markers -- diverging from that
+    behaviour. This guards the no-op case: the strip removed nothing, so the
+    public content reverses unchanged.
+    """
+    paths = _fixture(tmp_path, include_strip_block_noop=True)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'edited'\n",
+        encoding="utf-8",
+    )
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+        )
+    )
+
+
 def test_import_rejects_public_base_mismatch(tmp_path: Path):
     paths = _fixture(tmp_path)
     public_base = _copy_tree(paths.public_base, tmp_path / "bad-public-base")
@@ -754,6 +786,382 @@ def test_importer_type_exposes_plan_boundary(tmp_path: Path):
     assert importer.plan().changes == ()
 
 
+def test_merge_import_matches_strict_when_source_has_no_drift(tmp_path: Path):
+    """With no source drift, merge import reproduces the strict result exactly."""
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    new_file = public_head / "pkg/new.py"
+    new_file.write_text("VALUE = 'new'\n", encoding="utf-8")
+    new_file.chmod(0o755)
+    (public_head / "README.md").unlink()
+
+    def run(*, merge_import: bool) -> Path:
+        destination = _copy_tree(
+            paths.source_base,
+            tmp_path / ("merge" if merge_import else "strict"),
+        )
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=merge_import,
+            )
+        )
+        return destination
+
+    strict = run(merge_import=False)
+    merged = run(merge_import=True)
+
+    assert TreeSnapshot.from_root(strict) == TreeSnapshot.from_root(merged)
+
+
+def test_strict_import_rejects_source_ahead_of_public_base(tmp_path: Path):
+    """Strict import fails when the source already carries the change."""
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportRequestError, match="does not reproduce public base"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            )
+        )
+
+
+def test_merge_import_skips_change_already_applied_in_source(tmp_path: Path):
+    """Merge import treats a source already at head as a no-op."""
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.outcome for change in result.changes] == ["skipped"]
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == "from internal.demo import api\nVALUE = 'head'\n"
+
+
+def test_merge_import_three_way_merges_independent_drift(tmp_path: Path):
+    """Merge import folds public head into independently drifted source."""
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n\n\ndef local_only():\n    return 1\n",
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
+    (public_base / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == (
+        "from internal.demo import api\nVALUE = 'head'\n\n\ndef helper():\n    pass\n"
+        "\n\ndef local_only():\n    return 1\n"
+    )
+
+
+def test_merge_import_reports_conflicting_drift(tmp_path: Path):
+    """Merge import raises and lists files whose drift conflicts with head."""
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\nVALUE = 'local'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    original = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match=r"pkg/module\.py") as excinfo:
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
+
+    assert "conflict" in str(excinfo.value).lower()
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == original
+
+
+def test_merge_import_preserves_executable_bit_on_merged_file(tmp_path: Path):
+    """A clean merge carries the public head's executable bit to the source."""
+    paths = _fixture(tmp_path)
+    source_file = paths.source_base / "internal/demo/pkg/module.py"
+    source_file.write_text(
+        "from internal.demo import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n\n\ndef local_only():\n    return 1\n",
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
+    (public_base / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    head_file = public_head / "pkg/module.py"
+    head_file.write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    head_file.chmod(0o755)
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    imported = destination / "internal/demo/pkg/module.py"
+    assert stat.S_IMODE(imported.stat().st_mode) & stat.S_IXUSR
+
+
+def test_merge_import_rolls_back_earlier_merge_on_later_conflict(tmp_path: Path):
+    """A conflict in one file rolls back a cleanly merged earlier file."""
+    paths = _fixture(tmp_path)
+    (paths.source_base / "internal/demo/pkg/clean.py").write_text(
+        "from internal.demo import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n\n\ndef local_only():\n    return 1\n",
+        encoding="utf-8",
+    )
+    (paths.source_base / "internal/demo/pkg/module.py").write_text(
+        "from internal.demo import api\nVALUE = 'local'\n",
+        encoding="utf-8",
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
+    (public_base / "pkg/clean.py").write_text(
+        "from copybarista.public import api\nVALUE = 'base'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    # clean.py merges cleanly (head edits a region the source did not touch).
+    (public_head / "pkg/clean.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n\n\ndef helper():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    # module.py conflicts (both sides edited the same line).
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    clean_before = (destination / "internal/demo/pkg/clean.py").read_text(
+        encoding="utf-8"
+    )
+
+    with pytest.raises(ImportRequestError, match="conflict"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
+
+    assert (destination / "internal/demo/pkg/clean.py").read_text(
+        encoding="utf-8"
+    ) == clean_before
+
+
+def test_merge_import_propagates_delete_despite_source_drift(tmp_path: Path):
+    """A public-head deletion is force-propagated even when the source drifted."""
+    paths = _fixture(tmp_path)
+    (paths.source_base / "internal/demo/pkg/module.py").write_text(
+        "from internal.demo import api\nVALUE = 'local'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").unlink()
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.action for change in result.changes] == ["deleted"]
+    assert not (destination / "internal/demo/pkg/module.py").exists()
+
+
+def test_merge_import_raises_on_binary_conflict(tmp_path: Path):
+    """A drifted binary file that cannot be diff3-merged raises, not corrupts."""
+    paths = _fixture(tmp_path, with_transform=False)
+    (paths.source_base / "internal/demo/pkg/module.py").write_bytes(
+        b"\x00\x01LOCAL\x02\x03\n"
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-bin")
+    (public_base / "pkg/module.py").write_bytes(b"\x00\x01BASE\x02\x03\n")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_bytes(b"\x00\x01HEAD\x02\x03\n")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    original = (destination / "internal/demo/pkg/module.py").read_bytes()
+
+    with pytest.raises(ImportRequestError):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
+
+    assert (destination / "internal/demo/pkg/module.py").read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("current", "base", "incoming"),
+    [
+        # Clean merge: each side edits a different region.
+        (b"a\nLOCAL\nc\nx\ny\n", b"a\nb\nc\nx\ny\n", b"a\nb\nc\nP\ny\n"),
+        # Conflict: both sides edit the same line differently.
+        (b"a\nLOCAL\nc\n", b"a\nb\nc\n", b"a\nPUBLIC\nc\n"),
+        # No-op incoming: incoming equals base, source drifted.
+        (b"a\nLOCAL\nc\n", b"a\nb\nc\n", b"a\nb\nc\n"),
+        # Conflict with surrounding context on both sides.
+        (b"x\ny\nLOCAL\nz\nw\n", b"x\ny\nb\nz\nw\n", b"x\ny\nPUB\nz\nw\n"),
+    ],
+)
+def test_three_way_merge_byte_matches_diff3(
+    current: bytes, base: bytes, incoming: bytes, tmp_path: Path
+) -> None:
+    """``_three_way_merge`` reproduces ``diff3 -m`` byte-for-byte.
+
+    Copybara merges with ``diff3 -m origin baseline destination``
+    (``CommandLineDiffUtil``); this pins our ``git merge-file`` invocation to
+    the identical engine, orientation, labels, and conflict markers. Inputs are
+    newline-terminated -- the domain of exported source files (ruff enforces a
+    final newline); diff3 and git merge-file differ only on malformed
+    missing-EOL conflict hunks, which exported source never produces.
+    """
+    diff3 = shutil.which("diff3")
+    if diff3 is None:
+        pytest.skip("diff3 is unavailable")
+    incoming_path = tmp_path / "incoming"
+    base_path = tmp_path / "base"
+    current_path = tmp_path / "current"
+    incoming_path.write_bytes(incoming)
+    base_path.write_bytes(base)
+    current_path.write_bytes(current)
+    expected = subprocess.run(  # noqa: S603 -- fixed argv from shutil.which, no shell.
+        [
+            diff3,
+            "-m",
+            "-L",
+            "public",
+            "-L",
+            "base",
+            "-L",
+            "source",
+            str(incoming_path),
+            str(base_path),
+            str(current_path),
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+    merged, conflicted = _three_way_merge(current=current, base=base, incoming=incoming)
+
+    assert merged == expected.stdout
+    assert conflicted == (expected.returncode == 1)
+
+
 class _FixturePaths:
     def __init__(
         self,
@@ -773,6 +1181,7 @@ def _fixture(
     source_root: str = "internal/demo",
     destination_prefix: str = "",
     include_strip_block: bool = False,
+    include_strip_block_noop: bool = False,
     with_transform: bool = True,
 ) -> _FixturePaths:
     source_base = tmp_path / "source-base"
@@ -826,6 +1235,17 @@ def _fixture(
         if include_strip_block
         else ""
     )
+    # A strip_block whose glob matches the .py module, which contains no block
+    # markers: the transform is a no-op on it.
+    if include_strip_block_noop:
+        strip_block += f"""
+        [[transform]]
+        type = "strip_block"
+        path = "{destination_prefix + "/" if destination_prefix else ""}pkg/*.py"
+        start = "# copybarista:internal:start"
+        end = "# copybarista:internal:end"
+        required = false
+        """
     config.write_text(
         f"""
         [workflow]

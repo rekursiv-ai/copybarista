@@ -149,6 +149,13 @@ class Transform:
     else_marker: str = ""
     inclusive: bool = True
     required: bool = True
+    # When False, the transform is forward-only: it is applied on export but
+    # skipped during reverse import. Use for transforms whose reverse is
+    # inherently ambiguous (e.g. a home-directory prefix rewritten to ``.``,
+    # where ``.`` is ubiquitous and cannot be uniquely mapped back). Mirrors
+    # Copybara's ``core.transform([...], reversal=[])`` (a declared no-op
+    # reversal).
+    reversible: bool = True
     destination: str = ""
 
 
@@ -389,6 +396,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
                     f"reverse_before = {_toml_string(transform.reverse_before)}"
                 )
                 lines.append(f"reverse_after = {_toml_string(transform.reverse_after)}")
+            if not transform.reversible:
+                lines.append("reversible = false")
         elif transform.type == "move":
             lines.append(f"destination = {_toml_string(transform.destination)}")
         elif transform.type == "strip_block":
@@ -551,6 +560,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             "type",
             "path",
             "required",
+            "reversible",
             "before",
             "after",
             "reverse_before",
@@ -584,6 +594,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
                 "type",
                 "path",
                 "required",
+                "reversible",
                 "before",
                 "after",
                 "reverse_before",
@@ -611,6 +622,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             reverse_before=reverse_before,
             reverse_after=reverse_after,
             required=required,
+            reversible=_bool(raw_transform, "reversible", default=True),
         )
     if ttype == "move":
         _check_keys(

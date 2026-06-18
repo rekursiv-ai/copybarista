@@ -7,13 +7,14 @@ re-exports to prove the public tree is reproduced.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from os import walk
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import shutil
 import stat
+import subprocess
 import tempfile
 
 from copybarista.config import Transform, WorkflowConfig
@@ -23,6 +24,7 @@ from copybarista.globs import GlobSet, Globstar
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
+ChangeOutcome = Literal["applied", "skipped", "merged"]
 EntryKind = Literal["file", "symlink"]
 VCS_DIRS = frozenset((".git", ".hg", ".svn"))
 
@@ -265,6 +267,9 @@ class ImportChange:
       source: Source checkout path that should receive the change.
       action: File action to apply.
       transforms: Reversible transform IDs applied while mapping content.
+      outcome: How the importer reconciled the change with the source. Strict
+          imports always ``applied``; merge imports may ``skipped`` an
+          already-present change or ``merged`` independent source drift.
 
     """
 
@@ -272,6 +277,7 @@ class ImportChange:
     source: str
     action: ChangeAction
     transforms: tuple[str, ...] = ()
+    outcome: ChangeOutcome = "applied"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -303,6 +309,7 @@ class ImportResult:
                     "source": change.source,
                     "action": change.action,
                     "transforms": list(change.transforms),
+                    "outcome": change.outcome,
                 }
                 for change in self.changes
             ]
@@ -316,6 +323,14 @@ class ChangeRequestImporter:
     The importer plans from public snapshots, applies validated changes with
     rollback protection, and optionally re-exports to prove the source checkout
     recreates the public head.
+
+    Strict imports (the default) require the source checkout to reproduce the
+    public base exactly, then overwrite each changed file with the reversed
+    public head. Merge imports relax this: the source may have drifted ahead of
+    the public base, and each change is reconciled by a per-file three-way merge
+    against the reversed public base. This mirrors Copybara's ``merge_import``
+    (``MergeImportTool``), which persists destination-only changes by treating
+    the origin as the source of truth and merging it onto the destination.
     """
 
     config: WorkflowConfig
@@ -324,11 +339,12 @@ class ChangeRequestImporter:
     source_base: Path
     destination: Path
     verify: bool = True
+    merge_import: bool = False
 
     def plan(self) -> ImportPlan:
         """Build and validate the import plan."""
         _validate_import_destination(self.destination)
-        if self.verify:
+        if self.verify and not self.merge_import:
             self._check_public_base()
         diff = TreeSnapshot.from_root(self.public_base).diff(
             TreeSnapshot.from_root(self.public_head)
@@ -353,24 +369,26 @@ class ChangeRequestImporter:
             changes=plan.changes,
         )
         try:
-            for change in plan.changes:
-                self._apply_change(change)
-            if self.verify:
-                self._check_public_head()
+            if self.merge_import:
+                applied = self._merge_changes(plan.changes)
+            else:
+                applied = tuple(self._apply_change(change) for change in plan.changes)
+                if self.verify:
+                    self._check_public_head()
         except Exception:
             _restore_originals(originals)
             raise
-        return ImportResult(changes=plan.changes)
+        return ImportResult(changes=applied)
 
-    def _apply_change(self, change: ImportChange) -> None:
-        """Apply one mapped public change to the destination checkout."""
+    def _apply_change(self, change: ImportChange) -> ImportChange:
+        """Overwrite one destination path with the reversed public head."""
         target = _validated_target(
             destination=self.destination,
             relative_path=change.source,
         )
         if change.action == "deleted":
             _delete_path(target)
-            return
+            return change
         public_path = self.public_head / change.public
         if public_path.is_symlink():
             _write_symlink(
@@ -379,16 +397,110 @@ class ChangeRequestImporter:
                 public_root=self.public_head,
                 destination_root=self.destination,
             )
-            return
+            return change
         if public_path.is_dir():
             raise ImportRequestError(f"Cannot import directory change: {change.public}")
-        data = public_path.read_bytes()
-        data = self._reverse_content(public_path=change.public, data=data)
+        head_data = self._reverse_content(
+            public_path=change.public, data=public_path.read_bytes()
+        )
         if change.action == "type_changed" or target.is_symlink():
             _delete_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        target.write_bytes(head_data)
         shutil.copymode(public_path, target)
+        return change
+
+    def _merge_changes(
+        self, changes: tuple[ImportChange, ...]
+    ) -> tuple[ImportChange, ...]:
+        """Reconcile every change by three-way merge, raising on conflicts.
+
+        Merges happen in PUBLIC space: the current source is exported once, then
+        each file is merged as ``diff3(source_export, public_base, public_head)``
+        and the result reversed back to source form. Merging publicly keeps the
+        non-reversible direction (e.g. ``strip_block``) out of the common
+        already-applied path -- a file whose export already equals the public
+        head needs no reversal at all.
+        """
+        with tempfile.TemporaryDirectory(prefix="copybarista-import-merge-") as tmp:
+            source_export = Path(tmp) / "source-export"
+            export_folder(
+                config=self.config,
+                source_ref=self.source_base,
+                destination=source_export,
+                force=True,
+            )
+            applied: list[ImportChange] = []
+            conflicts: list[str] = []
+            for change in changes:
+                resolved, conflicted = self._merge_change(
+                    change=change, source_export=source_export
+                )
+                applied.append(resolved)
+                if conflicted:
+                    conflicts.append(resolved.source)
+        if conflicts:
+            raise ImportRequestError(
+                "Merge import produced conflicts in: " + ", ".join(sorted(conflicts))
+            )
+        return tuple(applied)
+
+    def _merge_change(
+        self, *, change: ImportChange, source_export: Path
+    ) -> tuple[ImportChange, bool]:
+        """Reconcile one change by three-way merge in public space.
+
+        Mirrors Copybara's ``MergeImportTool``: the public head is the incoming
+        change, the public base is the merge baseline, and the source's exported
+        form is the local side. A source already at head is a no-op
+        (``skipped``); independent text drift merges cleanly (``merged``);
+        overlapping edits record a conflict for the caller to surface. Deletions,
+        symlinks, and directory changes are not text-mergeable: they are
+        force-propagated from the public head via ``_apply_change`` (matching
+        Copybara, which propagates origin deletions regardless of destination
+        drift).
+
+        Returns:
+          resolved: The change annotated with its merge outcome.
+          conflicted: Whether the three-way merge produced conflict markers.
+
+        """
+        target = _validated_target(
+            destination=self.destination, relative_path=change.source
+        )
+        public_path = self.public_head / change.public
+        if (
+            change.action == "deleted"
+            or public_path.is_symlink()
+            or public_path.is_dir()
+        ):
+            return self._apply_change(change), False
+        head_public = public_path.read_bytes()
+        ours_public = (
+            (source_export / change.public).read_bytes()
+            if (source_export / change.public).is_file()
+            else b""
+        )
+        if ours_public == head_public:
+            return _with_outcome(change, "skipped"), False
+        base_path = self.public_base / change.public
+        base_public = (
+            base_path.read_bytes()
+            if base_path.is_file() and not base_path.is_symlink()
+            else b""
+        )
+        if ours_public == base_public:
+            return self._apply_change(change), False
+        merged_public, conflicted = _three_way_merge(
+            current=ours_public, base=base_public, incoming=head_public
+        )
+        merged_source = self._reverse_content(
+            public_path=change.public, data=merged_public
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(merged_source)
+        shutil.copymode(public_path, target)
+        return _with_outcome(change, "merged"), conflicted
 
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
         """Undo supported content transforms for one public file."""
@@ -398,11 +510,19 @@ class ChangeRequestImporter:
             transforms=self.config.transforms,
         )
         for transform in reversed(self.config.transforms):
-            if transform.type in ("move", "ruff_format"):
+            if transform.type in ("move", "ruff_format") or not transform.reversible:
                 continue
             if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
             if transform.type == "strip_block":
+                if self._strip_block_is_noop(
+                    public_path=public_path, transform=transform
+                ):
+                    # The source file has no block for this transform, so the
+                    # strip removed nothing on export and the public content
+                    # reverses unchanged. Skip it (copybara treats no-op
+                    # transforms as no-ops, not errors).
+                    continue
                 raise ImportRequestError(
                     f"Public path requires non-reversible transform "
                     f"'{transform.id}': {public_path}"
@@ -414,11 +534,17 @@ class ChangeRequestImporter:
                     f"Public path requires text reversal but is not UTF-8: "
                     f"{public_path}"
                 ) from err
-            self._check_injective_reverse(
-                public_path=public_path,
-                transform=transform,
-                text=text,
-            )
+            # Strict imports use this guard as a proxy for "is the reversal
+            # unambiguous". Merge imports establish that ground truth directly by
+            # comparing the source's actual export to the public base/head, so
+            # the heuristic is both redundant and wrong here (the source
+            # legitimately already carries exported text from prior drift).
+            if not self.merge_import:
+                self._check_injective_reverse(
+                    public_path=public_path,
+                    transform=transform,
+                    text=text,
+                )
             content = text.replace(
                 _reverse_before(transform),
                 _reverse_after(transform),
@@ -446,7 +572,24 @@ class ChangeRequestImporter:
                 path=source_path,
                 label=f"Source base path is not UTF-8: {source_path}",
             )
-            if reverse_before in source_text:
+            # Reject only STANDALONE occurrences of the replacement text in the
+            # source -- i.e. occurrences not already accounted for by `before`
+            # strings. For namespace-prefix rewrites the replacement is a
+            # substring of `before` (e.g. ``pub`` is a substring of the longer
+            # internal ``a.b.pub`` that exports to ``pub``), so every source
+            # `before` legitimately contains `reverse_before`; those reverse
+            # cleanly and must not trip the guard. A standalone occurrence (e.g.
+            # the literal exported string appearing in source prose) genuinely
+            # cannot be reversed unambiguously. We compare counts: the number of
+            # `reverse_before` hits explained by `before` occurrences vs the
+            # total in source.
+            before_text = transform.before
+            explained = (
+                source_text.count(before_text) * before_text.count(reverse_before)
+                if before_text and reverse_before in before_text
+                else 0
+            )
+            if source_text.count(reverse_before) > explained:
                 raise ImportRequestError(
                     f"Source base already contains exported replacement text "
                     f"for transform '{transform.id}': {public_path}"
@@ -467,23 +610,60 @@ class ChangeRequestImporter:
             )
 
     def _reverse_transform_ids(self, public_path: str) -> tuple[str, ...]:
-        """Return reversible transform IDs that affect a public path."""
+        """Return reversible transform IDs that affect a public path.
+
+        In merge mode a non-reversible match is not fatal here: a file whose
+        export already matches the public head is reconciled without any
+        reversal, so the decision is deferred to ``_reverse_content``.
+        """
         ids: list[str] = []
         match_path = _reverse_move_path(
             public_path=public_path,
             transforms=self.config.transforms,
         )
         for transform in reversed(self.config.transforms):
-            if transform.type in ("move", "ruff_format"):
+            if transform.type in ("move", "ruff_format") or not transform.reversible:
                 continue
             if _matches_transform(transform, match_path, self.config.globstar):
                 if transform.type == "strip_block":
+                    if self._strip_block_is_noop(
+                        public_path=public_path, transform=transform
+                    ):
+                        continue
+                    if self.merge_import:
+                        continue
                     raise ImportRequestError(
                         f"Public path requires non-reversible transform "
                         f"'{transform.id}': {public_path}"
                     )
                 ids.append(transform.id)
         return tuple(ids)
+
+    def _strip_block_is_noop(self, *, public_path: str, transform: Transform) -> bool:
+        """Return whether a strip_block transform did nothing to this path.
+
+        A strip_block removes a source-only block on export; it is only
+        non-reversible when the SOURCE file actually contains that block (the
+        removed content is absent from the public tree and cannot be
+        reconstructed). When the source file has no start marker -- e.g. public
+        sample code that merely matches the transform's glob -- the strip
+        removed nothing, so importing the public change back is loss-free.
+
+        This mirrors Copybara, which classifies a transform that changes
+        nothing as a no-op rather than an error (Replace.java / FilterReplace.java:
+        ``TransformationStatus.noop(... "was a no-op because it didn't ...")``).
+        """
+        source_path = self.source_base / _source_path(
+            config=self.config,
+            public_path=public_path,
+        )
+        if not source_path.exists() or source_path.is_symlink():
+            return True
+        source_text = _read_import_text(
+            path=source_path,
+            label=f"Source base path is not UTF-8: {source_path}",
+        )
+        return transform.start not in source_text
 
     def _check_public_base(self) -> None:
         """Verify the supplied source base reproduces the public base tree."""
@@ -530,6 +710,7 @@ class ImportRequest:
     source_base: Path
     destination: Path
     verify: bool = True
+    merge_import: bool = False
 
 
 def import_change_request(request: ImportRequest) -> ImportResult:
@@ -541,6 +722,7 @@ def import_change_request(request: ImportRequest) -> ImportResult:
         source_base=request.source_base,
         destination=request.destination,
         verify=request.verify,
+        merge_import=request.merge_import,
     ).import_changes()
 
 
@@ -598,6 +780,72 @@ def _reverse_after(transform: Transform) -> str:
     if _has_explicit_reversal(transform):
         return transform.reverse_after
     return transform.before
+
+
+def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
+    """Return a copy of a change annotated with a merge outcome."""
+    return replace(change, outcome=outcome)
+
+
+def _three_way_merge(
+    *, current: bytes, base: bytes, incoming: bytes
+) -> tuple[bytes, bool]:
+    """Three-way merge ``incoming`` onto ``current`` relative to ``base``.
+
+    Shells to ``git merge-file``, the diff3 engine Copybara's ``MergeImportTool``
+    uses. The argument orientation matches Copybara exactly: it runs
+    ``diff3 -m origin baseline destination`` (``CommandLineDiffUtil.merge``),
+    treating the incoming source-of-truth change as the primary (``ours``) side
+    and the local checkout as ``theirs``. Here ``incoming`` is the public head
+    (the SoT change) and ``current`` is the local source, so ``incoming`` is
+    passed first. Conflicting hunks keep both sides wrapped in conflict markers.
+
+    Returns:
+      merged: The merged file content, including conflict markers on overlap.
+      conflicted: Whether the merge left unresolved conflict markers.
+
+    """
+    git = shutil.which("git")
+    if git is None:
+        raise ImportRequestError("Three-way merge requires git on PATH.")
+    with tempfile.TemporaryDirectory(prefix="copybarista-merge-") as tmp:
+        root = Path(tmp)
+        incoming_path = root / "incoming"
+        base_path = root / "base"
+        current_path = root / "current"
+        incoming_path.write_bytes(incoming)
+        base_path.write_bytes(base)
+        current_path.write_bytes(current)
+        result = subprocess.run(  # noqa: S603 -- fixed argv, no shell.
+            [
+                git,
+                "merge-file",
+                "-p",
+                # --diff3 keeps the base section in conflict hunks, byte-matching
+                # Copybara's plain ``diff3 -m`` output (CommandLineDiffUtil).
+                "--diff3",
+                "-L",
+                "public",
+                "-L",
+                "base",
+                "-L",
+                "source",
+                str(incoming_path),
+                str(base_path),
+                str(current_path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        # git merge-file returns the capped conflict count (0-127); a clean merge
+        # is 0. Values >=128 signal a fatal error (e.g. a binary file it cannot
+        # merge), so the count can never collide with the error range.
+        if result.returncode >= 128:
+            raise ImportRequestError(
+                f"Three-way merge failed: git merge-file exited "
+                f"{result.returncode}: {result.stderr.decode(errors='replace')}"
+            )
+        return result.stdout, result.returncode > 0
 
 
 def _source_path(*, config: WorkflowConfig, public_path: str) -> str:
