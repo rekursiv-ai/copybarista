@@ -497,6 +497,127 @@ def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
     )
 
 
+def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
+    """Invariant: importing a public change must not pollute source with lint
+    violations. A namespace ``replace`` is pure text substitution that preserves
+    physical line order, so a public file whose imports are sorted under the
+    *public* namespace can land unsorted under the *internal* namespace whenever
+    the two namespaces sort their import groups differently. The import must
+    re-apply ``ruff_format`` (isort) on the reversed source form so the written
+    file is isort-clean.
+
+    The fixture mirrors the real inversion: a public ``pub.lib`` member sorts
+    before ``pub.providers``, but after the reverse rewrite the corresponding
+    source members are a shallow package and a deeper one whose alphabetical
+    order flips, so the public ordering is wrong under the source namespace.
+    """
+    source_base = tmp_path / "source-base"
+    source_project = source_base / "internal/demo"
+    (source_project / "pkg").mkdir(parents=True)
+    # Source form: ``shallow.lib`` must sort AFTER ``deep.pkg`` (s > d), so the
+    # isort-clean source orders providers first, lib second.
+    (source_project / "pkg/module.py").write_text(
+        "from deep.pkg.providers import client\n"
+        "from shallow.lib import util\n"
+        "\n"
+        "VALUE = (client, util)\n",
+        encoding="utf-8",
+    )
+
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    # Public form: ``pub.lib`` sorts BEFORE ``pub.providers`` (l < p): lib first.
+    public_body = (
+        "from pub.lib import util\n"
+        "from pub.providers import client\n"
+        "\n"
+        "VALUE = (client, util)\n"
+    )
+    (public_base / "pkg/module.py").write_text(public_body, encoding="utf-8")
+
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        public_body.replace("'base'", "'head'") + "EXTRA = 1\n",
+        encoding="utf-8",
+    )
+
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from shallow.lib"
+        after = "from pub.lib"
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from deep.pkg.providers"
+        after = "from pub.providers"
+
+        [[transform]]
+        type = "ruff_format"
+        path = "pkg/module.py"
+        """,
+        encoding="utf-8",
+    )
+
+    destination = _copy_tree(source_base, tmp_path / "destination")
+    # The source tree's ruff config drives isort grouping; enable it so the
+    # post-import reformat re-sorts under the source namespace.
+    (destination / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+    )
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            verify=False,
+        )
+    )
+
+    written = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
+    # The reversed imports must be re-sorted into source-namespace order
+    # (providers before lib), not left in public order (lib before providers).
+    assert written.index("from deep.pkg.providers") < written.index(
+        "from shallow.lib"
+    ), f"imports left unsorted under source namespace:\n{written}"
+
+    # Same invariant must hold on the merge-import path, which writes through a
+    # separate three-way-merge branch.
+    merge_dest = _copy_tree(source_base, tmp_path / "merge-destination")
+    (merge_dest / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+    )
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=merge_dest,
+            merge_import=True,
+            verify=False,
+        )
+    )
+    merged = (merge_dest / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
+    assert merged.index("from deep.pkg.providers") < merged.index("from shallow.lib"), (
+        f"merge import left imports unsorted under source namespace:\n{merged}"
+    )
+
+
 def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
     paths = _fixture(tmp_path, with_transform=False)
     config = tmp_path / "copy-empty-after.toml"
