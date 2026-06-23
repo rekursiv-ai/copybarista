@@ -15,8 +15,10 @@ from typing import Literal
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 
+from copybarista.commands import CommandRunner
 from copybarista.config import Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError
 from copybarista.export import export_folder
@@ -409,7 +411,52 @@ class ChangeRequestImporter:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(head_data)
         shutil.copymode(public_path, target)
+        self._reformat_imported_source(change=change, target=target)
         return change
+
+    def _reformat_imported_source(self, *, change: ImportChange, target: Path) -> None:
+        """Re-run ``ruff_format`` forward on a freshly reversed source file.
+
+        ``ruff_format`` has no content inverse, so ``_reverse_content`` skips it
+        on import. But a namespace ``replace`` reverses by pure text
+        substitution that preserves physical line order: a public file whose
+        imports are sorted under the *public* namespace can land unsorted under
+        the *source* namespace whenever the two namespaces sort their import
+        groups differently. Re-applying ruff (isort + format) forward on the
+        written file restores source-namespace order, so importing never
+        pollutes the source tree with lint violations.
+
+        Runs with ``cwd=self.destination`` so ruff discovers the source tree's
+        own config (e.g. ``known-first-party``), and only when a ``ruff_format``
+        transform's glob matches this change's public path.
+        """
+        if not any(
+            transform.type == "ruff_format"
+            and _matches_transform(transform, change.public, self.config.globstar)
+            for transform in self.config.transforms
+        ):
+            return
+        rel = target.relative_to(self.destination).as_posix()
+        runner = CommandRunner()
+        runner.run(
+            [
+                sys.executable,
+                "-m",
+                "ruff",
+                "check",
+                "--fix",
+                "--exit-zero",
+                "--no-cache",
+                rel,
+            ],
+            check=False,
+            cwd=self.destination,
+        )
+        runner.run(
+            [sys.executable, "-m", "ruff", "format", "--no-cache", rel],
+            check=False,
+            cwd=self.destination,
+        )
 
     def _merge_changes(
         self, changes: tuple[ImportChange, ...]
@@ -501,6 +548,7 @@ class ChangeRequestImporter:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(merged_source)
         shutil.copymode(public_path, target)
+        self._reformat_imported_source(change=change, target=target)
         return _with_outcome(change, "merged"), conflicted
 
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
