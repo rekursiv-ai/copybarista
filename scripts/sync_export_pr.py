@@ -2217,6 +2217,19 @@ def _valid_git_branch_name(branch: str) -> bool:
     )
 
 
+def _child_env() -> dict[str, str]:
+    """Return the parent env without ``VIRTUAL_ENV``.
+
+    Every command here runs through ``uv``, which re-derives the environment
+    from the target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the
+    operator's activated loop venv) only triggers uv's "does not match the
+    project environment" warning, so drop it for a clean run.
+    """
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
 def _run(
     argv: list[str],
     *,
@@ -2235,6 +2248,7 @@ def _run(
         stdout=subprocess.PIPE if capture else stdout,
         stderr=subprocess.PIPE if capture else None,
         text=True,
+        env=_child_env(),
     )
     if check and result.returncode != 0:
         _write_process_output(result)
