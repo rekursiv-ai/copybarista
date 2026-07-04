@@ -540,6 +540,30 @@ def test_parse_pr_metadata_keeps_unscoped_and_matching_scoped_blocks():
     assert tuple(patch.body for patch in patches) == ("Shared body.", "Sagent body.")
 
 
+def test_parse_pr_metadata_body_stops_at_blank_line_before_squashed_prose():
+    """A body must not absorb a later squashed commit's prose.
+
+    Squash-merge concatenates every squashed commit message into one
+    ``%B``. A ``Copybarista-PR-Body:`` in an earlier commit is followed
+    by a blank line and then the next commit's ordinary subject/body.
+    The body must terminate at that blank line so unrelated prose (here
+    a private symbol) is neither absorbed into the public body nor leak
+    -checked.
+    """
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Copybarista-PR-Title: Public title\n"
+            "Copybarista-PR-Body:\n"
+            "Public body text.\n"
+            "\n"
+            "Second squashed commit: touches TrainLoop.Config internals.\n"
+        ),
+        forbidden_text=("TrainLoop",),
+    )
+
+    assert tuple(patch.body for patch in patches) == ("Public body text.",)
+
+
 def test_parse_pr_metadata_rejects_body_mode_without_body():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body-Mode"):
         _parse_pr_metadata_log(

@@ -120,17 +120,17 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.base_ref }}
           path: public-base
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.head_ref }}
           path: public-head
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
@@ -142,7 +142,7 @@ jobs:
         if: steps.settings.outputs.enabled == 'true'
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         if: steps.settings.outputs.enabled == 'true'
 
 @@SYSTEM_DEPS@@      - name: Capture trusted import helper

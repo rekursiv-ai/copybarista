@@ -1421,11 +1421,21 @@ def _patch_from_metadata_block(
 def _body_lines_until_next_scope(
     lines: list[str], *, start: int
 ) -> tuple[list[str], int]:
-    """Return body lines up to the next scoped metadata block."""
+    """Return body lines up to the next scoped block or blank separator.
+
+    The body is a trailer-like value: a single contiguous paragraph. It
+    terminates at the next ``Copybarista-PR-Scope:`` (which opens a new
+    scoped block) or at the first blank line. Blank-line termination is
+    what keeps squash-merged commit messages honest: squash concatenates
+    every squashed commit's message into one commit body, so an earlier
+    ``Copybarista-PR-Body:`` is followed by a blank line and then the
+    next commit's ordinary prose. Without the blank-line stop the body
+    would greedily absorb that unrelated prose (and leak-check it).
+    """
     body_lines: list[str] = []
     idx = start
     while idx < len(lines):
-        if lines[idx].startswith("Copybarista-PR-Scope:"):
+        if lines[idx].startswith("Copybarista-PR-Scope:") or not lines[idx].strip():
             break
         body_lines.append(lines[idx])
         idx += 1
