@@ -525,6 +525,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "TYPE_TARGETS": type_targets,
             "SMOKE_IMPORT": _sh(settings.smoke_import),
+            "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
         },
     )
 
@@ -571,6 +572,7 @@ def import_workflow(settings: SyncSettings) -> str:
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
             "TYPE_TARGETS": type_targets,
+            "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
         },
     )
 
@@ -672,6 +674,15 @@ def _validate_import_workflow_yaml(
                 f"sync-to-source.yml jobs.import-change.if must contain {text}."
             )
     steps = _yaml_list(job.get("steps"), "jobs.import-change.steps")
+    setup_step = _workflow_uses_step(steps, "actions/setup-python@v5")
+    with_config = _yaml_mapping(
+        setup_step.get("with"), "jobs.import-change.steps.setup-python.with"
+    )
+    if with_config.get("python-version") != settings.validation_python_versions[0]:
+        raise ConfigError(
+            "sync-to-source.yml setup-python python-version must match "
+            "validation_python_versions[0]."
+        )
     import_step = _workflow_step_run(steps, "Import public tree into target repository")
     pr_step = _workflow_step_run(steps, "Open or update target import PR")
     for run, texts in (

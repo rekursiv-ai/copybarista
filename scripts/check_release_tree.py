@@ -95,14 +95,20 @@ REQUIRED_ANY_PATH_GROUPS = (
 )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Run the release-tree policy check."""
+def main() -> int:
+    """The main function. Return the process exit code."""
+    return run()
+
+
+def run(argv: list[str] | None = None) -> int:
+    """Run the release-tree policy check. Return the process exit code."""
     args = _parser().parse_args(argv)
     errors = check_tree(root=Path(args.root), allow_root_git=args.allow_root_git)
     if errors:
         for error in errors:
             sys.stderr.write(f"{error}\n")
-        sys.exit(1)
+        return 1
+    return 0
 
 
 def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
@@ -138,7 +144,8 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
 def _parser() -> argparse.ArgumentParser:
     """Build the release-tree validation CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Validate Copybarista public release tree policy."
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("root")
     parser.add_argument("--allow-root-git", action="store_true")
@@ -214,5 +221,5 @@ def _content_paths(root: Path) -> tuple[Path, ...]:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

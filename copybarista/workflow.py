@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 import shutil
+import stat
 import time
 
 from copybarista.config import (
@@ -239,7 +240,7 @@ def _copy_selected(
             )
         dest.parent.mkdir(parents=True, exist_ok=True)
         copy_started = time.perf_counter()
-        shutil.copy2(path, dest, follow_symlinks=False)
+        _copy_to_staging(path, dest)
         copy_sec += time.perf_counter() - copy_started
         entries.append(
             _StagedFile(
@@ -317,7 +318,7 @@ def _copy_file(
             f"Export destination already exists: {destination} from {source}"
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, dest, follow_symlinks=False)
+    _copy_to_staging(source_path, dest)
     return _StagedFile(
         source=source_path.relative_to(source_ref).as_posix(),
         destination=destination,
@@ -335,6 +336,13 @@ def _write_generated(staging: Path, file_write: FileWrite) -> _StagedFile:
         source=f"<generated:{file_write.path}>",
         destination=file_write.path,
     )
+
+
+def _copy_to_staging(source: Path, destination: Path) -> None:
+    """Copy source metadata while keeping the private staging file mutable."""
+    shutil.copy2(source, destination, follow_symlinks=False)
+    if not destination.is_symlink():
+        destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
 
 
 def _validate_symlink(path: Path, source_root: Path) -> None:

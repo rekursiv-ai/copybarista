@@ -1044,6 +1044,116 @@ def test_merge_import_three_way_merges_independent_drift(tmp_path: Path):
     )
 
 
+def _numbered_module(*, first: str | None = None, last: str | None = None) -> str:
+    """Return a 20-line module body; override the first/last data line.
+
+    The wide gap between the overridable lines lets one edit near the top and
+    another near the bottom three-way-merge cleanly (non-overlapping hunks).
+    """
+    lines = ["from internal.demo import api", *(f"L{i} = {i}" for i in range(20))]
+    if first is not None:
+        lines[1] = first
+    if last is not None:
+        lines[-1] = last
+    return "\n".join(lines) + "\n"
+
+
+def test_merge_import_replaces_symlink_target_without_writing_through(
+    tmp_path: Path,
+):
+    """A drifted symlink at the destination is replaced, not written through.
+
+    Strict import deletes a symlink target before writing; the merge path must
+    hold the same contract, or a clean three-way merge writes through the link
+    and mutates its referent instead of restoring the intended regular file.
+    """
+    paths = _fixture(tmp_path)
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
+    (public_base / "pkg/module.py").write_text(
+        _numbered_module().replace("from internal.demo", "from copybarista.public"),
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        _numbered_module(first="L0 = 'head'").replace(
+            "from internal.demo", "from copybarista.public"
+        ),
+        encoding="utf-8",
+    )
+    # Source drifts the bottom line; head drifts the top line -> clean merge.
+    (paths.source_base / "internal/demo/pkg/module.py").write_text(
+        _numbered_module(last="L19 = 'srcdrift'"), encoding="utf-8"
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    # Destination drift: the imported module became an in-tree symlink.
+    module = destination / "internal/demo/pkg/module.py"
+    referent = destination / "internal/demo/pkg/other.py"
+    referent.write_text("REFERENT UNTOUCHED\n", encoding="utf-8")
+    module.unlink()
+    module.symlink_to("other.py")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    assert not module.is_symlink()
+    assert module.is_file()
+    body = module.read_text(encoding="utf-8")
+    assert "L0 = 'head'" in body
+    assert "L19 = 'srcdrift'" in body
+    # The symlink's former referent must be untouched.
+    assert referent.read_text(encoding="utf-8") == "REFERENT UNTOUCHED\n"
+
+
+def test_merge_import_type_change_matches_strict(tmp_path: Path):
+    """A symlink->file type change force-propagates head, matching strict.
+
+    A type change is not text-mergeable: the merge path must route it to the
+    same force-propagation strict uses, not diff3 the file bytes against an
+    empty base (which manufactures a spurious conflict).
+    """
+    paths = _fixture(tmp_path)
+    # Base and source have pkg/x as a symlink; head replaces it with a file.
+    for tree in (paths.public_base, paths.source_base / "internal/demo"):
+        (tree / "pkg/real.txt").write_text("real\n", encoding="utf-8")
+        (tree / "pkg/x").symlink_to("real.txt")
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/x").unlink()
+    (public_head / "pkg/x").write_text("now a regular file\n", encoding="utf-8")
+
+    def run(*, merge_import: bool) -> Path:
+        destination = _copy_tree(
+            paths.source_base, tmp_path / ("merge" if merge_import else "strict")
+        )
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=merge_import,
+            )
+        )
+        return destination
+
+    strict = run(merge_import=False)
+    merged = run(merge_import=True)
+
+    assert TreeSnapshot.from_root(strict) == TreeSnapshot.from_root(merged)
+    x = merged / "internal/demo/pkg/x"
+    assert not x.is_symlink()
+    assert x.read_text(encoding="utf-8") == "now a regular file\n"
+
+
 def test_merge_import_regex_groups_reverse_only_rewrites_module_tokens(
     tmp_path: Path,
 ):
@@ -1279,6 +1389,52 @@ def test_merge_import_rolls_back_earlier_merge_on_later_conflict(tmp_path: Path)
     ) == clean_before
 
 
+def test_merge_import_does_not_write_or_reformat_conflict_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A conflicting merge never writes marker bytes or reformats them.
+
+    Conflict-marker text is invalid source; the import rolls back regardless, so
+    it must not reach the destination or the ruff reformat pass.
+    """
+    paths = _fixture(tmp_path)
+    (paths.source_base / "internal/demo/pkg/module.py").write_text(
+        "from internal.demo import api\nVALUE = 'local'\n", encoding="utf-8"
+    )
+    public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n", encoding="utf-8"
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    module = destination / "internal/demo/pkg/module.py"
+    module_before = module.read_text(encoding="utf-8")
+
+    def fail_reformat(self: object, *, change: object, target: Path) -> None:
+        del self, change, target
+        raise AssertionError("reformat must not run on a conflicting merge")
+
+    monkeypatch.setattr(
+        ChangeRequestImporter, "_reformat_imported_source", fail_reformat
+    )
+
+    with pytest.raises(ImportRequestError, match="conflict"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
+
+    body = module.read_text(encoding="utf-8")
+    assert "<<<<<<<" not in body
+    assert body == module_before
+
+
 def test_merge_import_propagates_delete_despite_source_drift(tmp_path: Path):
     """A public-head deletion is force-propagated even when the source drifted."""
     paths = _fixture(tmp_path)
@@ -1361,6 +1517,7 @@ def test_three_way_merge_byte_matches_diff3(
     diff3 = shutil.which("diff3")
     if diff3 is None:
         pytest.skip("diff3 is unavailable")
+    assert diff3 is not None
     incoming_path = tmp_path / "incoming"
     base_path = tmp_path / "base"
     current_path = tmp_path / "current"

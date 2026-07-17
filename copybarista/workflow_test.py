@@ -67,6 +67,34 @@ def test_workflow_runner_keeps_root_sources_relative(tmp_path: Path):
     ]
 
 
+def test_workflow_runner_can_transform_read_only_source_snapshot(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    source = project / "module.py"
+    source.write_text("from private import value\n", encoding="utf-8")
+    source.chmod(0o444)
+
+    staged = WorkflowRunner(
+        config=_config(
+            transforms=(
+                Transform(
+                    id="replace-import",
+                    type="replace",
+                    path="module.py",
+                    before="from private import",
+                    after="from public import",
+                ),
+            )
+        ),
+        source_ref=source_ref,
+    ).stage(tmp_path / "stage")
+
+    assert (staged.root / "module.py").read_text(encoding="utf-8") == (
+        "from public import value\n"
+    )
+
+
 def test_workflow_runner_rejects_symlink_outside_source_root(tmp_path: Path):
     source_ref = tmp_path / "repo"
     project = source_ref / "project"

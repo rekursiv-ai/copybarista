@@ -10,6 +10,7 @@ import pytest
 
 from scripts import sync_import_change
 from scripts.sync_import_change import (
+    ImportBaseError,
     ImportRequest,
     _commit_author,
     _gh_pr_exists,
@@ -18,7 +19,30 @@ from scripts.sync_import_change import (
     _validate_target,
     import_branch_name,
     import_change_pr_body,
+    import_commit_subject_prefix,
+    last_synced_public_sha,
 )
+
+
+def _git_repo_with_commits(*, root: Path, subjects: list[str]) -> None:
+    """Initialize a Git repo at root and commit each subject in order."""
+    _git(root, "init", "-q", "-b", "main", str(root))
+    for key, value in (
+        ("user.email", "test@example.com"),
+        ("user.name", "Test"),
+        ("commit.gpgsign", "false"),
+    ):
+        _git(root, "config", key, value)
+    for i, subject in enumerate(subjects):
+        (root / "f.txt").write_text(f"{i}\n", encoding="utf-8")
+        _git(root, "add", "f.txt")
+        _git(root, "commit", "-q", "-m", subject)
+
+
+def _git(root: Path, *args: str) -> None:
+    """Run a Git command in root for test fixture setup."""
+    argv = ["git"] if args[0] == "init" else ["git", "-C", str(root)]
+    subprocess.run([*argv, *args], check=True)  # noqa: S603 -- fixed argv, test-only
 
 
 def _import_request(*, target_dir: Path) -> ImportRequest:
@@ -60,7 +84,7 @@ def test_main_accepts_generic_project_validation_args(
 
     monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    sync_import_change.main(
+    sync_import_change.run(
         [
             "--project-path",
             "packages/configgle",
@@ -92,7 +116,7 @@ def test_main_resolves_filesystem_inputs_to_absolute(
 
     monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    sync_import_change.main(
+    sync_import_change.run(
         [
             "--project-path",
             "pkg",
@@ -134,7 +158,7 @@ def test_main_accepts_refresh_public_lockfile_arg(
 
     monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    sync_import_change.main(
+    sync_import_change.run(
         [
             "--project-path",
             "packages/configgle",
@@ -610,3 +634,195 @@ def test_export_copybarista_requirements_exports_group_from_lock(
         "--format",
         "requirements.txt",
     ]
+
+
+def test_import_commit_subject_round_trips_through_baseline_walk(
+    tmp_path: Path,
+) -> None:
+    # The SHA written into the import commit subject must be the exact SHA the
+    # next run's baseline walk recovers. This is the contract OA-1 broke at the
+    # workflow level (recording the run SHA instead of the imported head SHA).
+    sha = "3" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[import_commit_subject_prefix("Sagent") + sha],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == sha
+    )
+
+
+def test_last_synced_public_sha_returns_newest_imported_sha(tmp_path: Path) -> None:
+    older = "a" * 40
+    newer = "b" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[
+            f"Import Sagent public changes {older}",
+            "Add cross-experiment metric query support",
+            f"Import Sagent public changes {newer}",
+            "Later unrelated work",
+        ],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == newer
+    )
+
+
+def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
+    # A different label's imports must not be mistaken for this label's baseline.
+    sagent = "c" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[
+            f"Import Sagent public changes {sagent}",
+            f"Import Configgle public changes {'d' * 40}",
+        ],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == sagent
+    )
+
+
+def test_last_synced_public_sha_raises_without_prior_import(tmp_path: Path) -> None:
+    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+
+    with pytest.raises(ImportBaseError, match="No landed 'Sagent' import commit"):
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+
+
+def test_last_synced_public_sha_returns_fallback_without_prior_import(
+    tmp_path: Path,
+) -> None:
+    # First import: no landed history yet, so the caller-supplied baseline
+    # (the pushed commit's parent) stands in for the merge ancestor.
+    parent = "f" * 40
+    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
+            fallback=parent,
+        )
+        == parent
+    )
+
+
+def test_last_synced_public_sha_matches_label_literally(tmp_path: Path) -> None:
+    # A label with regex metacharacters must match by literal text, not as a
+    # git --grep regex that could match unintended subjects.
+    sha = "1" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[f"Import C++.NET public changes {sha}"],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="C++.NET", base_branch="main"
+        )
+        == sha
+    )
+
+
+def test_last_synced_public_sha_ignores_incidental_sha_in_subject(
+    tmp_path: Path,
+) -> None:
+    # A 40-hex token elsewhere in an unrelated subject must not be mistaken for
+    # a landed import; only the import-template position counts.
+    incidental = "9" * 40
+    landed = "2" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[
+            f"Import Sagent public changes {landed}",
+            f"Revert commit {incidental} for reasons",
+        ],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == landed
+    )
+
+
+def test_main_print_synced_base_prints_and_skips_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sha = "e" * 40
+    _git_repo_with_commits(
+        root=tmp_path, subjects=[f"Import Sagent public changes {sha}"]
+    )
+
+    def fail_run_import_sync(_: ImportRequest) -> None:
+        raise AssertionError("import must not run in print-synced-base mode")
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
+
+    sync_import_change.run(
+        [
+            "--print-synced-base",
+            "--target-dir",
+            str(tmp_path),
+            "--sync-label",
+            "Sagent",
+            "--base-branch",
+            "main",
+        ]
+    )
+
+    assert capsys.readouterr().out.strip() == sha
+
+
+def test_main_print_synced_base_emits_fallback_without_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parent = "7" * 40
+    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+
+    def fail_run_import_sync(_: ImportRequest) -> None:
+        raise AssertionError("import must not run in print-synced-base mode")
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
+
+    sync_import_change.run(
+        [
+            "--print-synced-base",
+            "--target-dir",
+            str(tmp_path),
+            "--sync-label",
+            "Sagent",
+            "--base-branch",
+            "main",
+            "--fallback-sha",
+            parent,
+        ]
+    )
+
+    assert capsys.readouterr().out.strip() == parent
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
