@@ -49,7 +49,7 @@ test = [
 [dependency-groups]
 lint = [
     "codespell>=2.2.4",
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6",
     "ruff",
 ]
 test = [
@@ -60,9 +60,9 @@ test = [
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.12",
 ]
-typing = [
+typecheck = [
     "basedpyright>=1.10",
-    "ty",
+    "ty>=0.0.56",
 ]
 
 [project.scripts]
@@ -369,7 +369,7 @@ invalid-key = "ignore"
 [tool.codespell]
 # some_variable_with_typo = "connexion"  # codespell:ignore
 builtin = "clear,rare,code"
-ignore-words-list = "lite"
+ignore-words = ".codespell-ignore"
 # Pre-commit exclude handles most skips. This covers direct CLI invocations.
 # Don't add new folder paths here -- add them to .pre-commit-config.yaml's
 # codespell exclude regex instead. This list is only for file patterns.

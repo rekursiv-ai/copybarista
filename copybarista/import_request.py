@@ -517,8 +517,11 @@ class ChangeRequestImporter:
             destination=self.destination, relative_path=change.source
         )
         public_path = self.public_head / change.public
+        # Not text-mergeable: deletions, symlink/dir heads, and type changes
+        # (e.g. symlink<->file) force-propagate from public head exactly as the
+        # strict path does. Byte three-way-merge applies only to file->file.
         if (
-            change.action == "deleted"
+            change.action in ("deleted", "type_changed")
             or public_path.is_symlink()
             or public_path.is_dir()
         ):
@@ -542,9 +545,20 @@ class ChangeRequestImporter:
         merged_public, conflicted = _three_way_merge(
             current=ours_public, base=base_public, incoming=head_public
         )
+        if conflicted:
+            # The caller rolls the whole import back on any conflict, so the
+            # conflict-marker bytes are never a valid final tree. Don't reverse
+            # (which can raise on marker text), write, or reformat them -- report
+            # the conflict and leave the destination untouched.
+            return _with_outcome(change, "merged"), True
         merged_source = self._reverse_content(
             public_path=change.public, data=merged_public
         )
+        # Mirror _apply_change: a drifted symlink target must be removed, not
+        # written through -- otherwise write_bytes follows the link and mutates
+        # its referent instead of restoring a regular file.
+        if target.is_symlink():
+            _delete_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(merged_source)
         shutil.copymode(public_path, target)

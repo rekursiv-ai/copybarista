@@ -81,9 +81,12 @@ def _require_tool(name: str) -> str:
     return executable
 
 
-def main() -> None:
-    """Parse arguments and render the requested diagram."""
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
+def main() -> int:
+    """Parse arguments and render the diagram. Return the process exit code."""
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "input",
         type=Path,
@@ -116,8 +119,9 @@ def main() -> None:
     output = args.output or args.input.with_suffix(".webp")
     render(args.input, output, args.width, args.scale)
     sys.stdout.write(f"wrote {output}\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -59,7 +60,12 @@ PR_DROPPED_TEMPLATE_SECTIONS = frozenset({"Checklist"})
 PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 
-def main(argv: list[str] | None = None) -> None:
+def main() -> int:
+    """The main function. Return the process exit code."""
+    return run()
+
+
+def run(argv: list[str] | None = None) -> int:
     """Run source-to-public export validation and PR creation."""
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _apply_project_discovery(argv)
@@ -121,6 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     except (PrMetadataError, PrReplayError) as err:
         sys.stderr.write(f"{err}\n")
         raise SystemExit(2) from err
+    return 0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -346,7 +353,8 @@ def _run_export_sync(request: ExportRequest) -> None:
 def _parser() -> argparse.ArgumentParser:
     """Build the source-to-public sync CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Open or update a Copybarista export PR."
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "project_dir",
@@ -1869,10 +1877,36 @@ def _validate_metadata_text(
     if not value:
         return
     lowered = value.casefold()
-    if any(term.casefold() in lowered for term in forbidden_text):
+    if any(
+        _forbidden_term_present(term.casefold(), lowered) for term in forbidden_text
+    ):
         raise _metadata_error(
             commit_sha, field, "contains restricted source-specific text"
         )
+
+
+def _forbidden_term_present(term: str, text: str) -> bool:
+    """Whether ``term`` occurs in ``text`` as a monorepo identifier, not prose.
+
+    Terms ending in a dotted/path separator (``package.`` / ``package/``) are
+    import or path prefixes. They must match a real reference --
+    ``package.module``, ``package/lib``, even a dotfile path
+    ``package/.github`` -- but not the English word "package" ending a sentence
+    or clause. The discriminator is what follows the separator: an import/path
+    continues with a non-whitespace token character, whereas prose has
+    whitespace, end-of-string, or a closing quote/backtick/paren after it.
+
+    Erring toward catching: only an unambiguous prose boundary (whitespace,
+    EOS, or a closing delimiter) is treated as safe; any other trailing
+    character keeps the match, so a real leak is never silently allowed. Terms
+    without a trailing separator keep plain substring matching.
+    """
+    if not term.endswith((".", "/")):
+        return term in text
+    # Match the prefix unless it is immediately followed by a prose boundary:
+    # whitespace, end-of-string, or a closing quote/backtick/paren/bracket. The
+    # negative lookahead ``(?!...)`` leaves any other trailing char a match.
+    return re.search(re.escape(term) + r"""(?![\s'"`)\]}]|$)""", text) is not None
 
 
 def _replace_pr_state(
@@ -2321,5 +2355,5 @@ def _log(message: str) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

@@ -110,7 +110,7 @@ def test_main_accepts_generic_project_validation_args(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/configgle",
@@ -143,7 +143,7 @@ def test_main_accepts_dry_run(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -172,7 +172,7 @@ def test_main_derives_request_from_project_positional(
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
     monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
 
-    sync_export_pr.main([str(project_dir), "--dry-run"])
+    sync_export_pr.run([str(project_dir), "--dry-run"])
 
     request = captured[0]
     assert request.dry_run
@@ -204,9 +204,7 @@ def test_main_explicit_flag_overrides_sync_setting(
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
     monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
 
-    sync_export_pr.main(
-        [str(project_dir), "--dry-run", "--smoke-import", "alt_package"]
-    )
+    sync_export_pr.run([str(project_dir), "--dry-run", "--smoke-import", "alt_package"])
 
     assert captured[0].smoke_import == "alt_package"
 
@@ -251,7 +249,7 @@ def test_main_accepts_auto_merge_value_arg(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -274,7 +272,7 @@ def test_main_accepts_auto_merge_as_boolean_flag(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -301,7 +299,7 @@ def test_main_passes_github_source_message(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -326,7 +324,7 @@ def test_main_rejects_manual_branch_fallback(
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
     with pytest.raises(SystemExit) as error:
-        sync_export_pr.main(["--project-path", "packages/example"])
+        sync_export_pr.run(["--project-path", "packages/example"])
 
     assert error.value.code == 2
 
@@ -341,7 +339,7 @@ def test_main_accepts_skip_source_validation(
 
     monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.main(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -578,6 +576,94 @@ def test_parse_pr_metadata_rejects_forbidden_text():
             _metadata_log("Copybarista-PR-Body:\nMentions private-source.\n"),
             forbidden_text=("private-source",),
         )
+
+
+def test_prefix_term_ignores_prose_word():
+    # A dotted/path prefix term must not trip on the same word ending a sentence.
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Copybarista-PR-Title: t\n"
+            "Copybarista-PR-Body:\nReimplementing the package. Also uses package/ "
+            "style prose here.\n"
+        ),
+        forbidden_text=("package.", "package/"),
+    )
+    assert tuple(p.body for p in patches) == (
+        "Reimplementing the package. Also uses package/ style prose here.",
+    )
+
+
+def test_prefix_term_rejects_dotted_import():
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
+        _parse_pr_metadata_log(
+            _metadata_log("Copybarista-PR-Body:\nImport package.module.agent.\n"),
+            forbidden_text=("package.",),
+        )
+
+
+def test_prefix_term_rejects_path():
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
+        _parse_pr_metadata_log(
+            _metadata_log("Copybarista-PR-Body:\nSee package/lib/web for details.\n"),
+            forbidden_text=("package/",),
+        )
+
+
+def test_non_prefix_term_still_substring_matches():
+    # A term without a trailing separator keeps plain substring matching, so a
+    # trailing period does not shield it.
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
+        _parse_pr_metadata_log(
+            _metadata_log("Copybarista-PR-Body:\nMentions company/source.\n"),
+            forbidden_text=("company/source",),
+        )
+
+
+# Package references the prefix matcher must still catch (false-negative guard).
+# Each prefix is followed by a token continuation.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "package.experimental",
+        "package.lib.web.paper",
+        "package.web",
+        "import package.foo",
+        ":mod:`package.lib.web.paper`",  # A doc-ref is still a reference.
+        "package/lib",
+        "package/experimental/agent",
+        "package/bin",
+        "package/.github/workflows",  # A dotfile path is still a reference.
+        "package/-weird",  # A non-word path character still continues the path.
+        "see package.lib, plus more",  # Punctuation after a word still matches.
+    ],
+)
+def test_prefix_matcher_catches_real_references(text: str) -> None:
+    term = "package." if "package." in text else "package/"
+    assert sync_export_pr._forbidden_term_present(term, text)
+
+
+# Prose uses of the bare word that MUST be allowed (false-positive guard).
+@pytest.mark.parametrize(
+    "text",
+    [
+        "reimplementing the walk loop.",  # sentence-final period
+        "the walk loop. Eliminates bugs",  # period + space
+        "uses loop/ style prose",  # slash + space
+        "the event loop",  # no separator at all
+        "backtick ``loop.``",  # separator then closing backtick
+        "(see the loop.)",  # separator then closing paren
+        "the loop/",  # slash at end-of-string
+    ],
+)
+def test_prefix_matcher_allows_prose(text: str) -> None:
+    term = "loop/" if "loop/" in text else "loop."
+    assert not sync_export_pr._forbidden_term_present(term, text)
+
+
+def test_plain_term_matches_anywhere() -> None:
+    # A separator-less term is a pure substring check (no boundary logic).
+    assert sync_export_pr._forbidden_term_present("LOOP_ENV", "the LOOP_ENV var")
+    assert not sync_export_pr._forbidden_term_present("LOOP_ENV", "the loop env")
 
 
 def test_replay_append_body_adds_entries_in_commit_order():

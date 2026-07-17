@@ -21,6 +21,7 @@ from typing import TextIO
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -101,9 +102,30 @@ GITHUB_RETRY_ATTEMPTS = 3
 GITHUB_RETRY_DELAY_SEC = 2
 
 
-def main(argv: list[str] | None = None) -> None:
+def main() -> int:
+    """The main function. Return the process exit code."""
+    return run()
+
+
+def run(argv: list[str] | None = None) -> int:
     """Run public-to-source import validation and optional PR creation."""
     args = _parser().parse_args(argv)
+    if args.print_synced_base:
+        # Resolve the merge baseline from the target's own import history and
+        # print it for the workflow to consume; no import request is built.
+        sys.stdout.write(
+            last_synced_public_sha(
+                target_dir=Path(args.target_dir).resolve(),
+                sync_label=args.sync_label,
+                base_branch=args.base_branch,
+                fallback=args.fallback_sha,
+            )
+            + "\n"
+        )
+        return 0
+    for name in ("project_path", "public_base_ref", "public_head_ref"):
+        if getattr(args, name) is None:
+            _parser().error(f"--{name.replace('_', '-')} is required for an import")
     # Resolve filesystem inputs to absolute paths. Copybarista subprocesses run
     # with cwd=target_dir; relative path args would otherwise be resolved a
     # second time against that cwd (target/target/...).
@@ -134,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         refresh_public_lockfile=args.refresh_public_lockfile,
     )
     run_import_sync(request)
+    return 0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -190,13 +213,17 @@ def run_import_sync(request: ImportRequest) -> None:
 def _parser() -> argparse.ArgumentParser:
     """Build the public-to-source sync CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Open or update a Copybarista import PR."
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--public-base", default="public-base")
     parser.add_argument("--public-head", default="public-head")
     parser.add_argument("--target-dir", default="target")
     parser.add_argument("--target-repo", default=os.environ.get("TARGET_REPO", ""))
-    parser.add_argument("--project-path", required=True)
+    # Not argparse-required: --print-synced-base resolves the baseline from the
+    # target history alone and needs none of the import-only arguments. The
+    # import path validates their presence in main().
+    parser.add_argument("--project-path")
     parser.add_argument("--base-branch", default=os.environ.get("BASE_BRANCH", "main"))
     parser.add_argument(
         "--public-repo",
@@ -211,8 +238,8 @@ def _parser() -> argparse.ArgumentParser:
         "--sync-user-email",
         default=os.environ.get("COPYBARISTA_SYNC_USER_EMAIL", DEFAULT_SYNC_USER_EMAIL),
     )
-    parser.add_argument("--public-base-ref", required=True)
-    parser.add_argument("--public-head-ref", required=True)
+    parser.add_argument("--public-base-ref")
+    parser.add_argument("--public-head-ref")
     parser.add_argument(
         "--branch",
         default=os.environ.get("COPYBARISTA_IMPORT_BRANCH", ""),
@@ -252,6 +279,23 @@ def _parser() -> argparse.ArgumentParser:
         "--refresh-public-lockfile",
         action="store_true",
         help="Ignore generated public uv.lock while importing source-owned changes.",
+    )
+    parser.add_argument(
+        "--print-synced-base",
+        action="store_true",
+        help=(
+            "Print the public SHA the target last imported (from its history) "
+            "and exit. Used to resolve the merge baseline before the import."
+        ),
+    )
+    parser.add_argument(
+        "--fallback-sha",
+        default="",
+        help=(
+            "With --print-synced-base: SHA to print when the target has no "
+            "landed import yet (a first-import baseline, e.g. the branch tip "
+            "before the push)."
+        ),
     )
     return parser
 
@@ -499,7 +543,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             "--author",
             _commit_author(request.sync_user_name, request.sync_user_email),
             "-m",
-            f"Import {request.sync_label} public changes {request.public_sha}",
+            import_commit_subject_prefix(request.sync_label) + request.public_sha,
         ],
         cwd=request.target_dir,
     )
@@ -596,6 +640,78 @@ def _git_has_changes(*, path: Path, rel: Path) -> bool:
 def _git_head(*, cwd: Path) -> str:
     """Return the current Git HEAD SHA."""
     return _run(["git", "rev-parse", "HEAD"], cwd=cwd, capture=True).stdout.strip()
+
+
+class ImportBaseError(RuntimeError):
+    """Raised when the target records no prior import to use as a baseline."""
+
+
+def import_commit_subject_prefix(sync_label: str) -> str:
+    """Return the fixed prefix of a landed import's commit subject."""
+    return f"Import {sync_label} public changes "
+
+
+def last_synced_public_sha(
+    *, target_dir: Path, sync_label: str, base_branch: str, fallback: str = ""
+) -> str:
+    """Return the newest public SHA already imported into the target branch.
+
+    The merge-import baseline must be the public commit the target tree
+    currently reflects, not the pushed commit's parent. Those diverge whenever
+    an import fails to land (validation error, unmerged PR, conflict): the
+    parent marches forward while the target stays pinned to its last successful
+    import, so a parent-based baseline feeds the three-way merge a wrong common
+    ancestor and manufactures spurious conflicts.
+
+    Each landed import records its public SHA in the commit subject
+    (``Import <label> public changes <sha>``, written by
+    ``_open_or_update_target_pr``), so the target's own history is the source of
+    truth for what it last synced. Walk the branch newest-first and return the
+    SHA from the first subject that matches the full template.
+
+    Args:
+      target_dir: Root of the target repository checkout.
+      sync_label: Import label, e.g. ``Sagent``; scopes the commit search.
+      base_branch: Target branch to walk, e.g. ``main``.
+      fallback: SHA to return when the branch records no import -- a
+        first-import baseline (e.g. the branch tip before the push). Empty
+        string means raise.
+
+    Returns:
+      sha: The most recently imported public SHA, or ``fallback`` when the
+        branch has no landed import and ``fallback`` is set.
+
+    Raises:
+      ImportBaseError: When the branch records no import commit and no fallback
+        is provided.
+
+    """
+    prefix = import_commit_subject_prefix(sync_label)
+    # --fixed-strings: sync_label is matched literally, never as a git BRE, so a
+    # label with regex metacharacters cannot broaden or break the search.
+    subjects = _run(
+        [
+            "git",
+            "log",
+            base_branch,
+            "--fixed-strings",
+            f"--grep={prefix}",
+            "--format=%s",
+        ],
+        cwd=target_dir,
+        capture=True,
+    ).stdout.splitlines()
+    pattern = re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})$")
+    for subject in subjects:
+        match = pattern.match(subject)
+        if match is not None:
+            return match.group(1)
+    if fallback:
+        return fallback
+    raise ImportBaseError(
+        f"No landed '{sync_label}' import commit found on "
+        f"'{base_branch}'; cannot resolve the merge baseline."
+    )
 
 
 def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
@@ -756,11 +872,16 @@ def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
 
 
 def _log(message: str) -> None:
-    """Write one flushed workflow log line."""
-    sys.stdout.write(f"{message}\n")
-    sys.stdout.flush()
+    """Write one flushed workflow log line to stderr.
+
+    Diagnostics go to stderr so stdout stays a clean machine-readable channel
+    (``--print-synced-base`` emits only the resolved SHA there). GitHub merges
+    both streams into the Action log, so human-facing output is unchanged.
+    """
+    sys.stderr.write(f"{message}\n")
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

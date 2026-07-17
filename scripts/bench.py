@@ -164,8 +164,8 @@ def build_report(
     return BenchmarkReport(copybarista=copybarista)
 
 
-def main() -> None:
-    """Run the benchmark helper CLI."""
+def main() -> int:
+    """Run the benchmark helper CLI. Return the process exit code."""
     args = _parser().parse_args()
     report = build_report(
         config_path=Path(args.config),
@@ -176,11 +176,15 @@ def main() -> None:
         sys.stdout.write(report.to_json())
     else:
         _print_text_report(report)
+    return 0
 
 
 def _parser() -> argparse.ArgumentParser:
     """Build the benchmark CLI parser."""
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("config")
     parser.add_argument("source_ref")
     parser.add_argument("--runs", type=int, default=5)
@@ -237,5 +241,5 @@ def _format_phases(phases: dict[str, float]) -> str:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

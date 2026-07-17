@@ -38,9 +38,12 @@ DEFAULT_TARGETS = (
 )
 
 
-def main() -> None:
-    """Run the cleanup command."""
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
+def main() -> int:
+    """Run the cleanup command. Return the process exit code."""
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n", 2)[2],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--venv",
         action="store_true",
@@ -68,6 +71,7 @@ def main() -> None:
             shutil.rmtree(target)
         else:
             target.unlink()
+    return 0
 
 
 def _safe_project_path(relative_target: str) -> Path:
@@ -79,5 +83,5 @@ def _safe_project_path(relative_target: str) -> Path:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 # vim: ft=python

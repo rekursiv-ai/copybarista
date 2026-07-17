@@ -47,7 +47,10 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # Pin to the published floor (requires-python >=3.12), not the repo
+          # default, so the export runs on the oldest interpreter downstream
+          # users can install.
+          python-version: @@PYTHON_VERSION@@
       - uses: astral-sh/setup-uv@v6
       - uses: actions/checkout@v5
         with:
