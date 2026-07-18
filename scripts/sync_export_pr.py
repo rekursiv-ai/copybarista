@@ -718,15 +718,15 @@ def _copy_validation_tree(*, source: Path, destination: Path) -> None:
 def _clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
     """Clone the public checkout locally for strict dry-run mutations.
 
-    When ``public_dir`` is absent, initialize an empty public repository so
-    dry-run still exercises the export pipeline without a sibling checkout.
+    When ``public_dir`` is not a Git checkout, initialize an empty public
+    repository so dry-run still exercises the export pipeline without one.
     """
     dry_public_dir = Path(tempfile.mkdtemp(prefix="copybarista-dry-public-"))
     _delete_path(dry_public_dir)
-    if public_dir.is_dir():
+    if _is_git_checkout(public_dir):
         _run(["git", "clone", "--no-local", str(public_dir), str(dry_public_dir)])
         return dry_public_dir
-    _log(f"Dry run: public checkout {public_dir} not found; using empty repo.")
+    _log(f"Dry run: public checkout {public_dir} unavailable; using empty repo.")
     dry_public_dir.mkdir(parents=True)
     _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=dry_public_dir)
     _run(
@@ -745,6 +745,22 @@ def _clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
         cwd=dry_public_dir,
     )
     return dry_public_dir
+
+
+def _is_git_checkout(path: Path) -> bool:
+    """Return whether ``path`` is the root of a Git working tree."""
+    if not path.is_dir():
+        return False
+    result = _run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=path,
+        check=False,
+        capture=True,
+    )
+    return (
+        result.returncode == 0
+        and Path(result.stdout.strip()).resolve() == path.resolve()
+    )
 
 
 def _refresh_public_lockfile(*, public_dir: Path) -> None:

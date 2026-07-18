@@ -2006,6 +2006,24 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     assert not (public_dir / "uv.lock").exists()
 
 
+def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    public_dir.mkdir()
+    sentinel = public_dir / "source-tree-file.py"
+    sentinel.write_text("preserve me\n", encoding="utf-8")
+
+    dry_public_dir = sync_export_pr._clone_public_checkout_for_dry_run(
+        public_dir=public_dir
+    )
+    try:
+        assert (dry_public_dir / ".git").is_dir()
+        assert sentinel.read_text(encoding="utf-8") == "preserve me\n"
+    finally:
+        sync_export_pr._delete_path(dry_public_dir)
+
+
 def test_run_export_sync_dry_run_uses_temp_public_checkout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
