@@ -1457,7 +1457,7 @@ def test_no_diff_updates_existing_pr_when_replay_text_changed(
         record_edit,
     )
 
-    _open_or_update_export_pr(
+    pr_open = _open_or_update_export_pr(
         request=request,
         pr_plan=sync_export_pr.PrReplayPlan(
             state=_pr_state(),
@@ -1474,6 +1474,7 @@ def test_no_diff_updates_existing_pr_when_replay_text_changed(
     )
 
     assert calls == ["edit"]
+    assert pr_open
     assert (tmp_path / "copybarista-pr-body.md").read_text(
         encoding="utf-8"
     ) == "new body\n"
@@ -1501,7 +1502,7 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
         record_edit,
     )
 
-    _open_or_update_export_pr(
+    pr_open = _open_or_update_export_pr(
         request=request,
         pr_plan=sync_export_pr.PrReplayPlan(
             state=_pr_state(),
@@ -1513,6 +1514,8 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
     )
 
     assert calls == []
+    # No changes and no existing PR: nothing for auto-merge to act on.
+    assert not pr_open
 
 
 def test_replay_without_metadata_keeps_generic_pr_text():
@@ -1898,9 +1901,10 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
 
     def fake_open_or_update_export_pr(
         *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
-    ) -> None:
+    ) -> bool:
         del request
         opened.append(pr_plan.body)
+        return True
 
     monkeypatch.setattr(
         sync_export_pr, "_resolve_pr_replay_plan", fake_resolve_pr_replay_plan
@@ -1923,6 +1927,87 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     assert opened
     assert opened[0].startswith("## Summary\n\nPublic body.")
     assert "Exported template placeholder" not in opened[0]
+
+
+def test_run_export_sync_skips_auto_merge_when_no_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A no-op export (no PR) must not attempt auto-merge on a missing PR."""
+    public_dir = tmp_path / "public"
+    source_dir = tmp_path / "source"
+    public_dir.mkdir()
+    source_dir.mkdir()
+    merged: list[str] = []
+
+    def fake_resolve_pr_replay_plan(
+        *, request: ExportRequest, pr_template: str
+    ) -> sync_export_pr.PrReplayPlan:
+        del request, pr_template
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_export_public_tree(
+        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    ) -> None:
+        del project, source_dir, export_dir, manifest
+
+    def fake_validate_public(
+        *,
+        public_dir: Path,
+        dist_dir: Path,
+        release_check_script: Path | None,
+        frozen_sync: bool,
+        type_check_targets: tuple[str, ...],
+        smoke_import: str,
+    ) -> None:
+        del (
+            public_dir,
+            dist_dir,
+            release_check_script,
+            frozen_sync,
+            type_check_targets,
+            smoke_import,
+        )
+
+    def fake_open_or_update_export_pr(
+        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+    ) -> bool:
+        del request, pr_plan
+        return False  # No changes and no existing PR.
+
+    def fake_enable_auto_merge(*, request: ExportRequest, pr_title: str) -> None:
+        del request, pr_title
+        merged.append("merge")
+
+    monkeypatch.setattr(
+        sync_export_pr, "_resolve_pr_replay_plan", fake_resolve_pr_replay_plan
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(
+        sync_export_pr, "_open_or_update_export_pr", fake_open_or_update_export_pr
+    )
+    monkeypatch.setattr(
+        sync_export_pr, "_enable_export_pr_auto_merge", fake_enable_auto_merge
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=source_dir,
+            public_dir=public_dir,
+            skip_source_validation=True,
+            auto_merge=True,
+        )
+    )
+
+    assert merged == []
 
 
 def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
@@ -1975,10 +2060,11 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
 
     def fake_open_or_update_export_pr(
         *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
-    ) -> None:
+    ) -> bool:
         del pr_plan
         lockfile = request.public_dir / "uv.lock"
         opened.append(lockfile.read_text(encoding="utf-8") if lockfile.exists() else "")
+        return True
 
     monkeypatch.setattr(
         sync_export_pr,
@@ -2174,12 +2260,13 @@ def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
 
     def fake_open_or_update_export_pr(
         *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
-    ) -> None:
+    ) -> bool:
         del pr_plan
         assert (request.public_dir / "uv.lock").read_text(encoding="utf-8") == (
             "public lock\n"
         )
         calls.append("open")
+        return True
 
     monkeypatch.setattr(
         sync_export_pr,

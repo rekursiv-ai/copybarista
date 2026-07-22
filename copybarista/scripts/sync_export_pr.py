@@ -358,8 +358,8 @@ def _run_export_sync(request: ExportRequest) -> None:
         _log("Dry run complete; skipped public checkout and GitHub mutations.")
         return
     _log("Opening or updating export PR.")
-    _open_or_update_export_pr(request=request, pr_plan=pr_plan)
-    if request.auto_merge:
+    pr_open = _open_or_update_export_pr(request=request, pr_plan=pr_plan)
+    if request.auto_merge and pr_open:
         _enable_export_pr_auto_merge(request=request, pr_title=pr_plan.state.title)
 
 
@@ -1143,8 +1143,15 @@ def _base_pr_state(
     )
 
 
-def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) -> None:
-    """Commit exported changes and create or update the public PR."""
+def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) -> bool:
+    """Commit exported changes and create or update the public PR.
+
+    Returns:
+      pr_open: True if a public PR exists after this call (created, updated, or
+        already open) and is therefore mergeable; False when the export was a
+        no-op with no existing PR, so there is nothing for auto-merge to act on.
+
+    """
     if not _git_has_changes(request.public_dir):
         if pr_plan.current_pr and (
             pr_plan.current_pr.title != pr_plan.state.title
@@ -1152,9 +1159,9 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         ):
             _write_pr_body_file(request=request, body=pr_plan.body)
             _edit_export_pr(request=request, title=pr_plan.state.title)
-            return
+            return True
         _log("Export produced no target repository changes.")
-        return
+        return bool(pr_plan.current_pr)
 
     branch = request.branch
     message_file = request.runner_temp / "copybarista-commit-message.txt"
@@ -1216,7 +1223,7 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         cwd=request.public_dir,
     ):
         _edit_export_pr(request=request, title=pr_plan.state.title)
-        return
+        return True
     _run_gh(
         [
             "gh",
@@ -1235,6 +1242,7 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         ],
         cwd=request.public_dir,
     )
+    return True
 
 
 def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> None:
