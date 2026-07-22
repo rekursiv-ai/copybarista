@@ -113,6 +113,12 @@ omit = [
     "*/__main__.py",
     "*/tests/*",
     "*/.venv/*",
+    # The `copybarista.scripts` subpackage is CLI/dev tooling (export/import
+    # drivers, release checks, polyglot shell/Python utilities), exercised via
+    # integration and CLI tests rather than unit coverage. It rides the package
+    # for import resolution but is excluded from the library coverage gate, as
+    # it was before scripts moved under the package directory.
+    "*/scripts/*",
 ]
 
 [tool.coverage.report]

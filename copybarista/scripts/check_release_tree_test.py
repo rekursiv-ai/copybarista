@@ -14,8 +14,8 @@ def _write_required_tree(root: Path) -> None:
         root / "LICENSE",
         root / "README.md",
         root / "copybarista/__init__.py",
+        root / "copybarista/scripts/__init__.py",
         root / "pyproject.toml",
-        root / "scripts/__init__.py",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
@@ -40,7 +40,7 @@ def test_check_tree_accepts_package_validation_workflow_name(tmp_path: Path):
 
 def test_check_tree_allows_deliberate_forbidden_text_fixtures(tmp_path: Path):
     _write_required_tree(tmp_path)
-    fixture = tmp_path / "scripts/check_pr_text_test.py"
+    fixture = tmp_path / "copybarista/scripts/check_pr_text_test.py"
     fixture.write_text("value = 'loop/lib'\n", encoding="utf-8")
 
     assert check_tree(root=tmp_path) == ()

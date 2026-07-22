@@ -37,19 +37,29 @@ from copybarista.sync_setup import (
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_LABEL = "Copybarista"
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
-DEFAULT_SYNC_USER_NAME = "copybarista"
-DEFAULT_EXPORT_BRANCH_PREFIX = "copybarista/export/"
-DEFAULT_EXPORT_TITLE = "Update public export"
-DEFAULT_EXPORT_DESCRIPTION = "Updates the generated public repository export."
-CONTROL_CHAR_BOUND = 32
-PR_STATE_VERSION = "1"
-PR_MARKER_PREFIX = "<!-- copybarista:pr-state "
-PR_ENTRY_PREFIX = "<!-- copybarista:pr-entry "
-DEFAULT_TYPE_CHECK_TARGETS = (".",)
-GITHUB_RETRY_ATTEMPTS = 3
-GITHUB_RETRY_DELAY_SEC = 2
+DEFAULT_SYNC_LABEL = (
+    "Copybarista"  # config-globals: ignore -- static default/protocol constant.
+)
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_SYNC_USER_NAME = (
+    "copybarista"  # config-globals: ignore -- static default/protocol constant.
+)
+DEFAULT_EXPORT_BRANCH_PREFIX = (
+    "copybarista/export/"  # config-globals: ignore -- static default/protocol constant.
+)
+DEFAULT_EXPORT_TITLE = "Update public export"  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_EXPORT_DESCRIPTION = "Updates the generated public repository export."  # config-globals: ignore -- static default/protocol constant.
+CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
+PR_STATE_VERSION = "1"  # config-globals: ignore -- static default/protocol constant.
+PR_MARKER_PREFIX = "<!-- copybarista:pr-state "  # config-globals: ignore -- static default/protocol constant.
+PR_ENTRY_PREFIX = "<!-- copybarista:pr-entry "  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_TYPE_CHECK_TARGETS = (
+    ".",
+)  # config-globals: ignore -- static default/protocol constant.
+GITHUB_RETRY_ATTEMPTS = 3  # config-globals: ignore -- static default/protocol constant.
+GITHUB_RETRY_DELAY_SEC = (
+    2  # config-globals: ignore -- static default/protocol constant.
+)
 PR_TEMPLATE_PATHS = (
     Path(".github/PULL_REQUEST_TEMPLATE.md"),
     Path(".github/pull_request_template.md"),
@@ -312,8 +322,11 @@ def _run_export_sync(request: ExportRequest) -> None:
         )
     if request.release_check_script:
         _log("Checking exported release tree.")
+        # The release-check script ships inside the exported package (e.g.
+        # copybarista/scripts/check_release_tree.py), so resolve it against the
+        # export tree -- the same public-relative path _validate_public runs.
         _check_release_tree(
-            project=project,
+            project=export_dir,
             root=export_dir,
             script=request.release_check_script,
         )

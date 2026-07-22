@@ -43,7 +43,7 @@ BLOCKED_ROOT_PATHS = frozenset(
     )
 )
 BLOCKED_EXACT_PATHS = frozenset((".github/workflows/pages.yml",))
-PRIVATE_SYNC_MARKERS = (
+PRIVATE_SYNC_MARKERS = (  # config-globals: ignore -- static release-policy table.
     "<!-- copybarista:private-sync:start -->",
     "<!-- copybarista:private-sync:end -->",
 )
@@ -51,12 +51,12 @@ TEXT_SCAN_NAMES = frozenset((".gitignore", ".pre-commit-config.yaml"))
 TEXT_SCAN_SUFFIXES = frozenset((".md", ".mmd", ".py", ".toml", ".yaml", ".yml"))
 TEXT_SCAN_SKIP_PATHS = frozenset(
     (
-        "scripts/check_pr_text_test.py",
-        "scripts/check_release_tree.py",
-        "scripts/check_release_tree_test.py",
+        "copybarista/scripts/check_pr_text_test.py",
+        "copybarista/scripts/check_release_tree.py",
+        "copybarista/scripts/check_release_tree_test.py",
     )
 )
-BLOCKED_TEXT = (
+BLOCKED_TEXT = (  # config-globals: ignore -- static release-policy table.
     ("loop" + "/experimental", "monorepo path"),
     ("loop" + ".experimental", "monorepo import"),
     ("loop" + "/lib", "monorepo path"),
@@ -70,7 +70,7 @@ BLOCKED_TEXT = (
     ("Rat" + "lab", "private project name"),
     ("rat" + "lab", "private project name"),
 )
-BLOCKED_TEXT_BY_PATH = {
+BLOCKED_TEXT_BY_PATH = {  # config-globals: ignore -- static release-policy table.
     ".gitignore": ("private/fixtures",),
     ".pre-commit-config.yaml": (
         "|private/",
@@ -83,15 +83,15 @@ BLOCKED_TEXT_BY_PATH = {
         '"private/fixtures/**/*.py"',
     ),
 }
-REQUIRED_PATHS = (
+REQUIRED_PATHS = (  # config-globals: ignore -- static release-policy table.
     ".github/workflows/sync-to-source.yml",
     "LICENSE",
     "README.md",
     "copybarista",
+    "copybarista/scripts",
     "pyproject.toml",
-    "scripts",
 )
-REQUIRED_ANY_PATH_GROUPS = (
+REQUIRED_ANY_PATH_GROUPS = (  # config-globals: ignore -- static release-policy table.
     (".github/workflows/ci.yml", ".github/workflows/package-validation.yml"),
 )
 
