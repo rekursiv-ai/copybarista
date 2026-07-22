@@ -2010,6 +2010,62 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
     assert merged == []
 
 
+def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When --auto is rejected (no branch protection), merge the PR directly."""
+    request = _export_request(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if "--auto" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                1,
+                stdout="",
+                stderr=(
+                    "GraphQL: Pull request Protected branch rules not configured "
+                    "for this branch (enablePullRequestAutoMerge)"
+                ),
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout="merged\n")
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
+
+    merge_calls = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
+    assert len(merge_calls) == 2  # the --auto attempt, then the direct fallback
+    assert "--auto" in merge_calls[0]
+    assert "--auto" not in merge_calls[1]
+
+
+def test_enable_auto_merge_reraises_unrelated_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-protection merge failure must still abort the export."""
+    request = _export_request(tmp_path)
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="GraphQL: some other error"
+        )
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
+
+
 def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
