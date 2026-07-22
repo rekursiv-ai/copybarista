@@ -1,0 +1,79 @@
+name: @@WORKFLOW_NAME@@
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - @@SOURCE_ROOT_PATH@@
+      - @@EXPORT_SCRIPT_PATH@@
+      - @@IMPORT_SCRIPT_PATH@@
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copybarista-export-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  export-pr:
+    name: @@JOB_NAME@@
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+      TARGET_REPO: @@PUBLIC_REPO@@
+      BASE_BRANCH: main
+      EXPORT_BRANCH: @@EXPORT_BRANCH@@
+      SYNC_LABEL: @@SYNC_LABEL@@
+      FORBIDDEN_PR_TEXT: @@FORBIDDEN_PR_TEXT@@
+      COPYBARISTA_SYNC_USER_NAME: @@SYNC_USER_NAME@@
+      COPYBARISTA_SYNC_USER_EMAIL: @@SYNC_USER_EMAIL@@
+      COPYBARISTA_SYNC_TOKEN_LOGIN: @@SYNC_TOKEN_LOGIN@@
+      COPYBARISTA_AUTO_MERGE: ${{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}
+
+    steps:
+      - name: Verify sync token identity
+        if: env.COPYBARISTA_SYNC_TOKEN_LOGIN != ''
+        run: |
+          token_login="$(gh api user --jq .login)"
+          if [ "$token_login" != "$COPYBARISTA_SYNC_TOKEN_LOGIN" ]; then
+            echo "::error::COPYBARISTA_SYNC_TOKEN authenticates as '$token_login', expected '$COPYBARISTA_SYNC_TOKEN_LOGIN'. Rotate COPYBARISTA_SYNC_TOKEN to a token owned by $COPYBARISTA_SYNC_TOKEN_LOGIN; git author settings cannot change GitHub push or PR attribution."
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+        with:
+          path: source
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          # Pin to the published floor (requires-python >=3.12), not the repo
+          # default, so the export runs on the oldest interpreter downstream
+          # users can install.
+          python-version: @@PYTHON_VERSION@@
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+          ref: ${{ env.BASE_BRANCH }}
+          path: public
+      - name: Open export PR
+        env:
+          PYTHONPATH: source
+        run: |
+          uv --quiet run --no-project --with pyyaml --with ruff python3 \
+            @@SYNC_EXPORT_SCRIPT@@ \
+            --source-dir source \
+            --project-path @@SOURCE_ROOT@@ \
+            --public-dir public \
+            --target-repo "$TARGET_REPO" \
+            --base-branch "$BASE_BRANCH" \
+            --branch "$EXPORT_BRANCH" \
+            --branch-prefix @@EXPORT_BRANCH_PREFIX@@ \
+            --sync-label "$SYNC_LABEL" \
+@@PR_REPLAY_FLAGS@@ \
+            --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \
+@@RELEASE_CHECK_ARG@@@@TYPE_TARGETS@@ \
+            --smoke-import @@SMOKE_IMPORT@@ \
+@@SKIP_SOURCE_VALIDATION_ARG@@            --auto-merge="$COPYBARISTA_AUTO_MERGE"

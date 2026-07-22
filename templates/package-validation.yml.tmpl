@@ -1,0 +1,32 @@
+name: Package validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**"
+  push:
+    branches: [main]
+    paths:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint, type-check, test, and build
+    runs-on: ubuntu-latest
+@@STRATEGY@@    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+@@PYTHON_SETUP@@
+      - uses: astral-sh/setup-uv@v6
+@@SYSTEM_DEPS@@      - name: Validate package
+        run: |
+@@COMMANDS@@

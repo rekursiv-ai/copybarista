@@ -1,0 +1,11 @@
+.coverage
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.egg-info/
+*.pyc
+build/
+dist/
+htmlcov/
+!examples/python-package/github/protect-main-ruleset.json

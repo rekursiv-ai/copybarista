@@ -1,0 +1,34 @@
+name: Package validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint, type-check, test, and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Validate package
+        run: |
+          python scripts/check_release_tree.py . --allow-root-git
+          uv sync --all-groups
+          uv run --all-groups ruff check --no-fix --no-cache .
+          uv run --all-groups ruff format --check --no-cache .
+          uv run --all-groups codespell .
+          uv run --all-groups ty check
+          uv run --all-groups basedpyright copybarista scripts tests
+          uv run --all-groups pytest
+          uv run --all-groups pytest -m ci_smoke -o addopts="--durations=20" || test "$?" = 5
+          uv build --out-dir dist
+          wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -c "import copybarista; from copybarista.cli import main; print('ok')"

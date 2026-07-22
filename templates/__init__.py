@@ -1,0 +1,1 @@
+"""Generated sync scaffolding templates."""

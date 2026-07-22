@@ -1,0 +1,690 @@
+# GitHub Repository Setup :coffee:
+
+Copybarista works best when the exported repository is protected like a normal
+open-source project: changes land through pull requests, checks run before
+merge, and releases publish from a protected default branch.
+
+This guide provides a reusable starting point. Adapt check names, reviewers, and
+release environments to your project.
+
+## Complete Workflow Example
+
+For repeatable package onboarding, start with `init-sync` in
+[Package Sync Scaffolding](#package-sync-scaffolding). It writes the package
+metadata, public import workflow, and public package validation workflow.
+Then `write-export-workflow` generates the matching source export workflow from
+the same metadata.
+
+Copybarista also ships a lower-level two-way GitHub setup under
+`examples/python-package/`:
+
+- `examples/python-package/source-repo`
+- `examples/python-package/github/source-to-public.yml`
+- `examples/python-package/github/public-to-source.yml`
+- `examples/python-package/github/protect-main-ruleset.json`
+
+Use `examples/README.md` as a manual reference when you need to hand-wire a
+repository pair instead of using the generated package scaffolding. The example
+workflows install Copybarista from Python packaging, export a standalone tree,
+open a public PR, validate public changes, and open a source PR when public
+changes are merged.
+
+The older example workflows use generic variable names such as
+`COPYBARISTA_SOURCE_REPO` and `COPYBARISTA_SOURCE_PROJECT_PATH`. Scaffolded
+package workflows instead store package identity in `copybarista.sync.toml` and
+read deployment targets from public repository variables such as
+`COPYBARISTA_SOURCE_REPO`, `COPYBARISTA_TARGET_PROJECT_PATH`, and
+`COPYBARISTA_TOOL_PROJECT_PATH`.
+
+## Package Sync Scaffolding
+
+For repeatable package onboarding, start with generated package-local files
+rather than package-named wrapper scripts:
+
+```bash
+copybarista init-sync . \
+  --package-name configgle \
+  --sync-label Configgle \
+  --source-root packages/configgle \
+  --public-repo example/configgle \
+  --source-repo example/source \
+  --copybarista-project-path tools/copybarista \
+  --smoke-import configgle \
+  --type-check-target configgle \
+  --type-check-target tests
+copybarista check-sync-config .
+```
+
+The generated public files are:
+
+- `copy.barista.toml` -- the deterministic export config.
+- `copybarista.sync.toml` -- package metadata such as package name, source path,
+  public repo, branch prefixes, smoke import, type-check targets, and public
+  validation commands.
+- `.github/workflows/sync-to-source.yml` -- public-to-source import workflow.
+- `.github/workflows/package-validation.yml` -- public package correctness
+  workflow.
+
+Package identity is data in `copybarista.sync.toml`; workflow names identify
+the package, while generated file names stay stable across packages. This
+avoids `sync_<package>.py` wrappers and package-specific environment names.
+Generated workflows use shared
+`COPYBARISTA_` names internally and fill them from `copybarista.sync.toml`:
+
+- `COPYBARISTA_SYNC_TOKEN` -- source workflow token for opening public PRs.
+- `COPYBARISTA_IMPORT_TOKEN` -- public workflow token for opening source PRs.
+- `COPYBARISTA_SOURCE_REPO`, `COPYBARISTA_TARGET_PROJECT_PATH`, and
+  `COPYBARISTA_TOOL_PROJECT_PATH` -- public repository variables that point the
+  import workflow at the source repository and Copybarista checkout path.
+- `COPYBARISTA_SYNC_LABEL` and `COPYBARISTA_IMPORT_BRANCH_PREFIX` -- generated
+  workflow environment values derived from `copybarista.sync.toml`.
+
+Generate the source-repository export workflow from the same metadata:
+
+```bash
+copybarista write-export-workflow copybarista.sync.toml \
+  --output .github/workflows/configgle-export.yml
+```
+
+Review the generated workflow before committing it; it is intentionally plain
+YAML so teams can adjust triggers, required checks, or token names if their
+repository policy differs. Run `init-sync --overwrite` only when intentionally
+regenerating existing sync files.
+
+The generated package validation workflow runs package-owned commands from
+`copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
+codespell, full-project ty, basedpyright over `type_check_targets`, pytest, a
+smoke import, and `uv build`. Pass `--release-check-script` during setup, or
+set `release_check_script` in `copybarista.sync.toml`, when the source export
+workflow should run an additional project-relative release-tree checker before
+opening or updating the public PR.
+Set `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
+lockfile is private or source-specific but the public repository should publish
+a generated `uv.lock`; pair it with `uv sync --frozen --all-groups` in package
+validation commands. The generated public-to-source import workflow then
+ignores public `uv.lock` during source mapping because that file is regenerated
+from public package metadata instead of imported into the source checkout.
+Use repeated `--validation-python-version` and `--validation-command` flags when
+a package needs a different public correctness contract. `check-sync-config`
+validates that `.github/workflows/package-validation.yml` still matches those
+commands.
+
+The public import workflow deliberately separates validation from PR creation:
+import verification runs without `GH_TOKEN`, then a second `--open-pr-only` step
+receives the token only after trusted helper code is captured from the source
+checkout.
+
+## Repository Setup Checklist
+
+1. Create the destination repository as private.
+2. Copy the source-to-public workflow into the source repository.
+3. Copy the public-to-source workflow into the destination repository.
+4. Copy the package validation workflow into the destination repository.
+5. Add repository secrets and variables in both repositories.
+6. Export the first Copybarista tree into a pull request.
+7. Confirm package validation and import-skip checks pass on the exported tree.
+8. Protect the destination default branch.
+9. Merge the first export with squash merge.
+10. Test reverse sync with a small public pull request.
+11. Make the repository public when the public tree and sync loop are clean.
+12. Configure package publishing.
+
+Keeping the repository private until the first verified export avoids exposing
+temporary setup commits, private path names, or incomplete release metadata.
+
+## Action Triggers
+
+The source repository owns source-to-public export. The example
+`source-to-public.yml` runs on `workflow_dispatch` so maintainers can choose a
+public-safe PR title, description, and optional branch name for each export. The
+workflow checks out the source repository and public repository, runs
+`copybarista export`, replaces the public checkout while preserving `.github/`,
+validates it, and opens or updates a public pull request.
+
+By default, the example uses one stable generated branch per source branch, or
+the repository variable `COPYBARISTA_EXPORT_BRANCH` when set. Rerunning the
+workflow with the same branch updates the same public PR instead of creating a
+new active export PR. Generated export branches are replaced with
+`git push --force-with-lease`.
+
+To export automatically after source changes, add `push`, `schedule`, or path
+filters to the source workflow. Scaffolded package workflows use configured
+defaults plus replayed `Copybarista-PR-*` commit metadata for public-safe PR
+text.
+
+The public repository owns public-to-source import. The example
+`public-to-source.yml` runs in three situations:
+
+- `pull_request` to `main`: validate that a trusted same-repository public PR
+  can be imported, but do not open a source PR yet.
+- `push` to `main`: after a public PR is merged, import the merged public
+  change and open or update a source repository PR. The first push to a new
+  repository is skipped because GitHub reports an all-zero `before` SHA and
+  there is no public base tree to compare.
+- `workflow_dispatch`: manually import selected public refs and open or update
+  a source repository PR.
+
+The generated export branch for the configured default branch is skipped by the
+pull-request validation path because its source of truth is the source repository
+export. Direct public edits, other same-repository branches, and manually
+dispatched imports still flow back through `copybarista import-change`.
+
+Merged generated export PRs should also be skipped on public `main` pushes.
+The generated workflow detects them by sync author email or a generated export
+branch marker in the merge commit message. Auto-merge writes a
+`<sync label> export branch: ...` marker into the squash body; manual squash
+merges should keep that marker or the generated export branch in the title/body.
+
+Generated sync branches must stay under package-owned namespaces. The default
+prefixes come from `copybarista.sync.toml`, e.g. `configgle/export/*` for
+source-to-public branches and `configgle/import/*` for public-to-source
+branches. The helper scripts reject explicit branch names outside those
+namespaces because generated branches are force-updated with
+`git push --force-with-lease`.
+
+## Pull Request Text
+
+Generated package export workflows can replay public PR text from explicit
+machine-readable fields in source commit messages. Add the fields when a source
+change should update the public export PR:
+
+```text
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Prepare package release checks
+Copybarista-PR-Body-Mode: append
+Copybarista-PR-Body:
+Adds release-tree validation and refreshes generated workflow defaults.
+```
+
+The normal commit subject and body should still be useful on their own, but
+Copybarista does not use them as generated PR title/body. This protects against
+accidentally publishing private source context. Only `Copybarista-PR-Title` and
+`Copybarista-PR-Body` are an explicit approval that the string is acceptable in
+a public PR. When no matching metadata is present, Copybarista keeps the
+configured generic title and body.
+
+If the target public repository has `.github/PULL_REQUEST_TEMPLATE.md`,
+Copybarista follows it. Replayed title/body metadata fills the template's
+`## Summary` section, validation/testing checkboxes are marked complete after
+the public checkout validates, `## Checklist` sections are omitted because
+generated export PRs are automated, and non-validation sections such as notes
+remain in the generated PR body.
+
+Replay rules:
+
+- `Copybarista-PR-Title`: latest value wins.
+- `Copybarista-PR-Body-Mode: append`: append this commit's body entry.
+- `Copybarista-PR-Body-Mode: replace`: replace the managed PR description.
+- Missing fields preserve the previous managed PR state.
+- `Copybarista-PR-Scope`: optional package scope for the following block.
+
+Source attribution is not rendered into the PR body. Copybarista uses replayed
+source commit authors as the generated export commit author and
+`Co-authored-by` trailers, while the generated PR actor still comes from
+`COPYBARISTA_SYNC_TOKEN`. Before committing source changes, verify
+`git config user.name` and `git config user.email` are the intended public
+attribution. `Copybarista-PR-Author` is not supported.
+
+Use `append` for follow-up commits. Use `replace` only when the commit
+intentionally rewrites the whole managed public PR description. The body field
+is multiline and must be the last `Copybarista-PR-*` field in the commit
+message.
+
+Use scoped blocks when one source commit changes multiple exported packages.
+Each generated package workflow passes its package name as the PR scope, so it
+uses unscoped blocks plus blocks whose `Copybarista-PR-Scope` matches that
+package. Another `Copybarista-PR-Scope:` line starts the next block:
+
+```text
+Copybarista-PR-Scope: sagent
+Copybarista-PR-Title: Update Sagent export workflow
+Copybarista-PR-Body:
+Refreshes Sagent's generated export workflow.
+
+Copybarista-PR-Scope: configgle
+Copybarista-PR-Title: Update Configgle export workflow
+Copybarista-PR-Body:
+Refreshes Configgle's generated export workflow.
+```
+
+Leave `Copybarista-PR-Scope` out only when the same metadata should apply to
+every affected export.
+
+Every export run replays the relevant source commits from oldest to newest and
+renders the same PR state. If export validation fails before a public push, no
+public state changes. If the generated branch is pushed but PR editing fails,
+the next run uses the PR body's applied marker rather than the branch tip, so
+missed PR text is replayed instead of skipped. Generated workflows fetch full
+source history so the replay range is available.
+
+Use a bot or app token when generated PRs should appear under a bot account.
+
+Treat commit metadata, manual workflow inputs, and generated defaults as public
+release text:
+
+- describe the public change, not the private source repository;
+- avoid private repository names, internal team names, private paths, and
+  internal issue links;
+- keep generated sync metadata generic and avoid source repository SHAs, file
+  counts, workflow names, or private source paths;
+- review the generated public PR before merging it.
+
+Projects can set public PR defaults and replay policy in `copybarista.sync.toml`:
+
+```toml
+[pull_request]
+default_title = "Update Configgle export"
+default_body = "Updates the generated Configgle public repository export."
+require_pr_metadata = false
+metadata_source = "commit_messages"
+replay_bootstrap_base = ""
+publish_source_rev = false
+```
+
+`require_pr_metadata = true` makes exports fail when the replay range contains
+no `Copybarista-PR-*` fields. An existing generated branch with no open PR and
+no replay markers migrates from the current source commit's parent; existing
+unmarked open PRs still require `replay_bootstrap_base` so Copybarista does not
+silently overwrite reviewer-facing text.
+`publish_source_rev = false` keeps public machine markers as source-revision
+digests instead of raw private source SHAs.
+
+Generated export PR bodies should say which export branch they come from and
+that maintainers should not push manual commits to that branch. Manual changes
+belong in the source repository followed by another export run. The generated
+and example workflows use `git push --force-with-lease` for generated branches
+so reruns can replace generated commits but fail if someone changed the remote
+branch unexpectedly.
+
+Keep write tokens out of validation steps that execute imported public changes.
+The public-to-source workflow should check out private/source repositories with
+`persist-credentials: false`, run import and validation without `GH_TOKEN`, and
+only expose the write token in the final PR creation step. That token-bearing
+step should run trusted workflow code captured before import, or plain `git`
+and `gh` commands, so an imported public change cannot alter the code that runs
+with write credentials.
+
+Keep privacy checks close to the public repository too. The public CI should run
+the release-tree policy before build or publish steps so private paths,
+source-only config, caches, bytecode, nested VCS metadata, and unstripped
+private markers cannot silently ship. Treat changes to `copy.barista.toml`,
+workflow files, and release-tree policy as review-sensitive.
+
+Generated import PR titles and bodies should include the public base SHA,
+public head SHA, and source base SHA. If source `main` changes after an import
+PR is generated, rerun the import workflow before merging it so the branch is
+rebuilt on current source.
+
+## Optional Auto-Merge
+
+Auto-merge is reasonable for source-to-public export PRs when all of these are
+true:
+
+- the export branch is generated by the source workflow;
+- the public repository checks cover package tests, release-tree policy, and
+  private-name leak checks;
+- `.github/` remains public-repo-owned and is preserved by export;
+- the generated PR title and body are public-safe;
+- branch protection requires the relevant checks before merge.
+
+The example source-to-public workflow exposes this as the `auto_merge` manual
+input. Leave it disabled for the first export, then enable it once required
+checks and branch protection are installed.
+
+If branch protection requires human approval, auto-merge waits for that approval
+and then merges after checks pass. For unattended source-to-public sync, require
+status checks but do not require reviews for generated export PRs. The example
+ruleset requires one review by default; set
+`required_approving_review_count` to `0` and
+`require_last_push_approval` to `false` before installing it if generated
+export PRs should merge without human approval.
+
+Keep public-to-source imports manual by default. Public changes are proposals
+that can carry semantic decisions, so source maintainers should review the
+generated import PR before accepting it.
+
+## Sync Identity
+
+Use a stable sync identity for generated commits, such as:
+
+```text
+COPYBARISTA_SYNC_USER_NAME=copybarista
+COPYBARISTA_SYNC_USER_EMAIL=copybarista@example.com
+```
+
+Set the same name and email in both repositories. The public-to-source workflow
+uses that email, plus the generated export branch marker, to distinguish
+generated export merges from public-authored changes that should be imported
+back to source.
+
+The identity can be a machine user, a GitHub App installation, or a fine-grained
+token owner. The important property is stability: changing the email without
+updating both repositories can make generated export merges look like public
+changes.
+
+## Automation Bot Setup
+
+Use a dedicated machine user or GitHub App when generated PRs and squash merges
+should appear from automation instead of a maintainer. Git commit authorship and
+GitHub UI authorship are different:
+
+- Git commit author and committer come from workflow `git config` and
+  `--author`.
+- Pull request author, auto-merge actor, and GitHub squash-merge author come
+  from the account or App behind the token.
+
+A typical machine-user setup is:
+
+1. Create a GitHub account such as `your-org-bot` using an organization-owned
+   email or mailing-list alias.
+2. Verify that email on the bot account.
+3. Enable 2FA and store recovery codes in the organization password manager.
+4. Add the bot to the organization as a member, not an owner.
+5. Put the bot in an `automation` or `bots` team.
+6. Give that team write access only to the source and public repositories that
+   Copybarista syncs.
+7. Do not add the bot to branch-protection bypass lists.
+
+Create a fine-grained personal access token while logged in as the bot. GitHub
+creates fine-grained PATs in the web UI; use the CLI only after the token
+exists. Scope the token to selected repositories:
+
+- source repository;
+- public repository;
+- any additional public repositories exported from the same source repository.
+
+Use the narrowest repository permissions that work:
+
+- `Contents: Read and write`
+- `Pull requests: Read and write`
+- `Workflows: Read and write` only when the sync writes
+  `.github/workflows/*`
+- `Metadata: Read`, which GitHub grants automatically
+
+Store the token as repository secrets:
+
+```bash
+SOURCE_REPO=your-org/source-repo
+PUBLIC_REPO=your-org/public-repo
+
+gh secret set COPYBARISTA_SYNC_TOKEN --repo "$SOURCE_REPO"
+gh secret set COPYBARISTA_IMPORT_TOKEN --repo "$PUBLIC_REPO"
+```
+
+Set generated commit identity variables in both repositories:
+
+```bash
+SYNC_AUTHOR_NAME=your-project
+SYNC_AUTHOR_EMAIL=your-org-bot@example.com
+
+gh variable set COPYBARISTA_SYNC_USER_NAME \
+  --repo "$SOURCE_REPO" \
+  --body "$SYNC_AUTHOR_NAME"
+gh variable set COPYBARISTA_SYNC_USER_EMAIL \
+  --repo "$SOURCE_REPO" \
+  --body "$SYNC_AUTHOR_EMAIL"
+
+gh variable set COPYBARISTA_SYNC_USER_NAME \
+  --repo "$PUBLIC_REPO" \
+  --body "$SYNC_AUTHOR_NAME"
+gh variable set COPYBARISTA_SYNC_USER_EMAIL \
+  --repo "$PUBLIC_REPO" \
+  --body "$SYNC_AUTHOR_EMAIL"
+```
+
+Then verify a generated public PR:
+
+```bash
+gh pr list \
+  --repo "$PUBLIC_REPO" \
+  --state open \
+  --json number,title,author,headRefName,url
+```
+
+The PR author should be the bot account. The generated branch commit uses the
+first replayed source commit author when `Copybarista-PR-*` metadata is present,
+adds additional source authors as `Co-authored-by` trailers, and falls back to
+`SYNC_AUTHOR_NAME <SYNC_AUTHOR_EMAIL>` when no metadata is present:
+
+```bash
+PR_NUMBER=1
+HEAD_SHA="$(gh pr view "$PR_NUMBER" \
+  --repo "$PUBLIC_REPO" \
+  --json commits \
+  --jq '.commits[-1].oid')"
+
+gh api "repos/$PUBLIC_REPO/commits/$HEAD_SHA" \
+  --jq '{author:.commit.author, committer:.commit.committer, github_author:.author.login, github_committer:.committer.login}'
+```
+
+## Multiple Exports From One Monorepo
+
+One source repository can export multiple projects to separate public
+repositories. Treat each exported project as its own sync pair:
+
+- one `copy.barista.toml` per exported project;
+- one public repository per exported project;
+- one source-to-public workflow per exported project, or one matrix workflow
+  with an explicit project key;
+- one public-to-source workflow in each public repository;
+- distinct export branches and public-safe PR titles for each project.
+
+If a project needs selected shared monorepo utilities, use `[[files.copy]]` in
+that project's `copy.barista.toml` instead of keeping duplicate files inside the
+project tree. Each copied destination remains part of that project's import map.
+
+The example workflow serializes one project's exports with:
+
+```yaml
+concurrency:
+  group: copybarista-export
+  cancel-in-progress: false
+```
+
+If several projects share one source repository, give each project a distinct
+concurrency group so unrelated exports can run at the same time:
+
+```yaml
+concurrency:
+  group: copybarista-export-widget
+  cancel-in-progress: false
+```
+
+For a hand-written reusable workflow, include a project key in the group:
+
+```yaml
+concurrency:
+  group: copybarista-export-${{ inputs.project }}
+  cancel-in-progress: false
+```
+
+For scaffolded package sync, keep one `copybarista.sync.toml` per package and
+generate one source workflow per package. The generated branch prefixes come
+from package metadata, e.g. `widget/export/` and `widget/import/`. The
+reverse-sync workflow should also serialize per public repository or per
+project, not globally across all projects. That keeps a long-running import for
+one package from blocking an unrelated package.
+
+## Required Secrets And Variables
+
+Set these in the source repository:
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `COPYBARISTA_SYNC_TOKEN` | Secret | Push export branches and open PRs in the public repository. |
+
+Set this in the public repository:
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `COPYBARISTA_IMPORT_TOKEN` | Secret | Push import branches and open PRs in the source repository. |
+
+The generated workflow stores package paths, branch prefixes, and sync author
+identity from `copybarista.sync.toml`. Regenerate the workflow after changing
+that metadata.
+
+Use fine-grained tokens with the narrowest repository access that works:
+
+- Source-to-public token: public repository `Contents: read and write` and
+  `Pull requests: read and write`.
+- Public-to-source token: source repository `Contents: read and write` and
+  `Pull requests: read and write`.
+- Add `Workflows: read and write` only when the exported tree intentionally
+  creates or updates workflow files under `.github/workflows`.
+- Add public repository `Contents: read` to the public-to-source token while
+  the public repository is still private.
+
+Git commit authorship and GitHub UI authorship are separate. The sync workflow
+sets the generated branch commit committer from `COPYBARISTA_SYNC_USER_NAME`
+and `COPYBARISTA_SYNC_USER_EMAIL`; the commit author may come from replayed
+source metadata. The PR author, auto-merge actor, and GitHub squash-merge
+author come from the account or GitHub App behind the token. Use a machine-user
+token or GitHub App token if generated PRs and squash commits should appear
+from a bot identity instead of a maintainer account.
+
+The example source-to-public workflow preserves the public repository's
+`.github/` directory, so the reverse-sync workflow remains public-repo-owned.
+If your exported tree owns workflow files instead, configure `Workflows: read
+and write` before the first export. GitHub rejects pushes that create or update
+`.github/workflows/*` without that permission, even when `Contents: read and
+write` is present.
+
+## Merge Settings
+
+Use squash merge as the default for generated export PRs. It keeps public
+history concise while preserving review history in GitHub.
+
+Recommended repository settings:
+
+- Enable squash merge.
+- Disable merge commits.
+- Disable rebase merge unless your project intentionally wants it.
+- Keep generated branches after merge when branch names are used as sync
+  history.
+
+Squash merge keeps generated public history concise. Keeping generated branches
+is optional, but it can make sync audits easier because branch names encode the
+export project or imported public SHA. Generated branch updates should use
+`git push --force-with-lease`; protected default branches should not allow force
+pushes.
+
+Check current settings:
+
+```bash
+OWNER=your-org
+REPO=your-repo
+gh repo view "$OWNER/$REPO" \
+  --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,deleteBranchOnMerge
+```
+
+## Main Branch Ruleset
+
+Copybarista ships an example GitHub repository ruleset at
+`examples/python-package/github/protect-main-ruleset.json`.
+
+Install it with:
+
+```bash
+OWNER=your-org
+REPO=your-repo
+gh api \
+  --method POST \
+  "repos/$OWNER/$REPO/rulesets" \
+  --input examples/python-package/github/protect-main-ruleset.json
+```
+
+Update an existing ruleset:
+
+```bash
+OWNER=your-org
+REPO=your-repo
+RULESET_ID="$(gh api "repos/$OWNER/$REPO/rulesets" \
+  --jq '.[] | select(.name == "Protect main") | .id')"
+gh api \
+  --method PUT \
+  "repos/$OWNER/$REPO/rulesets/$RULESET_ID" \
+  --input examples/python-package/github/protect-main-ruleset.json
+```
+
+Verify the active rules:
+
+```bash
+gh api "repos/$OWNER/$REPO/rules/branches/main" \
+  --jq '.[] | {type, parameters}'
+```
+
+The example ruleset requires:
+
+- Pull requests for `main`.
+- Squash merge only.
+- One approval.
+- Last-pusher approval by someone else.
+- Resolved review threads.
+- Fresh required checks.
+- Passing `Lint, type-check, test, and build`.
+- Linear history.
+- No force pushes to `main`.
+- No `main` deletion.
+
+Organization admins are allowed to bypass the rules. That keeps initial setup
+and emergency repair possible while maintainers, contributors, and bots remain
+subject to normal PR rules unless granted a separate bypass.
+
+If your CI check names differ, edit
+`rules[].parameters.required_status_checks[].context` before installing the
+ruleset.
+
+## PyPI Trusted Publishing
+
+For Python packages, prefer PyPI Trusted Publishing over long-lived PyPI API
+tokens.
+
+The GitHub workflow needs:
+
+- `permissions.id-token: write`
+- `environment: pypi`
+- `pypa/gh-action-pypi-publish@release/v1`
+
+Create or update the GitHub release environment:
+
+```bash
+OWNER=your-org
+REPO=your-repo
+gh api \
+  --method PUT \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  "/repos/$OWNER/$REPO/environments/pypi" \
+  -F wait_timer=0 \
+  -F prevent_self_review=true \
+  -F deployment_branch_policy[protected_branches]=true \
+  -F deployment_branch_policy[custom_branch_policies]=false
+```
+
+Then create a pending Trusted Publisher in PyPI with the exact GitHub owner,
+repository, workflow filename, and environment. The PyPI project appears only
+after the first successful publish.
+
+## Release Checks
+
+Before publishing or making a repository public, run the exported tree checks
+from the repository root:
+
+```bash
+python -B scripts/check_release_tree.py . --allow-root-git
+uv sync --all-groups
+uv run --all-groups ruff check --no-fix --no-cache .
+uv run --all-groups ruff format --check --no-cache .
+uv run --all-groups basedpyright copybarista scripts tests
+uv run --all-groups pytest
+uv build --out-dir /tmp/copybarista-dist-check
+```
+
+Run `scripts/check_release_tree.py` before dependency tools create local
+artifacts such as `.venv` or package metadata. Use `python -B` so the release
+check itself does not create `__pycache__` entries while scanning.
+
+For Copybarista itself, build PyPI releases from the exported public tree or the
+synced public repository, not directly from the monorepo subtree. The raw source
+subtree contains private documentation blocks that are removed only during
+export.
