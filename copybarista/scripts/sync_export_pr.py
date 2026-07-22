@@ -1246,23 +1246,50 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
 
 
 def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> None:
-    """Enable squash auto-merge for the generated public export PR."""
-    _run_gh(
-        [
-            "gh",
-            "pr",
-            "merge",
-            request.branch,
-            "--repo",
-            request.target_repo,
-            "--squash",
-            "--subject",
-            pr_title,
-            "--body",
-            f"{request.sync_label} export branch: {request.branch}",
-            "--auto",
-        ],
-        cwd=request.public_dir,
+    """Merge the generated public export PR, preferring auto-merge.
+
+    ``gh pr merge --auto`` only works when the merge can be *deferred* (branch
+    protection or pending required checks). On a repo with neither, an
+    immediately-mergeable PR makes ``--auto`` fail with "Protected branch rules
+    not configured". In that case fall back to a direct (immediate) squash merge,
+    which is the same end state auto-merge would reach once checks pass.
+    """
+    merge_argv = [
+        "gh",
+        "pr",
+        "merge",
+        request.branch,
+        "--repo",
+        request.target_repo,
+        "--squash",
+        "--subject",
+        pr_title,
+        "--body",
+        f"{request.sync_label} export branch: {request.branch}",
+    ]
+    result = _run_gh(
+        [*merge_argv, "--auto"], cwd=request.public_dir, capture=True, check=False
+    )
+    if result.returncode == 0:
+        _write_process_output(result)
+        return
+    if _auto_merge_unavailable(result):
+        _log(
+            "Auto-merge unavailable (no branch protection / pending checks); "
+            "merging the export PR directly."
+        )
+        _run_gh(merge_argv, cwd=request.public_dir)
+        return
+    _write_process_output(result)
+    raise SystemExit(result.returncode)
+
+
+def _auto_merge_unavailable(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether ``--auto`` failed because the repo cannot defer the merge."""
+    output = f"{result.stdout}\n{result.stderr}".casefold()
+    return (
+        "protected branch rules not configured" in output
+        or "enablepullrequestautomerge" in output
     )
 
 
@@ -2342,8 +2369,14 @@ def _run_gh(
     *,
     cwd: Path,
     capture: bool = False,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a GitHub CLI command with retries for transient API failures."""
+    """Run a GitHub CLI command with retries for transient API failures.
+
+    With ``check=False`` a non-retryable failure is returned to the caller
+    instead of raising ``SystemExit``, so the caller can inspect stderr and
+    recover (e.g. fall back when auto-merge is unavailable).
+    """
     for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
         result = _run(argv, cwd=cwd, check=False, capture=True)
         if result.returncode == 0:
@@ -2351,6 +2384,8 @@ def _run_gh(
                 _write_process_output(result)
             return result
         if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
+            if not check:
+                return result
             _write_process_output(result)
             raise SystemExit(result.returncode)
         _log(
