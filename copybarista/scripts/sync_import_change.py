@@ -31,7 +31,9 @@ import time
 
 # Dotted module path of the copybarista package, run via `python -m` with
 # cwd=target_dir so the import resolves under the monorepo checkout.
-_COPYBARISTA_MODULE = "copybarista"
+_COPYBARISTA_MODULE = (
+    "copybarista"  # config-globals: ignore -- static default/protocol constant.
+)
 
 
 def _copybarista_argv(*, requirements: Path) -> list[str]:
@@ -92,14 +94,21 @@ def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> 
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_LABEL = "Copybarista"
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
-DEFAULT_SYNC_USER_NAME = "copybarista"
-DEFAULT_IMPORT_BRANCH_PREFIX = "copybarista/import/"
-CONTROL_CHAR_BOUND = 32
-DEFAULT_TYPE_CHECK_TARGETS = (".",)
-GITHUB_RETRY_ATTEMPTS = 3
-GITHUB_RETRY_DELAY_SEC = 2
+DEFAULT_SYNC_LABEL = (
+    "Copybarista"  # config-globals: ignore -- static default/protocol constant.
+)
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_SYNC_USER_NAME = (
+    "copybarista"  # config-globals: ignore -- static default/protocol constant.
+)
+DEFAULT_IMPORT_BRANCH_PREFIX = (
+    "copybarista/import/"  # config-globals: ignore -- static default/protocol constant.
+)
+CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
+GITHUB_RETRY_ATTEMPTS = 3  # config-globals: ignore -- static default/protocol constant.
+GITHUB_RETRY_DELAY_SEC = (
+    2  # config-globals: ignore -- static default/protocol constant.
+)
 
 
 def main() -> int:
@@ -152,7 +161,7 @@ def run(argv: list[str] | None = None) -> int:
         open_pr=_string_bool(args.open_pr),
         open_pr_only=args.open_pr_only,
         runner_temp=Path(args.runner_temp).resolve(),
-        type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
+        validation_commands=tuple(args.validation_command),
         refresh_public_lockfile=args.refresh_public_lockfile,
     )
     run_import_sync(request)
@@ -181,7 +190,7 @@ class ImportRequest:
     open_pr: bool
     open_pr_only: bool
     runner_temp: Path
-    type_check_targets: tuple[str, ...]
+    validation_commands: tuple[str, ...]
     refresh_public_lockfile: bool
 
 
@@ -201,7 +210,7 @@ def run_import_sync(request: ImportRequest) -> None:
     _validate_target(
         request=request,
         project=project,
-        type_check_targets=request.type_check_targets,
+        validation_commands=request.validation_commands,
         runner_temp=request.runner_temp,
         requirements=requirements,
     )
@@ -270,10 +279,16 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("RUNNER_TEMP", str(DEFAULT_RUNNER_TEMP)),
     )
     parser.add_argument(
-        "--type-check-target",
+        "--validation-command",
         action="append",
         default=[],
-        help="Path passed to basedpyright. Repeat for multiple targets.",
+        help=(
+            "Shell command run in the exported public tree to validate the "
+            "imported change. Repeat for the full validation set. These are the "
+            "single source of truth (copybarista.sync.toml "
+            "sync.validation_commands) that also drives the public repository's "
+            "package-validation.yml."
+        ),
     )
     parser.add_argument(
         "--refresh-public-lockfile",
@@ -374,7 +389,7 @@ def _validate_target(
     *,
     request: ImportRequest,
     project: Path,
-    type_check_targets: tuple[str, ...],
+    validation_commands: tuple[str, ...],
     runner_temp: Path,
     requirements: Path,
 ) -> None:
@@ -385,9 +400,16 @@ def _validate_target(
     environment -- including the ML stack (torch, jax, tf, pycairo, ...) a CPU
     import runner cannot build. Instead this exports the public-form tree (the
     artifact actually published: ``sagent.*`` imports, public ``pyproject.toml``
-    / ``uv.lock``) and runs lint/type/test against *that*. The exported env has
-    the package's real runtime deps but never the monorepo ML stack, so a CPU
-    runner validates exactly what ships.
+    / ``uv.lock``) and runs the validation commands against *that*. The exported
+    env has the package's real runtime deps but never the monorepo ML stack, so
+    a CPU runner validates exactly what ships.
+
+    ``validation_commands`` is the single source of truth
+    (``copybarista.sync.toml`` ``sync.validation_commands``) that also drives the
+    public repository's ``package-validation.yml`` and the source-to-public
+    export gate. Running the same shell commands here makes all three verify
+    byte-identical checks. Each command runs through ``bash -c`` in the exported
+    tree, so it self-contains its ``uv sync`` and may use shell features.
     """
     tree = _export_public_tree(
         request=request,
@@ -395,72 +417,8 @@ def _validate_target(
         runner_temp=runner_temp,
         requirements=requirements,
     )
-    # Sync the exported public env (installs the package + all groups). Torch
-    # and friends stay out: they live behind an opt-in extra in the public
-    # pyproject, not the default dependency set.
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(tree),
-            "sync",
-            "--frozen",
-            "--all-groups",
-        ]
-    )
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(tree),
-            "run",
-            "--no-sync",
-            "ruff",
-            "check",
-            "--no-fix",
-            "--no-cache",
-            ".",
-        ],
-        cwd=tree,
-    )
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(tree),
-            "run",
-            "--no-sync",
-            "ruff",
-            "format",
-            "--check",
-            "--no-cache",
-            ".",
-        ],
-        cwd=tree,
-    )
-    _run_basedpyright(tree=tree, targets=type_check_targets)
-    _run(
-        ["uv", "--quiet", "--project", str(tree), "run", "--no-sync", "ty", "check"],
-        cwd=tree,
-    )
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(tree),
-            "run",
-            "--no-sync",
-            "pytest",
-            "-q",
-            "-m",
-            "not cuda and not integration",
-        ],
-        cwd=tree,
-    )
+    for command in validation_commands:
+        _run(["bash", "-c", command], cwd=tree)
 
 
 def _export_public_tree(
@@ -488,23 +446,6 @@ def _export_public_tree(
         cwd=request.target_dir,
     )
     return tree
-
-
-def _run_basedpyright(*, tree: Path, targets: tuple[str, ...]) -> None:
-    """Run basedpyright against the exported public tree."""
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(tree),
-            "run",
-            "--no-sync",
-            "basedpyright",
-            *targets,
-        ],
-        cwd=tree,
-    )
 
 
 def _open_or_update_target_pr(*, request: ImportRequest) -> None:

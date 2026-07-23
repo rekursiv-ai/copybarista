@@ -35,16 +35,23 @@ DEFAULT_EXCLUDES = (
     "copy.bara.sky",
     "copy.barista.toml",
     "copybarista.sync.toml",
+)  # config-globals: ignore -- static default/protocol constant.
+CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_SYNC_USER_NAME = (
+    "copybarista"  # config-globals: ignore -- static default/protocol constant.
 )
-CONTROL_CHAR_BOUND = 32
-DEFAULT_SYNC_USER_NAME = "copybarista"
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"
-DEFAULT_VALIDATION_PYTHON_VERSIONS = ("3.12",)
+DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
+DEFAULT_VALIDATION_PYTHON_VERSIONS = (
+    "3.12",
+)  # config-globals: ignore -- static default/protocol constant.
 # System (apt) packages installed before both public package validation and
 # public-to-source import validation. Both workflows run the same test suite, so
 # they MUST provision the same system tools; rendering this single setting into
 # both generated workflows keeps their environments aligned by construction.
-DEFAULT_SYSTEM_PACKAGES = ("ripgrep", "fd-find")
+DEFAULT_SYSTEM_PACKAGES = (
+    "ripgrep",
+    "fd-find",
+)  # config-globals: ignore -- static default/protocol constant.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -479,6 +486,14 @@ def export_workflow(settings: SyncSettings) -> str:
         ],
         indent="            ",
     )
+    validation_commands = _shell_lines(
+        [
+            part
+            for command in settings.validation_commands
+            for part in ("--validation-command", command)
+        ],
+        indent="            ",
+    )
     pr_replay_flags = _shell_args(
         _pr_replay_args(settings),
         indent="            ",
@@ -524,6 +539,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "RELEASE_CHECK_ARG": release_check_arg,
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "TYPE_TARGETS": type_targets,
+            "VALIDATION_COMMANDS": validation_commands,
             "SMOKE_IMPORT": _sh(settings.smoke_import),
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
         },
@@ -544,11 +560,11 @@ def import_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    type_targets = _shell_lines(
+    validation_commands = _shell_lines(
         [
             part
-            for target in settings.type_check_targets
-            for part in ("--type-check-target", target)
+            for command in settings.validation_commands
+            for part in ("--validation-command", command)
         ],
         indent="            ",
     )
@@ -571,7 +587,7 @@ def import_workflow(settings: SyncSettings) -> str:
             ),
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
-            "TYPE_TARGETS": type_targets,
+            "VALIDATION_COMMANDS": validation_commands,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
         },
     )

@@ -69,7 +69,7 @@ def _import_request(*, target_dir: Path) -> ImportRequest:
         open_pr=False,
         open_pr_only=False,
         runner_temp=target_dir,
-        type_check_targets=(".",),
+        validation_commands=(),
         refresh_public_lockfile=False,
     )
 
@@ -92,15 +92,15 @@ def test_main_accepts_generic_project_validation_args(
             "base",
             "--public-head-ref",
             "head",
-            "--type-check-target",
-            "configgle",
-            "--type-check-target",
-            "tests",
+            "--validation-command",
+            "uv sync --all-groups",
+            "--validation-command",
+            "uv run pytest",
         ]
     )
 
     assert captured[0].project_path == Path("packages/configgle")
-    assert captured[0].type_check_targets == ("configgle", "tests")
+    assert captured[0].validation_commands == ("uv sync --all-groups", "uv run pytest")
     assert not captured[0].refresh_public_lockfile
 
 
@@ -229,7 +229,7 @@ def test_import_change_ignores_generated_public_lockfile(
             open_pr=False,
             open_pr_only=False,
             runner_temp=runner_temp,
-            type_check_targets=(".",),
+            validation_commands=(),
             refresh_public_lockfile=True,
         ),
         project=project,
@@ -266,7 +266,7 @@ def test_run_import_sync_imports_then_validates(
         *,
         request: ImportRequest,
         project: Path,
-        type_check_targets: tuple[str, ...],
+        validation_commands: tuple[str, ...],
         runner_temp: Path,
         requirements: Path,
     ) -> None:
@@ -277,7 +277,7 @@ def test_run_import_sync_imports_then_validates(
                 str(project),
                 str(runner_temp),
                 str(requirements),
-                *type_check_targets,
+                *validation_commands,
             ]
         )
 
@@ -308,7 +308,7 @@ def test_run_import_sync_imports_then_validates(
             open_pr=False,
             open_pr_only=False,
             runner_temp=tmp_path,
-            type_check_targets=(".",),
+            validation_commands=("uv run pytest",),
             refresh_public_lockfile=False,
         )
     )
@@ -317,7 +317,13 @@ def test_run_import_sync_imports_then_validates(
     # receive the same pinned requirements path.
     reqs = str(tmp_path / "copybarista-requirements.txt")
     assert calls[0] == ["import", str(target / "package"), str(target), reqs]
-    assert calls[1] == ["validate", str(target / "package"), str(tmp_path), reqs, "."]
+    assert calls[1] == [
+        "validate",
+        str(target / "package"),
+        str(tmp_path),
+        reqs,
+        "uv run pytest",
+    ]
 
 
 def test_import_change_pr_body_contains_review_context():
@@ -496,11 +502,13 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
 def test_validate_target_runs_checks_against_exported_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], Path | None]] = []
     tree = Path("/sentinel/validation-tree")
 
-    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
+    def fake_run(
+        argv: list[str], *, cwd: Path | None = None, **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0)
 
     # Signature must match _export_public_tree for monkeypatch; args unused.
@@ -514,49 +522,22 @@ def test_validate_target_runs_checks_against_exported_tree(
         del request, project, runner_temp, requirements
         return tree
 
-    def fake_basedpyright(*, tree: Path, targets: tuple[str, ...]) -> None:
-        calls.append(["basedpyright", str(tree), *targets])
-
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
-    monkeypatch.setattr(sync_import_change, "_run_basedpyright", fake_basedpyright)
 
     _validate_target(
         request=_import_request(target_dir=Path("/repo/target")),
         project=Path("/repo/pkg"),
-        type_check_targets=("configgle",),
+        validation_commands=("uv sync --all-groups", "uv run pytest"),
         runner_temp=Path("/sentinel/runner"),
         requirements=Path("/sentinel/copybarista-requirements.txt"),
     )
 
-    # The exported public tree is synced once (with the package installed), then
-    # every check runs against it via --project/--no-sync.
-    assert [
-        "uv",
-        "--quiet",
-        "--project",
-        str(tree),
-        "sync",
-        "--frozen",
-        "--all-groups",
-    ] in calls
-    assert [
-        "uv",
-        "--quiet",
-        "--project",
-        str(tree),
-        "run",
-        "--no-sync",
-        "ty",
-        "check",
-    ] in calls
-
-    uv_runs = [c for c in calls if c[:1] == ["uv"] and "run" in c]
-    assert uv_runs
-    assert all("--no-sync" in c for c in uv_runs)
-    assert all(
-        "--project" in c and c[c.index("--project") + 1] == str(tree) for c in uv_runs
-    )
+    # Each validation command runs via bash -c against the exported public tree.
+    assert calls == [
+        (["bash", "-c", "uv sync --all-groups"], tree),
+        (["bash", "-c", "uv run pytest"], tree),
+    ]
 
 
 def test_export_public_tree_runs_copybarista_export(
