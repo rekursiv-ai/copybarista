@@ -130,6 +130,7 @@ def run(argv: list[str] | None = None) -> int:
         else None,
         type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
         smoke_import=args.smoke_import,
+        validation_commands=tuple(args.validation_command),
         dry_run=args.dry_run,
     )
     try:
@@ -167,6 +168,7 @@ class ExportRequest:
     release_check_script: Path | None
     type_check_targets: tuple[str, ...]
     smoke_import: str
+    validation_commands: tuple[str, ...]
     dry_run: bool
 
 
@@ -290,7 +292,6 @@ def _run_export_sync(request: ExportRequest) -> None:
     project = request.source_dir / request.project_path
     export_dir = Path(tempfile.mkdtemp(prefix="copybarista-public-"))
     manifest = request.runner_temp / "copybarista-manifest.json"
-    dist_dir = request.runner_temp / "copybarista-dist"
     _log("Resolving export PR replay state.")
     pr_plan = _resolve_pr_replay_plan(request=request, pr_template="")
 
@@ -346,11 +347,7 @@ def _run_export_sync(request: ExportRequest) -> None:
         _copy_validation_tree(source=request.public_dir, destination=validation_dir)
         _validate_public(
             public_dir=validation_dir,
-            dist_dir=dist_dir,
-            release_check_script=request.release_check_script,
-            frozen_sync=request.refresh_public_lockfile,
-            type_check_targets=request.type_check_targets,
-            smoke_import=request.smoke_import,
+            validation_commands=request.validation_commands,
         )
     finally:
         _delete_path(validation_dir)
@@ -516,6 +513,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Path passed to basedpyright. Repeat for multiple targets.",
     )
     parser.add_argument(
+        "--validation-command",
+        action="append",
+        default=[],
+        help=(
+            "Shell command run in the exported public checkout to validate it. "
+            "Repeat for the full validation set. These are the single source of "
+            "truth (copybarista.sync.toml sync.validation_commands) that also "
+            "drives the public repository's package-validation.yml."
+        ),
+    )
+    parser.add_argument(
         "--smoke-import",
         default=os.environ.get("COPYBARISTA_SMOKE_IMPORT", ""),
         help="Optional module imported from the built wheel as a smoke test.",
@@ -581,6 +589,8 @@ def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[st
         argv.extend(["--type-check-target", target])
     for term in settings.forbidden_pr_text:
         argv.extend(["--forbidden-pr-text", term])
+    for command in settings.validation_commands:
+        argv.extend(["--validation-command", command])
     return argv
 
 
@@ -601,6 +611,11 @@ def _git_toplevel(start: Path) -> Path:
     return Path(result.stdout.strip())
 
 
+def _uv_project_run(project: Path) -> list[str]:
+    """Command prefix for running a tool in the source project's uv env."""
+    return ["uv", "--quiet", "--project", str(project), "run"]
+
+
 def _preleakcheck_validation(*, project: Path) -> None:
     """Run the cheap source checks that gate the export.
 
@@ -608,35 +623,14 @@ def _preleakcheck_validation(*, project: Path) -> None:
     surfaces immediately, and before the slow type/test checks so the
     leak-check (run during export) fails fast ahead of them.
     """
+    uv_run = _uv_project_run(project)
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "ruff",
-            "check",
-            "--no-fix",
-            "--no-cache",
-            ".",
-        ],
+        [*uv_run, "ruff", "check", "--no-fix", "--no-cache", "."],
         cwd=project,
     )
     _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "ruff",
-            "format",
-            "--check",
-            "--no-cache",
-            ".",
-        ],
+        [*uv_run, "ruff", "format", "--check", "--no-cache", "."],
         cwd=project,
     )
 
@@ -645,32 +639,10 @@ def _postleakcheck_validation(
     *, project: Path, type_check_targets: tuple[str, ...]
 ) -> None:
     """Run the slow source checks after the export+leak-check has passed."""
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "ty",
-            "check",
-            ".",
-        ],
-        cwd=project,
-    )
+    uv_run = _uv_project_run(project)
+    _run([*uv_run, "ty", "check", "."], cwd=project)
     _run_basedpyright(project=project, targets=type_check_targets)
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "pytest",
-            "-q",
-        ],
-        cwd=project,
-    )
+    _run([*uv_run, "pytest", "-q"], cwd=project)
 
 
 def _export_public_tree(
@@ -784,80 +756,26 @@ def _refresh_public_lockfile(*, public_dir: Path) -> None:
 def _validate_public(
     *,
     public_dir: Path,
-    dist_dir: Path,
-    release_check_script: Path | None,
-    frozen_sync: bool,
-    type_check_targets: tuple[str, ...],
-    smoke_import: str,
+    validation_commands: tuple[str, ...],
 ) -> None:
-    """Run public checkout checks that a contributor would run locally."""
-    if release_check_script:
-        _run(
-            ["python", "-B", str(release_check_script), ".", "--allow-root-git"],
-            cwd=public_dir,
-        )
-    sync_args = ["uv", "sync"]
-    if frozen_sync:
-        sync_args.append("--frozen")
-    _run([*sync_args, "--all-groups"], cwd=public_dir)
-    _run(
-        ["uv", "run", "--all-groups", "ruff", "check", "--no-fix", "--no-cache", "."],
-        cwd=public_dir,
-    )
-    _run(
-        ["uv", "run", "--all-groups", "ruff", "format", "--check", "--no-cache", "."],
-        cwd=public_dir,
-    )
-    _run(["uv", "run", "--all-groups", "codespell", "."], cwd=public_dir)
-    _run(["uv", "run", "--all-groups", "ty", "check"], cwd=public_dir)
-    _run_basedpyright_public(public_dir=public_dir, targets=type_check_targets)
-    _run(["uv", "run", "--all-groups", "pytest", "-q"], cwd=public_dir)
-    if dist_dir.exists():
-        _delete_path(dist_dir)
-    _run(["uv", "build", "--out-dir", str(dist_dir)], cwd=public_dir)
-    if not smoke_import:
-        return
-    wheels = sorted(dist_dir.glob("*.whl"))
-    if not wheels:
-        raise PrReplayError("Public package build produced no wheel for smoke import.")
-    wheel = wheels[0]
-    _run(
-        [
-            "uv",
-            "run",
-            "--isolated",
-            "--with",
-            str(wheel),
-            "python",
-            "-c",
-            f"import importlib; importlib.import_module({smoke_import!r}); print('ok')",
-        ],
-        cwd=public_dir,
-    )
+    """Validate the exported public checkout with the shared command set.
+
+    ``validation_commands`` is the single source of truth
+    (``copybarista.sync.toml`` ``sync.validation_commands``) that also drives the
+    public repository's ``package-validation.yml``. Running the exact same shell
+    commands here makes the export PR gate and the public repo's own CI verify
+    byte-identical checks -- a change to the command set can never leave one
+    behind. Each command runs through ``bash -c`` in the public checkout, so it
+    self-contains its ``uv sync`` and may use shell features (pipes, ``||``,
+    subshells) the same way the workflow does.
+    """
+    for command in validation_commands:
+        _run(["bash", "-c", command], cwd=public_dir)
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
     """Run basedpyright for one source checkout."""
-    _run(
-        [
-            "uv",
-            "--quiet",
-            "--project",
-            str(project),
-            "run",
-            "basedpyright",
-            *targets,
-        ],
-        cwd=project,
-    )
-
-
-def _run_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
-    """Run basedpyright for one public checkout."""
-    _run(
-        ["uv", "run", "--all-groups", "basedpyright", *targets],
-        cwd=public_dir,
-    )
+    _run([*_uv_project_run(project), "basedpyright", *targets], cwd=project)
 
 
 def _resolve_pr_replay_plan(

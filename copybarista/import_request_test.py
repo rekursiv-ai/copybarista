@@ -12,16 +12,19 @@ import subprocess
 import pytest
 
 from copybarista.cli import main
-from copybarista.config import load_config
+from copybarista.config import Transform, load_config
 from copybarista.errors import ImportRequestError
 from copybarista.import_request import (
     ChangeRequestImporter,
     ImportRequest,
     PathMapper,
     TreeSnapshot,
+    _removed_regions,
+    _splice_source_only_regions,
     _three_way_merge,
     import_change_request,
 )
+from copybarista.transforms import strip_source_text
 
 
 def test_import_public_edit_maps_to_source_root_and_reverses_replace(
@@ -719,21 +722,148 @@ def test_import_rejects_excluded_public_path(tmp_path: Path):
         )
 
 
-def test_import_rejects_strip_block_paths(tmp_path: Path):
+def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
+    """A public edit to a strip_block file imports by re-inserting the source
+    block verbatim, rather than failing the whole import.
+
+    strip_block is not invertible (the block is absent from the public tree),
+    so the importer splices the source's block back at its original position and
+    applies the public edit around it. Re-exporting strips the block again, so
+    the destination still reproduces the public head; the import PR's CI is the
+    human-review gate for any semantic conflict.
+    """
     paths = _fixture(tmp_path, include_strip_block=True)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
     (public_head / "README.md").write_text("public edit\n", encoding="utf-8")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
 
-    with pytest.raises(ImportRequestError, match="non-reversible"):
-        import_change_request(
-            ImportRequest(
-                config=load_config(paths.config),
-                public_base=paths.public_base,
-                public_head=public_head,
-                source_base=paths.source_base,
-                destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
         )
+    )
+
+    # The imported README carries the public edit AND the source-only block.
+    imported = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
+    assert imported == (
+        "public edit\n<!-- internal:start -->\nprivate\n<!-- internal:end -->\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("transform", "source", "edit_from", "edit_to"),
+    [
+        # Canonical block: start marker at line start, inclusive.
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "keep a\n# S\nsecret\n# E\nkeep b\n",
+            "keep a",
+            "keep A",
+        ),
+        # internal_lines: one marker-carrying line per region.
+        (
+            Transform(id="x", type="internal_lines", path="m", start="# INT"),
+            "import a\nimport secret  # INT\nVALUE = 1\n",
+            "VALUE = 1",
+            "VALUE = 2",
+        ),
+        # inclusive=False: export keeps the marker lines, removes only the
+        # interior between them.
+        (
+            Transform(
+                id="x",
+                type="strip_block",
+                path="m",
+                start="# S",
+                end="# E",
+                inclusive=False,
+            ),
+            "keep a\n# S\nsecret\n# E\nkeep b\n",
+            "keep b",
+            "keep B",
+        ),
+        # Mid-line start marker: text before the block does not end in a newline,
+        # so export does NOT collapse the trailing newline after the end marker.
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "prefix # S\nsecret\n# E\nkeep\n",
+            "keep",
+            "kept",
+        ),
+        # Multiple blocks in one file.
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "a\n# S\nx\n# E\nb\n# S\ny\n# E\nc\n",
+            "b",
+            "B",
+        ),
+        # Removed block content coincides with kept text: a byte-diff derivation
+        # mis-attributes the region (matches kept ``code`` against the exported
+        # form); a marker-anchored derivation stays exact. The edit is after the
+        # last block so no region offset shifts.
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "# S\n# E\nimport os\n# S\n# E\ncode\ncode\n# S\ndata\n# E\ntail\n",
+            "tail",
+            "TAIL",
+        ),
+        # Blank lines after an inclusive block are collapsed into the cut, so the
+        # removed region must include them for an exact round-trip.
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "a\n# S\nx\n# E\n\n\nb\n",
+            "b",
+            "B",
+        ),
+    ],
+)
+def test_splice_source_only_regions_reinserts_and_round_trips(
+    transform: Transform,
+    source: str,
+    edit_from: str,
+    edit_to: str,
+):
+    """Re-inserting a transform's source-only regions must round-trip.
+
+    The contract: derive the public tree from the REAL export of the source
+    (``strip_source_text``, the same code the export runs), apply a public edit,
+    splice the source's removed regions back into it, and re-export that result.
+    Re-export must reproduce the edited public text exactly. The export function
+    is the ground-truth oracle, so ``_removed_regions`` must agree with it across
+    every block shape (inclusive/exclusive markers, mid-line markers, multiple
+    blocks) or the round-trip breaks. A hand-written approximation of the
+    stripping (the earlier bug) drifts from the real export and corrupts.
+    """
+    exported = strip_source_text(source, transform)
+    public = exported.replace(edit_from, edit_to)
+    reversed_text = _splice_source_only_regions(
+        source_text=source, public_text=public, transform=transform
+    )
+    assert strip_source_text(reversed_text, transform) == public
+
+
+def test_removed_regions_rejects_else_block_rewrite():
+    """An ``else``-branch strip_block cannot be reversed by re-insertion.
+
+    Export keeps the else branch and uncomments it, so the public tree holds a
+    rewritten form absent from source. ``_removed_regions`` must refuse rather
+    than fabricate a region that would corrupt the source on import.
+    """
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "a\n# IF\ninternal\n# ELSE\n# public_line\n# ENDIF\nb\n"
+    with pytest.raises(ImportRequestError, match="cannot be reversed"):
+        _removed_regions(source_text=source, transform=transform)
 
 
 def test_import_allows_strip_block_glob_match_without_block(tmp_path: Path):
@@ -1655,6 +1785,79 @@ def _fixture(
         public_base=public_base,
         source_base=source_base,
     )
+
+
+def test_merge_import_strip_block_reexports_to_public_head(tmp_path: Path):
+    """Merge import of a strip_block edit reproduces the public head.
+
+    Exercises the full merge path -- export source, three-way merge, reverse by
+    re-insertion, write, and the re-export gate -- for a public edit to a file
+    carrying a source-only block. The imported source must both keep the block
+    and, when re-exported, byte-match the public head (asserted by the gate,
+    which now runs in merge mode too). A wrong re-insertion offset would make the
+    gate fail.
+    """
+    paths = _fixture(tmp_path, include_strip_block=True)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "README.md").write_text("public edit\n", encoding="utf-8")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
+    assert imported == (
+        "public edit\n<!-- internal:start -->\nprivate\n<!-- internal:end -->\n"
+    )
+
+
+def test_reinsert_gate_rejects_public_edit_that_disturbs_stripped_region(
+    tmp_path: Path,
+):
+    """A public edit that disturbs a stripped region fails the re-insert gate.
+
+    When a public edit rewrites the context around a source-only block (here it
+    introduces a stray start marker), re-inserting the source region can no
+    longer strip back to the incoming public text. The per-file re-insert gate
+    must reject this rather than write a source tree whose export has drifted.
+    Exercises the real reversal path (no monkeypatch) in merge mode, which has no
+    whole-tree public-head check of its own.
+    """
+    paths = _fixture(tmp_path, include_strip_block=True)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    # The public author writes a line that itself contains the start marker,
+    # with no matching end marker: re-inserting the source block then re-stripping
+    # cannot reproduce this public text.
+    (public_head / "README.md").write_text(
+        "public edit <!-- internal:start --> oops\n", encoding="utf-8"
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    original = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match="stripped region"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
+
+    # On failure the destination must be rolled back, never left drifted.
+    assert (destination / "internal/demo/README.md").read_text(
+        encoding="utf-8"
+    ) == original
 
 
 def _copy_tree(source: Path, destination: Path) -> Path:

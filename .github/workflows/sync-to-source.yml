@@ -173,7 +173,17 @@ jobs:
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
-            --type-check-target copybarista \
+            --validation-command 'python copybarista/scripts/check_release_tree.py . --allow-root-git' \
+            --validation-command 'uv sync --all-groups' \
+            --validation-command 'uv run --all-groups ruff check --no-fix --no-cache .' \
+            --validation-command 'uv run --all-groups ruff format --check --no-cache .' \
+            --validation-command 'uv run --all-groups codespell .' \
+            --validation-command 'uv run --all-groups ty check' \
+            --validation-command 'uv run --all-groups basedpyright copybarista' \
+            --validation-command 'uv run --all-groups pytest' \
+            --validation-command 'uv run --all-groups pytest -m ci_smoke -o addopts="--durations=20" || test "$?" = 5' \
+            --validation-command 'uv build --out-dir dist' \
+            --validation-command 'wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
             --open-pr false
 
       - name: Open or update target import PR

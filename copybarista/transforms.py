@@ -593,6 +593,116 @@ def _snapshot_regular_files(root: Path, target: Path) -> dict[Path, bytes]:
     }
 
 
+def strip_source_text(text: str, transform: Transform) -> str:
+    """Return the exported form of one text for a strip transform.
+
+    The single source of truth for how ``strip_block`` and ``internal_lines``
+    remove content on export, factored out of the file-walking transforms so the
+    reverse-import path can derive removed regions from the *actual* export
+    result rather than re-deriving marker semantics by hand. Keeping one
+    definition means inclusive/exclusive/else and future tweaks stay consistent
+    across export and import automatically.
+    """
+    return strip_source_regions(text, transform)[0]
+
+
+def strip_source_regions(
+    text: str, transform: Transform
+) -> tuple[str, tuple[tuple[int, str], ...]]:
+    """Return the exported text and the source-only regions it removed.
+
+    Companion to ``strip_source_text`` that also reports each removed region as
+    ``(offset_in_stripped, removed_text)``: the offset the region occupied in the
+    *stripped* (exported) form and the exact bytes deleted. The reverse-import
+    path re-inserts these verbatim, so deriving them from the SAME traversal the
+    export uses keeps them exact for every block shape -- there is no second,
+    drift-prone re-derivation of marker semantics.
+
+    A transform that rewrites rather than deletes (``strip_block`` with an
+    ``else`` branch uncomments and keeps the else lines) has no verbatim removed
+    region to report and cannot be reversed by re-insertion; callers that need
+    regions must reject it first. This returns no regions for the ``else`` case
+    rather than fabricate one.
+    """
+    if transform.type == "strip_block":
+        if transform.else_marker:
+            return _strip_blocks_with_else(text, transform)[0], ()
+        return _strip_blocks_regions(text, transform)
+    if transform.type == "internal_lines":
+        marker = transform.start
+        kept: list[str] = []
+        regions: list[tuple[int, str]] = []
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            if marker in line:
+                regions.append((offset, line))
+            else:
+                kept.append(line)
+                offset += len(line)
+        return "".join(kept), tuple(regions)
+    raise TransformError(
+        f"strip_source_text does not support transform type {transform.type!r}"
+    )
+
+
+def _strip_blocks_regions(
+    text: str, transform: Transform
+) -> tuple[str, tuple[tuple[int, str], ...]]:
+    """Strip marker-delimited blocks, reporting each removed region.
+
+    Mirrors ``_strip_blocks`` exactly (same marker walk, same inclusive gap
+    collapse) so the removed spans are the ground truth for reverse re-insertion.
+    ``updated`` is edited in place and re-searched from the cut point, so
+    ``start_idx`` is already an offset in the partially-stripped text -- i.e. the
+    final stripped-form offset of that region.
+    """
+    if not transform.start or not transform.end:
+        raise TransformError(
+            f"Transformation '{transform.id}' markers must be non-empty"
+        )
+    updated = text
+    search_from = 0
+    regions: list[tuple[int, str]] = []
+    while True:
+        start_idx = updated.find(transform.start, search_from)
+        if start_idx < 0:
+            return updated, tuple(regions)
+        first_end_idx = updated.find(transform.end, search_from)
+        if 0 <= first_end_idx < start_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found end marker before start marker"
+            )
+        end_idx = updated.find(transform.end, start_idx + len(transform.start))
+        if end_idx < 0:
+            raise TransformError(
+                f"Transformation '{transform.id}' did not find end marker"
+            )
+        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
+        if 0 <= next_start_idx < end_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found nested start marker"
+            )
+        if transform.inclusive:
+            end_idx += len(transform.end)
+            removed = updated[start_idx:end_idx]
+            after = updated[end_idx:]
+            # Match _collapse_removed_block_gap: when kept text before the block
+            # ends in a newline and the text after begins with newline(s), those
+            # leading newlines are collapsed into the cut, so they are part of
+            # the removed region (``after.lstrip("\n")``).
+            if updated[:start_idx].endswith("\n") and after.startswith("\n"):
+                stripped_after = after.lstrip("\n")
+                removed += after[: len(after) - len(stripped_after)]
+                after = stripped_after
+            updated = updated[:start_idx] + after
+            search_from = start_idx
+        else:
+            removed = updated[start_idx:end_idx]
+            updated = updated[:start_idx] + updated[end_idx:]
+            search_from = start_idx + len(transform.end)
+        regions.append((start_idx, removed))
+
+
 def _collapse_removed_block_gap(before: str, after: str) -> str:
     """Avoid creating extra blank lines around an inclusive stripped block."""
     if before.endswith("\n") and after.startswith("\n"):

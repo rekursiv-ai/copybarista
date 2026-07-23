@@ -20,10 +20,11 @@ import tempfile
 
 from copybarista.commands import CommandRunner
 from copybarista.config import Transform, WorkflowConfig
-from copybarista.errors import ImportRequestError
+from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
 from copybarista.template import compile_replace
+from copybarista.transforms import strip_source_regions, strip_source_text
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
@@ -377,6 +378,11 @@ class ChangeRequestImporter:
             else:
                 applied = tuple(self._apply_change(change) for change in plan.changes)
                 if self.verify:
+                    # Strict mode reverses the public head exactly, so its
+                    # re-export must reproduce public head. Merge mode folds in
+                    # independent source drift, so its export legitimately differs
+                    # from public head; the merge path verifies each reversal
+                    # per-file instead (see _check_merge_reversal).
                     self._check_public_head()
         except Exception:
             _restore_originals(originals)
@@ -577,19 +583,20 @@ class ChangeRequestImporter:
                 continue
             if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
-            if transform.type == "strip_block":
-                if self._strip_block_is_noop(
-                    public_path=public_path, transform=transform
-                ):
-                    # The source file has no block for this transform, so the
-                    # strip removed nothing on export and the public content
-                    # reverses unchanged. Skip it (copybara treats no-op
-                    # transforms as no-ops, not errors).
-                    continue
-                raise ImportRequestError(
-                    f"Public path requires non-reversible transform "
-                    f"'{transform.id}': {public_path}"
+            if transform.type in ("strip_block", "internal_lines"):
+                # Neither transform is invertible from the public tree: the
+                # removed source content (a marker-delimited block, or each line
+                # carrying the marker) is absent from public, so reversal cannot
+                # reconstruct it. To a re-insertion heuristic a block is just a
+                # line -- a contiguous source-only region -- so both go through
+                # the same machinery: re-insert the source's removed region(s)
+                # verbatim at their original position and let the public edits
+                # apply around them. Re-export removes them again, reproducing
+                # the public head; the import PR's CI is the human-review gate.
+                content = self._reinsert_source_only_regions(
+                    public_path=public_path, transform=transform, content=content
                 )
+                continue
             try:
                 text = content.decode()
             except UnicodeDecodeError as err:
@@ -687,45 +694,76 @@ class ChangeRequestImporter:
             if transform.type in ("move", "ruff_format") or not transform.reversible:
                 continue
             if _matches_transform(transform, match_path, self.config.globstar):
-                if transform.type == "strip_block":
-                    if self._strip_block_is_noop(
-                        public_path=public_path, transform=transform
-                    ):
-                        continue
-                    if self.merge_import:
-                        continue
-                    raise ImportRequestError(
-                        f"Public path requires non-reversible transform "
-                        f"'{transform.id}': {public_path}"
-                    )
+                if transform.type in ("strip_block", "internal_lines"):
+                    # Not invertible, but rather than fail the import,
+                    # _reverse_content re-inserts the source's removed region(s)
+                    # verbatim (both strict and merge modes). The decision is
+                    # deferred there; nothing to record as a reversible id here.
+                    continue
                 ids.append(transform.id)
         return tuple(ids)
 
-    def _strip_block_is_noop(self, *, public_path: str, transform: Transform) -> bool:
-        """Return whether a strip_block transform did nothing to this path.
+    def _reinsert_source_only_regions(
+        self, *, public_path: str, transform: Transform, content: bytes
+    ) -> bytes:
+        """Re-insert a transform's source-only regions into reversed content.
 
-        A strip_block removes a source-only block on export; it is only
-        non-reversible when the SOURCE file actually contains that block (the
-        removed content is absent from the public tree and cannot be
-        reconstructed). When the source file has no start marker -- e.g. public
-        sample code that merely matches the transform's glob -- the strip
-        removed nothing, so importing the public change back is loss-free.
+        ``strip_block`` and ``internal_lines`` both delete source-only content
+        on export (a marker-delimited block, or each line carrying the marker),
+        which the public tree cannot reconstruct. On import we splice the
+        source's removed region(s) back verbatim at their original position: the
+        source file is the local side, and the incoming public edits apply to the
+        regions *around* them.
 
-        This mirrors Copybara, which classifies a transform that changes
-        nothing as a no-op rather than an error (Replace.java / FilterReplace.java:
-        ``TransformationStatus.noop(... "was a no-op because it didn't ...")``).
+        Re-inserting is exact only when the incoming public text still contains
+        the exported context around each region. A public edit that rewrote that
+        context can displace a region so the rebuilt source no longer strips back
+        to the incoming public text. We verify that round-trip here -- re-strip
+        the rebuilt source and require it to reproduce ``public_text`` -- so a
+        displaced re-insertion fails loud (in both strict and merge modes) rather
+        than silently writing a source tree whose export has drifted. The strict
+        path's ``_check_public_head`` is a whole-tree backstop; merge mode folds
+        in source drift and has no such tree-level check, so this per-file gate is
+        its safety net.
         """
         source_path = self.source_base / _source_path(
-            config=self.config,
-            public_path=public_path,
+            config=self.config, public_path=public_path
         )
         if not source_path.exists() or source_path.is_symlink():
-            return True
+            return content
         source_text = _read_import_text(
             path=source_path,
             label=f"Source base path is not UTF-8: {source_path}",
         )
-        return transform.start not in source_text
+        try:
+            public_text = content.decode()
+        except UnicodeDecodeError as err:
+            raise ImportRequestError(
+                f"Public path requires text reversal but is not UTF-8: {public_path}"
+            ) from err
+        rebuilt = _splice_source_only_regions(
+            source_text=source_text, public_text=public_text, transform=transform
+        )
+        # A public edit that rewrote the context around a region (or introduced a
+        # stray marker) can make re-stripping the rebuilt source diverge from --
+        # or fail to parse back to -- the incoming public text. Either way the
+        # reversal is unsafe: fail loud rather than write drifted source.
+        try:
+            restripped = strip_source_text(rebuilt, transform)
+        except TransformError as err:
+            raise ImportRequestError(
+                f"Re-inserting source-only regions for transform '{transform.id}' "
+                f"produced a source tree that cannot be re-exported for "
+                f"{public_path}; a public edit disturbed a stripped region. "
+                "Resolve the import by hand."
+            ) from err
+        if restripped != public_text:
+            raise ImportRequestError(
+                f"Re-inserting source-only regions for transform '{transform.id}' "
+                f"does not reproduce the public content of {public_path}; a public "
+                "edit displaced a stripped region. Resolve the import by hand."
+            )
+        return rebuilt.encode()
 
     def _check_public_base(self) -> None:
         """Verify the supplied source base reproduces the public base tree."""
@@ -872,6 +910,56 @@ def _reverse_replace(*, transform: Transform, text: str) -> str:
             regex_groups=transform.regex_groups,
         ).apply(text)
     return text.replace(reverse_before, reverse_after)
+
+
+def _removed_regions(
+    *, source_text: str, transform: Transform
+) -> list[tuple[int, str]]:
+    """Return each source-only region a strip transform removes on export.
+
+    Each entry is ``(offset_in_stripped, verbatim_text)``: the region's exact
+    removed text and the offset it occupied within the *stripped* (exported)
+    form. Derived from the SAME marker walk the export uses
+    (``strip_source_regions``), so offsets and text agree with the real transform
+    for every block shape -- inclusive and exclusive markers, mid-line markers,
+    gap-collapsed blank lines -- with no second, drift-prone re-derivation.
+
+    A strip transform that *rewrites* rather than deletes (``strip_block`` with
+    an ``else`` branch uncomments and keeps the else lines) has no verbatim
+    source-only region to re-insert: its exported bytes are a transformed form
+    absent from source. Such a transform cannot be reversed by re-insertion, so
+    this raises rather than fabricate a bogus region. The caller surfaces it as a
+    non-reversible import.
+    """
+    if transform.else_marker:
+        raise ImportRequestError(
+            f"Transform '{transform.id}' has an else branch and rewrites content "
+            "on export; it cannot be reversed by re-insertion"
+        )
+    return list(strip_source_regions(source_text, transform)[1])
+
+
+def _splice_source_only_regions(
+    *, source_text: str, public_text: str, transform: Transform
+) -> str:
+    """Re-insert a strip transform's source-only regions into reversed text.
+
+    Reverses ``strip_block`` / ``internal_lines`` by inserting each removed
+    source region (block or line) back into ``public_text`` at the offset it
+    held in the stripped (exported) form, right to left so earlier offsets stay
+    valid. When public edits did not disturb the text around a region the offset
+    lands exactly; when they did, the region is still restored (possibly
+    displaced) and the import PR's CI is the human-review gate. Re-export removes
+    the regions again, reproducing the public head.
+    """
+    regions = _removed_regions(source_text=source_text, transform=transform)
+    if not regions:
+        return public_text
+    result = public_text
+    for offset, region_text in reversed(regions):
+        insert_at = min(offset, len(result))
+        result = result[:insert_at] + region_text + result[insert_at:]
+    return result
 
 
 def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:

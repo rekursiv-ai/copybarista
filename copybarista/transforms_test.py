@@ -12,7 +12,65 @@ from copybarista import transforms
 from copybarista.config import Transform
 from copybarista.errors import TransformError
 from copybarista.manifest import ManifestEntry
-from copybarista.transforms import apply_transforms
+from copybarista.transforms import (
+    apply_transforms,
+    strip_source_regions,
+    strip_source_text,
+)
+
+
+@pytest.mark.parametrize(
+    ("transform", "source"),
+    [
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "keep a\n# S\nsecret\n# E\nkeep b\n",
+        ),
+        (
+            Transform(
+                id="x",
+                type="strip_block",
+                path="m",
+                start="# S",
+                end="# E",
+                inclusive=False,
+            ),
+            "keep a\n# S\nsecret\n# E\nkeep b\n",
+        ),
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "prefix # S\nsecret\n# E\nkeep\n",
+        ),
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "a\n# S\nx\n# E\n\n\nb\n",
+        ),
+        (
+            Transform(id="x", type="strip_block", path="m", start="# S", end="# E"),
+            "# S\nx\n# E\n# S\ny\n# E\n",
+        ),
+        (
+            Transform(id="x", type="internal_lines", path="m", start="# INT"),
+            "import a\nimport secret  # INT\nVALUE = 1\n",
+        ),
+    ],
+)
+def test_strip_source_regions_matches_export_and_reconstructs(
+    transform: Transform, source: str
+):
+    """The region oracle agrees with the export and reconstructs the source.
+
+    ``strip_source_regions`` must return exactly the exported text
+    ``strip_source_text`` produces, and re-inserting its reported regions into
+    that exported text (right to left) must rebuild the original source byte for
+    byte. This is the invariant the reverse-import re-insertion relies on.
+    """
+    stripped, regions = strip_source_regions(source, transform)
+    assert stripped == strip_source_text(source, transform)
+    rebuilt = stripped
+    for offset, text in reversed(regions):
+        rebuilt = rebuilt[:offset] + text + rebuilt[offset:]
+    assert rebuilt == source
 
 
 def test_required_replace_changes_all_literal_matches(tmp_path: Path):

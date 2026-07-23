@@ -84,6 +84,7 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         release_check_script=None,
         type_check_targets=(".",),
         smoke_import="",
+        validation_commands=(),
         dry_run=False,
     )
 
@@ -1884,20 +1885,9 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     def fake_validate_public(
         *,
         public_dir: Path,
-        dist_dir: Path,
-        release_check_script: Path | None,
-        frozen_sync: bool,
-        type_check_targets: tuple[str, ...],
-        smoke_import: str,
+        validation_commands: tuple[str, ...],
     ) -> None:
-        del (
-            public_dir,
-            dist_dir,
-            release_check_script,
-            frozen_sync,
-            type_check_targets,
-            smoke_import,
-        )
+        del public_dir, validation_commands
 
     def fake_open_or_update_export_pr(
         *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
@@ -1960,20 +1950,9 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
     def fake_validate_public(
         *,
         public_dir: Path,
-        dist_dir: Path,
-        release_check_script: Path | None,
-        frozen_sync: bool,
-        type_check_targets: tuple[str, ...],
-        smoke_import: str,
+        validation_commands: tuple[str, ...],
     ) -> None:
-        del (
-            public_dir,
-            dist_dir,
-            release_check_script,
-            frozen_sync,
-            type_check_targets,
-            smoke_import,
-        )
+        del public_dir, validation_commands
 
     def fake_open_or_update_export_pr(
         *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
@@ -2099,19 +2078,9 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     def fake_validate_public(
         *,
         public_dir: Path,
-        dist_dir: Path,
-        release_check_script: Path | None,
-        frozen_sync: bool,
-        type_check_targets: tuple[str, ...],
-        smoke_import: str,
+        validation_commands: tuple[str, ...],
     ) -> None:
-        del (
-            dist_dir,
-            release_check_script,
-            frozen_sync,
-            type_check_targets,
-            smoke_import,
-        )
+        del validation_commands
         (public_dir / "uv.lock").write_text("validation lock\n", encoding="utf-8")
 
     def fake_open_or_update_export_pr(
@@ -2207,19 +2176,9 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
     def fake_validate_public(
         *,
         public_dir: Path,
-        dist_dir: Path,
-        release_check_script: Path | None,
-        frozen_sync: bool,
-        type_check_targets: tuple[str, ...],
-        smoke_import: str,
+        validation_commands: tuple[str, ...],
     ) -> None:
-        del (
-            dist_dir,
-            release_check_script,
-            frozen_sync,
-            type_check_targets,
-            smoke_import,
-        )
+        del validation_commands
         calls.append(("validate", public_dir))
         assert (public_dir / "exported.txt").read_text(encoding="utf-8") == "exported\n"
 
@@ -2268,7 +2227,7 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
     assert not dry_public_dir.exists()
 
 
-def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
+def test_run_export_sync_refreshes_public_lockfile_before_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2303,14 +2262,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_frozen_validation(
     def fake_validate_public(
         *,
         public_dir: Path,
-        dist_dir: Path,
-        release_check_script: Path | None,
-        frozen_sync: bool,
-        type_check_targets: tuple[str, ...],
-        smoke_import: str,
+        validation_commands: tuple[str, ...],
     ) -> None:
-        del dist_dir, release_check_script, type_check_targets, smoke_import
-        assert frozen_sync
+        del validation_commands
         assert (public_dir / "uv.lock").read_text(encoding="utf-8") == "public lock\n"
         calls.append("validate")
 
@@ -2411,79 +2365,30 @@ def test_preleakcheck_validation_runs_lint_not_types(
     assert not any(argv[0] == "basedpyright" for argv in calls)
 
 
-def test_validate_public_smoke_import_uses_current_build_wheel(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_validate_public_runs_each_validation_command_via_bash(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    public_dir = tmp_path / "public"
-    dist_dir = tmp_path / "dist"
-    public_dir.mkdir()
-    dist_dir.mkdir()
-    stale_wheel = dist_dir / "copybarista-0.0.1-py3-none-any.whl"
-    stale_wheel.write_text("old\n", encoding="utf-8")
-    new_wheel = dist_dir / "copybarista-0.0.1-py3-none-any.whl"
-    smoke_wheels: list[str] = []
+    calls: list[tuple[list[str], Path | None]] = []
+    public_dir = Path("/public")
 
-    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        if argv[:2] == ["uv", "build"]:
-            new_wheel.parent.mkdir(parents=True, exist_ok=True)
-            new_wheel.write_text("new\n", encoding="utf-8")
-        if argv[:3] == ["uv", "run", "--isolated"]:
-            smoke_wheels.append(argv[argv.index("--with") + 1])
+    def fake_run(
+        argv: list[str], *, cwd: Path | None = None, **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0)
 
-    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
-        del public_dir, targets
-
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-    monkeypatch.setattr(
-        sync_export_pr,
-        "_run_basedpyright_public",
-        fake_basedpyright_public,
-    )
 
-    _validate_public(
-        public_dir=public_dir,
-        dist_dir=dist_dir,
-        release_check_script=None,
-        frozen_sync=False,
-        type_check_targets=(".",),
-        smoke_import="copybarista",
-    )
+    commands = ("uv sync --all-groups", "uv run pytest")
+    _validate_public(public_dir=public_dir, validation_commands=commands)
 
-    assert smoke_wheels == [str(new_wheel)]
+    assert calls == [
+        (["bash", "-c", "uv sync --all-groups"], public_dir),
+        (["bash", "-c", "uv run pytest"], public_dir),
+    ]
 
 
-def test_validate_public_runs_ty_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0)
-
-    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
-        calls.append(["basedpyright", str(public_dir), *targets])
-
-    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-    monkeypatch.setattr(
-        sync_export_pr,
-        "_run_basedpyright_public",
-        fake_basedpyright_public,
-    )
-
-    _validate_public(
-        public_dir=Path("/public"),
-        dist_dir=Path("/dist"),
-        release_check_script=None,
-        frozen_sync=False,
-        type_check_targets=("configgle",),
-        smoke_import="",
-    )
-
-    assert ["uv", "run", "--all-groups", "ty", "check"] in calls
-    assert ["uv", "run", "--all-groups", "codespell", "."] in calls
-
-
-def test_validate_public_uses_frozen_sync_when_lockfile_is_managed(
+def test_validate_public_runs_nothing_without_commands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
@@ -2492,23 +2397,8 @@ def test_validate_public_uses_frozen_sync_when_lockfile_is_managed(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    def fake_basedpyright_public(*, public_dir: Path, targets: tuple[str, ...]) -> None:
-        del public_dir, targets
-
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-    monkeypatch.setattr(
-        sync_export_pr,
-        "_run_basedpyright_public",
-        fake_basedpyright_public,
-    )
 
-    _validate_public(
-        public_dir=Path("/public"),
-        dist_dir=Path("/dist"),
-        release_check_script=None,
-        frozen_sync=True,
-        type_check_targets=("configgle",),
-        smoke_import="",
-    )
+    _validate_public(public_dir=Path("/public"), validation_commands=())
 
-    assert ["uv", "sync", "--frozen", "--all-groups"] in calls
+    assert calls == []
