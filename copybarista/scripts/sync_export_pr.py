@@ -1648,8 +1648,10 @@ def _render_pr_body(
             "----",
             f"{sync_label} export branch: `{branch}`",
             "",
-            "Do not push manual commits to this generated branch. Change the source "
-            "repository, then rerun the export workflow with the same branch.",
+            (
+                "Do not push manual commits to this generated branch. Change the source "
+                "repository, then rerun the export workflow with the same branch."
+            ),
             "",
             f"{PR_MARKER_PREFIX}version={PR_STATE_VERSION} applied={marker_value} -->",
         )

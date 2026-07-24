@@ -212,6 +212,7 @@ class DestinationPrefixer:
 
 def _copy_selected(
     source_root: Path,
+    *,
     staging: Path,
     matcher: GlobSet,
     prefixer: DestinationPrefixer,
