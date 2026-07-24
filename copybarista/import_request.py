@@ -937,10 +937,13 @@ def _removed_regions(
     an ``else`` branch uncomments and keeps the else lines) has no verbatim
     source-only region to re-insert: its exported bytes are a transformed form
     absent from source. Such a transform cannot be reversed by re-insertion, so
-    this raises rather than fabricate a bogus region. The caller surfaces it as a
-    non-reversible import.
+    this raises rather than fabricate a bogus region -- but only when the source
+    file actually contains the block. A transform whose glob matches a file that
+    carries no marker is a no-op on that file (nothing was rewritten), so it
+    reverses trivially to zero regions; rejecting it would wrongly block importing
+    an unrelated edit to any file the glob happens to match.
     """
-    if transform.else_marker:
+    if transform.else_marker and transform.start and transform.start in source_text:
         raise ImportRequestError(
             f"Transform '{transform.id}' has an else branch and rewrites content "
             "on export; it cannot be reversed by re-insertion"
