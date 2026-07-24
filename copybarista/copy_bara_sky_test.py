@@ -745,8 +745,10 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
         ),
         ("transform = core.replace(before='old', after='new')\n", "paths"),
         (
-            "transform = core.replace(before='old', after='new', "
-            "paths=glob(['a.txt']), first_only=True)\n",
+            (
+                "transform = core.replace(before='old', after='new', "
+                "paths=glob(['a.txt']), first_only=True)\n"
+            ),
             "Unsupported argument",
         ),
         (
@@ -827,39 +829,51 @@ def test_rejects_unsupported_sky_helper_bodies(
             "Only folder.destination",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['**']), "
-            "transformations='bad'",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['**']), "
+                "transformations='bad'"
+            ),
             "transformations",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['**']), "
-            "transformations=['bad']",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['**']), "
+                "transformations=['bad']"
+            ),
             "Unsupported transformation",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['src/**']), "
-            "transformations=[core.move('project', '')]",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['src/**']), "
+                "transformations=[core.move('project', '')]"
+            ),
             "outside core.move source root",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['project/**']), "
-            "transformations=[core.move('project', ''), core.move('project', '')]",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['project/**']), "
+                "transformations=[core.move('project', ''), core.move('project', '')]"
+            ),
             "Only one core.move",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['**']), "
-            "destination_files=glob(['src/**']), transformations=[]",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['**']), "
+                "destination_files=glob(['src/**']), transformations=[]"
+            ),
             "Only destination_files",
         ),
         (
-            "name='export', origin=folder.origin(), "
-            "destination=folder.destination(), origin_files=glob(['**']), "
-            "destination_files=glob(['**'], exclude=['old/**']), transformations=[]",
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['**']), "
+                "destination_files=glob(['**'], exclude=['old/**']), transformations=[]"
+            ),
             "Only destination_files",
         ),
     ],
