@@ -447,6 +447,15 @@ def test_export_workflow_watches_source_and_sync_helpers():
     assert '"tools/copybarista/scripts/sync_import_change.py"' in workflow
 
 
+def test_export_workflow_watches_additional_source_paths():
+    workflow = export_workflow(
+        _settings(export_watch_paths=(".codespell-ignore", "docs/POLICY.md"))
+    )
+
+    assert '      - ".codespell-ignore"' in workflow
+    assert '      - "docs/POLICY.md"' in workflow
+
+
 def test_write_sync_scaffold_refuses_to_overwrite_without_force(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
