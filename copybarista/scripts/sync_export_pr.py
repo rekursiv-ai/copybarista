@@ -929,6 +929,26 @@ def _replay_base(
     branch_markers: BranchMarkers,
 ) -> str:
     """Return the source commit used as replay base."""
+    return _floor_replay_base(
+        source_dir=request.source_dir,
+        base=_resolved_replay_base(
+            request=request,
+            current_source_rev=current_source_rev,
+            current_pr=current_pr,
+            branch_markers=branch_markers,
+        ),
+        bootstrap_base=request.replay_settings.bootstrap_base,
+    )
+
+
+def _resolved_replay_base(
+    *,
+    request: ExportRequest,
+    current_source_rev: str,
+    current_pr: CurrentPr | None,
+    branch_markers: BranchMarkers,
+) -> str:
+    """Return the replay base from PR/branch markers before flooring."""
     if current_pr:
         marker = _applied_marker_from_pr_body(current_pr.body)
         if marker:
@@ -958,9 +978,38 @@ def _replay_base(
         )
     if request.replay_settings.bootstrap_base:
         return request.replay_settings.bootstrap_base
-    if not branch_markers.exists:
-        return _source_parent(source_dir=request.source_dir, rev=current_source_rev)
     return _source_parent(source_dir=request.source_dir, rev=current_source_rev)
+
+
+def _floor_replay_base(*, source_dir: Path, base: str, bootstrap_base: str) -> str:
+    """Advance a resolved replay base to the bootstrap base when it predates it.
+
+    ``replay_bootstrap_base`` is documented as "skip commits at or before this
+    revision": a one-time floor past historical commits whose
+    ``Copybarista-PR-Body``/``-Title`` trailers embed forbidden monorepo text.
+    A PR or branch marker can legitimately resolve to a commit OLDER than the
+    bootstrap base (the marker reflects the last landed export, which may predate
+    the floor). Scanning ``marker..HEAD`` would then re-read the poisoned
+    trailers and hard-fail the export forever. Flooring to the bootstrap base
+    when the resolved base is its ancestor skips exactly those commits while
+    leaving already-published PR entries (recovered from the PR body) intact.
+    """
+    if not bootstrap_base or not base:
+        return base
+    if _is_source_ancestor(source_dir=source_dir, ancestor=base, rev=bootstrap_base):
+        return bootstrap_base
+    return base
+
+
+def _is_source_ancestor(*, source_dir: Path, ancestor: str, rev: str) -> bool:
+    """Return whether ``ancestor`` is an ancestor of ``rev`` in the source repo."""
+    result = _run(
+        ["git", "merge-base", "--is-ancestor", ancestor, rev],
+        cwd=source_dir,
+        check=False,
+        capture=True,
+    )
+    return result.returncode == 0
 
 
 def _source_pr_metadata(

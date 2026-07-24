@@ -1397,6 +1397,59 @@ def test_marked_existing_branch_replays_after_applied_source(
     assert calls == ["generated branch source marker:sha256:applied-digest"]
 
 
+def test_replay_base_floors_resolved_base_to_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A bootstrap base floors a resolved base that predates it.
+
+    ``replay_bootstrap_base`` documents "skip commits at or before this
+    revision" -- a one-time floor past historical commits whose PR-body trailers
+    embed forbidden monorepo text. When the branch/PR marker resolves to a base
+    OLDER than the bootstrap base, the replay must start at the bootstrap base so
+    the leaky commits are never scanned; otherwise a stuck export can never
+    recover because it keeps re-reading the poisoned trailer.
+    """
+    request = replace(
+        _export_request(tmp_path),
+        replay_settings=replace(
+            _export_request(tmp_path).replay_settings,
+            bootstrap_base="bootstrap-base",
+        ),
+    )
+
+    def fake_resolve_source_marker(
+        *, source_dir: Path, marker: str, marker_source: str
+    ) -> str:
+        del marker, marker_source
+        assert source_dir == tmp_path
+        return "old-marked-base"
+
+    def fake_is_ancestor(*, source_dir: Path, ancestor: str, rev: str) -> bool:
+        assert source_dir == tmp_path
+        # The resolved marker base is an ancestor of the bootstrap base.
+        return ancestor == "old-marked-base" and rev == "bootstrap-base"
+
+    monkeypatch.setattr(
+        sync_export_pr, "_resolve_source_marker", fake_resolve_source_marker
+    )
+    monkeypatch.setattr(sync_export_pr, "_is_source_ancestor", fake_is_ancestor)
+
+    assert (
+        sync_export_pr._replay_base(
+            request=request,
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="applied-digest",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+        == "bootstrap-base"
+    )
+
+
 def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
     with pytest.raises(sync_export_pr.PrReplayError, match="Existing generated PR"):
         sync_export_pr._replay_base(
