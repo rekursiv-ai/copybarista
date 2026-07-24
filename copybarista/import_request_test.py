@@ -199,6 +199,44 @@ def test_import_maps_extra_copy_file_destination_to_source(tmp_path: Path):
     assert mapper.source_path("demo/lib/json.py") == "shared/json.py"
 
 
+def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
+    """A `[[files.copy]]` with `destination = "."` maps root files back.
+
+    Verbatim-ship staging dirs (e.g. `<pkg>/.export`) copy to the public root
+    (`destination = "."`), so a public edit to a root file like
+    `pyproject.toml` or `CONTRIBUTING.md` must map back to `<source>/<file>`
+    instead of failing the whole import as unmapped.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "demo"
+        destination_prefix_exclude = ["pyproject.toml", "*.md"]
+
+        [[files.copy]]
+        source = "internal/demo/.export"
+        destination = "."
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    assert (
+        mapper.source_path("pyproject.toml") == "internal/demo/.export/pyproject.toml"
+    )
+    assert (
+        mapper.source_path("CONTRIBUTING.md") == "internal/demo/.export/CONTRIBUTING.md"
+    )
+
+
 def test_import_rejects_generated_file_destination(tmp_path: Path):
     config = tmp_path / "copy.barista.toml"
     config.write_text(

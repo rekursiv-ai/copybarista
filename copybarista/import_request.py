@@ -235,6 +235,15 @@ class PathMapper:
                 raise ImportRequestError(
                     f"Public path is excluded or unmapped: {public_path}"
                 )
+            if file_copy.destination in (".", "./"):
+                # A directory copy with ``destination = "."`` lands its tree at
+                # the public root. It owns the root-level files it supplies (e.g.
+                # ``pyproject.toml``, ``CONTRIBUTING.md``); paths under the
+                # package's ``destination_prefix`` come from the main source-root
+                # selection, not this copy, so only claim root-level paths.
+                if "/" in public_path or not matcher.matches(public_path):
+                    continue
+                return f"{file_copy.source}/{public_path}"
             prefix = f"{file_copy.destination}/"
             if not public_path.startswith(prefix):
                 continue
