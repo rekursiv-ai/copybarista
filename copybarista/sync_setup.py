@@ -69,6 +69,7 @@ class SyncSettings:
       release_check_script: Optional project-relative release tree checker.
       type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
+      export_watch_paths: Additional source-repository paths that trigger export.
       validation_python_versions: Python versions used by public package validation.
       validation_commands: Commands run by public package validation.
       system_packages: apt packages installed before BOTH validation workflows.
@@ -99,6 +100,7 @@ class SyncSettings:
     smoke_import: str
     type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
+    export_watch_paths: tuple[str, ...] = ()
     release_check_script: str = ""
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
     validation_commands: tuple[str, ...] = ()
@@ -193,6 +195,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
         release_check_script=_optional_str(sync, "release_check_script", default=""),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
+        export_watch_paths=_optional_str_tuple(
+            sync,
+            "export_watch_paths",
+            default=(),
+        ),
         validation_python_versions=_optional_str_tuple(
             sync,
             "validation_python_versions",
@@ -383,6 +390,9 @@ def sync_toml(settings: SyncSettings) -> str:
     forbidden = "\n".join(
         f"  {_toml_str(term)}," for term in settings.forbidden_pr_text
     )
+    export_watch_paths = "\n".join(
+        f"  {_toml_str(path)}," for path in settings.export_watch_paths
+    )
     python_versions = "\n".join(
         f"  {_toml_str(version)}," for version in settings.validation_python_versions
     )
@@ -414,6 +424,7 @@ def sync_toml(settings: SyncSettings) -> str:
             "REFRESH_PUBLIC_LOCKFILE": _toml_bool(settings.refresh_public_lockfile),
             "TYPE_CHECK_TARGETS": targets,
             "FORBIDDEN_PR_TEXT": forbidden,
+            "EXPORT_WATCH_PATHS": export_watch_paths,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
             "VALIDATION_COMMANDS": commands,
         },
@@ -509,6 +520,9 @@ def export_workflow(settings: SyncSettings) -> str:
         else ""
     )
     forbidden = ",".join(settings.forbidden_pr_text)
+    export_watch_paths = "".join(
+        f"      - {_yaml_str(path)}\n" for path in settings.export_watch_paths
+    )
     project_path = f"source/{settings.copybarista_project_path}"
     script_path = f"{project_path}/scripts/sync_export_pr.py"
     return _render_template(
@@ -517,6 +531,7 @@ def export_workflow(settings: SyncSettings) -> str:
             "WORKFLOW_NAME": _yaml_str(f"Export {settings.sync_label} public repo"),
             "JOB_NAME": _yaml_str(f"Export {settings.sync_label} and update public PR"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
+            "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
                 f"{settings.copybarista_project_path}/scripts/sync_export_pr.py"
             ),
@@ -959,6 +974,8 @@ def _validate_settings(settings: SyncSettings) -> None:
             raise ConfigError(f"sync.{name} cannot be empty.")
     if not settings.type_check_targets:
         raise ConfigError("sync.type_check_targets cannot be empty.")
+    for path in settings.export_watch_paths:
+        _validate_relative_path(path, name="export_watch_paths")
     _validate_python_module_name(settings.smoke_import, name="smoke_import")
     _validate_relative_path(settings.release_check_script, name="release_check_script")
     if not settings.validation_python_versions:
