@@ -904,6 +904,27 @@ def test_removed_regions_rejects_else_block_rewrite():
         _removed_regions(source_text=source, transform=transform)
 
 
+def test_removed_regions_allows_else_transform_on_file_without_block():
+    """An else-transform whose glob matches a file with no block is a no-op.
+
+    The else-branch rejection must key on the source file actually containing
+    the block, not merely matching the transform's glob. A file like
+    ``ratelimit.py`` that carries no ``# IF`` marker was never rewritten, so
+    importing an unrelated edit to it must succeed with zero re-inserted regions
+    rather than being blocked as non-reversible.
+    """
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="**/*.py",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "def limiter() -> None:\n    return None\n"
+    assert _removed_regions(source_text=source, transform=transform) == []
+
+
 def test_import_allows_strip_block_glob_match_without_block(tmp_path: Path):
     """A strip_block transform that finds no block in the source file is a
     no-op, so importing a public change to that file must succeed.
