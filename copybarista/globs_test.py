@@ -127,6 +127,22 @@ def test_paths_are_normalized_to_forward_slashes():
     assert not globs.matches("pkg\\__pycache__\\module.pyc")
 
 
+def test_excludes_checks_only_exclude_patterns_ignoring_includes():
+    """`excludes` tests the exclude set alone, disregarding the include set.
+
+    An out-of-selection path (never subject to the includes) must still be
+    testable against the exclude patterns -- e.g. an identity-mapped public path
+    the config explicitly suppresses. `matches` cannot express this because it
+    requires an include hit; `excludes` isolates the exclude decision.
+    """
+    globs = GlobSet(include=("pkg/**",), exclude=("typings/secret/**",))
+
+    assert globs.excludes("typings/secret/key.pyi")
+    assert not globs.excludes("typings/brotli/__init__.pyi")
+    # Path not included AND not excluded: matches() is False, excludes() is False.
+    assert not globs.matches("typings/brotli/__init__.pyi")
+
+
 def test_brace_alternation_matches_style_choices():
     globs = GlobSet(include=("src/{main,test}.py",), exclude=())
 

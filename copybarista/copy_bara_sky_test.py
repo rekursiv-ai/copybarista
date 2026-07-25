@@ -367,6 +367,214 @@ def test_rejects_core_reverse_move(tmp_path: Path):
         load_config(config_path)
 
 
+def test_move_to_prefix_becomes_destination_prefix(tmp_path: Path):
+    """`core.move(ROOT, PREFIX)` maps to source_root + destination_prefix.
+
+    A package that ships UNDER a public subdirectory (a monorepo path moved to a
+    ``pkg/`` prefix) is expressed in Copybara as a move of the source root to a
+    non-empty destination prefix. The translator must recognize this as the
+    source-root move with a prefix, not a per-file move transform, so the .sky
+    can mirror a .toml that uses destination_prefix.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [core.move(ROOT, "pkgpub")],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+    assert config.files.destination_prefix == "pkgpub"
+
+
+def test_move_out_of_prefix_becomes_destination_prefix_exclude(tmp_path: Path):
+    """A move back out of the prefix maps to destination_prefix_exclude.
+
+    When the package nests under a prefix but repo metadata (README, .github,
+    ...) must stay at the public root, Copybara moves the whole root to the
+    prefix, then moves those specific paths back to root. The translator recovers
+    each such back-move as a destination_prefix_exclude entry so the .sky mirrors
+    a .toml that keeps metadata at root.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, "pkgpub"),
+                core.move("pkgpub/README.md", "README.md"),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+    assert config.files.destination_prefix == "pkgpub"
+    assert "README.md" in config.files.destination_prefix_exclude
+
+
+def test_move_subtree_to_root_becomes_copy_to_root(tmp_path: Path):
+    """A move of an in-package subtree to the root maps to a copy to '.'.
+
+    A verbatim-ship staging dir (e.g. ``<root>/.export`` -> the public root)
+    lives inside the source root but must land at the export root. Copybara
+    expresses this as ``core.move("<root>/.export", "")``. The translator
+    recovers it as a ``[[files.copy]]`` to ``.`` so the .sky mirrors a .toml that
+    ships ``.export`` verbatim.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.move(ROOT + "/.export", ""),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert (
+        "project/.export",
+        ".",
+    ) in [(copy.source, copy.destination) for copy in config.files.copy]
+
+
+def test_core_copy_with_paths_becomes_file_copy_with_include(tmp_path: Path):
+    """``core.copy(SRC, DEST, paths=glob([...]))`` maps to a copy with include.
+
+    Sidecar test modules ship to a separate public dir (``*_test.py`` under the
+    package root -> ``tests/``). Copybara expresses this as a ``core.copy`` of the
+    package root to ``tests`` filtered by ``paths``; the translator recovers it as
+    a ``[[files.copy]]`` with an ``include`` glob so the .sky mirrors the .toml.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.copy(ROOT, "tests", paths = glob(["*_test.py"])),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    matching = [
+        copy
+        for copy in config.files.copy
+        if copy.source == "project" and copy.destination == "tests"
+    ]
+    assert matching, "expected a files.copy of project -> tests"
+    assert matching[0].include == ("*_test.py",)
+
+
+def test_relocate_glob_move_matches_copybara_root_only_depth(tmp_path: Path):
+    """A glob-scoped `core.move` relocates only root-level matches, like Copybara.
+
+    ``core.move(ROOT, "tests", paths=glob(["*_test.py"]))`` RELOCATES the matched
+    files. Copybara's ``paths`` glob uses single-segment ``*`` semantics, so a
+    bare ``*_test.py`` matches only root-level files; a nested ``sub/foo_test.py``
+    is NOT relocated and stays under the package prefix. The translator's
+    sweep-exclude must therefore be exactly ``*_test.py`` (root-only), NOT a
+    recursive form -- excluding ``**/*_test.py`` would wrongly drop the nested
+    original that Copybara keeps under the prefix. Verified against the real
+    Copybara binary: nested test files land at ``<prefix>/sub/foo_test.py``.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, "tests", paths = glob(["*_test.py"])),
+                core.move(ROOT, "pkg"),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    # Root-only exclude mirrors Copybara's single-segment `paths` glob; a
+    # recursive `**/*_test.py` would wrongly suppress nested tests Copybara keeps.
+    assert config.files.exclude == ("*_test.py",)
+
+
+def test_rejects_subtree_flatten_under_whole_tree_selection(tmp_path: Path):
+    """A subtree flatten under `glob(["**"])` is rejected with a clear message.
+
+    `origin_files=glob(["**"])` selects the whole tree; `core.move("sub/pkg", "")`
+    flattens only that subtree, leaving every other path at its identity location.
+    Real Copybara produces a mixed tree (flattened subtree files at root PLUS
+    untouched siblings) that copybarista's single `source_root`/`destination_prefix`
+    model cannot represent. The translator must reject this shape explicitly rather
+    than misclassify `sub/pkg` as the whole `source_root` and then fail deep in
+    prefix-stripping with a misleading "outside core.move source root" error.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [core.move("sub/pkg", "")],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="whole-tree"):
+        load_config(config_path)
+
+
 def test_accepts_sky_extra_origin_files_as_file_copies(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -858,7 +1066,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['project/**']), "
                 "transformations=[core.move('project', ''), core.move('project', '')]"
             ),
-            "Only one core.move",
+            "Only one source-root core.move",
         ),
         (
             (

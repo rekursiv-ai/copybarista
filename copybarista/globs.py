@@ -81,6 +81,16 @@ class GlobSet:
             r.fullmatch(normalized) for r in self._exclude_regex
         )
 
+    def excludes(self, path: str) -> bool:
+        """Return whether a path matches any exclude pattern, ignoring includes.
+
+        Used to test an out-of-selection path (never subject to the include set)
+        against the exclude patterns alone -- e.g. an identity-mapped public path
+        the config explicitly suppresses.
+        """
+        normalized = path.replace("\\", "/").strip("/")
+        return any(r.fullmatch(normalized) for r in self._exclude_regex)
+
 
 def _compile_all(
     patterns: tuple[str, ...], *, globstar: Globstar, min_brace_choices: int
