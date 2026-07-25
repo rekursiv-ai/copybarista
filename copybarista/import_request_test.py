@@ -837,33 +837,8 @@ def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
     )
 
 
-def test_merge_import_reconciles_public_collapse_of_construct_holding_marker(
-    tmp_path: Path,
-):
-    """A public rewrite that collapses the construct a marker lived in still merges.
-
-    The ``cli.py #281`` shape: source has a multi-line tuple whose entries carry
-    ``# copybarista:internal`` (stripped on export); a public edit collapses the
-    tuple to one line and drops the (already-absent) internal entries. There is no
-    surviving verbatim anchor line, so the importer anchors each source-only line
-    to a surviving token from its neighbor and re-inserts it there. The result
-    re-strips back to the public head exactly (only the source-only lines were
-    added), so re-export reproduces public -- the import merges instead of
-    refusing, and the placement is left for human review in the import PR.
-    """
-    source_module = (
-        "def fb(name):\n"
-        "    candidates = (\n"
-        '        "OpenAISub",\n'
-        '        "GoogleSub",  # copybarista:internal\n'
-        "    )\n"
-        "    return candidates\n"
-    )
-    public_head_module = (
-        "def fb(name, *, allow):\n"
-        '    candidates = ("AnthropicCLI", "OpenAISub")\n'
-        "    return tuple(c for c in candidates if c in allow)\n"
-    )
+def _internal_lines_config(tmp_path: Path) -> Path:
+    """Write a minimal config with one ``internal_lines`` transform."""
     config = tmp_path / "copy.barista.toml"
     config.write_text(
         """
@@ -883,6 +858,13 @@ def test_merge_import_reconciles_public_collapse_of_construct_holding_marker(
         """,
         encoding="utf-8",
     )
+    return config
+
+
+def _run_internal_lines_import(
+    *, tmp_path: Path, config: Path, source_module: str, public_head_module: str
+) -> Path:
+    """Export the source, apply the public edit, import it back, return the dest file."""
     transform = load_config(config).transforms[0]
     source_base = tmp_path / "source-base"
     (source_base / "internal/demo/pkg").mkdir(parents=True)
@@ -896,7 +878,6 @@ def test_merge_import_reconciles_public_collapse_of_construct_holding_marker(
     (public_head / "pkg").mkdir(parents=True)
     (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
     destination = _copy_tree(source_base, tmp_path / "destination")
-
     import_change_request(
         ImportRequest(
             config=load_config(config),
@@ -907,19 +888,119 @@ def test_merge_import_reconciles_public_collapse_of_construct_holding_marker(
             merge_import=True,
         )
     )
+    return destination / "internal/demo/pkg/m.py"
 
-    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+
+def test_merge_import_reconciles_collapse_with_unique_surviving_anchor(
+    tmp_path: Path,
+):
+    """A collapse merges when the source-only line has a UNIQUE surviving anchor.
+
+    Source has a multi-line tuple whose entries carry ``# copybarista:internal``
+    (stripped on export); a public edit collapses the tuple to one line, keeping a
+    kept sibling (``ITEM_A``) that is unique in the file. The stripped line has no
+    surviving verbatim anchor LINE, but its neighbor's distinctive token survives
+    and is unique, so the importer re-inserts the line beside it. The result
+    re-strips to public head exactly, so re-export reproduces public -- placement
+    is left for human review in the import PR.
+    """
+    config = _internal_lines_config(tmp_path)
+    source_module = (
+        "def fn(name):\n"
+        "    items = (\n"
+        '        "ITEM_A",\n'
+        '        "SECRET_B",  # copybarista:internal\n'
+        "    )\n"
+        "    return items\n"
+    )
+    public_head_module = (
+        "def fn(name, *, extra):\n"
+        '    items = ("ITEM_NEW", "ITEM_A")\n'
+        "    return tuple(i for i in items if i in extra)\n"
+    )
+
+    imported = _run_internal_lines_import(
+        tmp_path=tmp_path,
+        config=config,
+        source_module=source_module,
+        public_head_module=public_head_module,
+    ).read_text(encoding="utf-8")
+
     # Public rewrite landed AND the source-only internal line survived.
-    assert '"GoogleSub",  # copybarista:internal' in imported
-    assert "allow" in imported
-    assert "AnthropicCLI" in imported
+    assert '"SECRET_B",  # copybarista:internal' in imported
+    assert "extra" in imported
+    assert "ITEM_NEW" in imported
     # Placement lands on its OWN line -- never spliced into the middle of a
     # surviving public line (the anchor snaps to a line boundary).
     for line in imported.splitlines():
         if "# copybarista:internal" in line:
-            assert line.lstrip().startswith('"GoogleSub"')
+            assert line.lstrip().startswith('"SECRET_B"')
     # The import's correctness contract: re-export reproduces the public head.
+    transform = load_config(config).transforms[0]
     assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_rejects_collapse_with_ambiguous_anchor(tmp_path: Path):
+    """A collapse is REJECTED when the source-only line has no UNIQUE anchor.
+
+    When the public rewrite destroys the stripped line's surrounding context and
+    its only surviving neighbor token recurs elsewhere in the file, there is no
+    unambiguous place to re-insert the line. Because the line carries its marker,
+    re-stripping removes it wherever it lands, so a mis-placement is invisible to
+    the re-strip gate. The importer must therefore REJECT (leave it for a human)
+    rather than silently drop the line into the wrong location. Regression: an
+    earlier version anchored to an arbitrary occurrence, writing the line into an
+    unrelated function and producing invalid source.
+    """
+    config = _internal_lines_config(tmp_path)
+    source_module = (
+        "def fallbacks(name):\n"
+        "    items = (\n"
+        '        "COMMON",\n'
+        '        "SECRET",  # copybarista:internal\n'
+        "    )\n"
+        "    return items\n"
+        "def setup(name):\n"
+        '    if name == "COMMON":\n'
+        '        return "cmd"\n'
+        "    return None\n"
+    )
+    # Public collapses the tuple; "COMMON" (the stripped line's neighbor) now recurs
+    # in both functions, so no unique anchor survives.
+    public_head_module = (
+        "def fallbacks(name, *, allow):\n"
+        '    items = ("NEW", "COMMON")\n'
+        "    return tuple(i for i in items if i in allow)\n"
+        "def setup(name):\n"
+        '    if name == "COMMON":\n'
+        '        return "cmd"\n'
+        "    return None\n"
+    )
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    transform = load_config(config).transforms[0]
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(
+        strip_source_text(source_module, transform), encoding="utf-8"
+    )
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    with pytest.raises(ImportRequestError, match=r"uniquely place|Resolve"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=True,
+            )
+        )
 
 
 def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path):
@@ -929,16 +1010,15 @@ def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path)
     the whole block with its else branch, uncommented. The importer must reverse it
     by restoring the full source block (internal branch + markers) around the
     public edit, not refuse. Regression: else-branch strips raised "cannot be
-    reversed by re-insertion", wedging any import of a file that carries one (the
-    real ``sagent/bin/cli.py`` ``_DEFAULT_PROVIDER`` block). Re-export replays the
-    same substitution, reproducing the public head.
+    reversed by re-insertion", wedging any import of a file that carries one.
+    Re-export replays the same substitution, reproducing the public head.
     """
     source_module = (
         "HEADER = 0\n"
         "# copybarista:if internal\n"
-        '_DEFAULT = "AnthropicSubscription"\n'
+        '_DEFAULT = "INTERNAL_VALUE"\n'
         "# copybarista:else\n"
-        '# _DEFAULT = "Anthropic"\n'
+        '# _DEFAULT = "PUBLIC_VALUE"\n'
         "# copybarista:endif\n"
         "def f():\n"
         "    return 1\n"
@@ -994,7 +1074,7 @@ def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path)
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
     # The internal branch and its markers are restored around the public edit.
     assert "# copybarista:if internal" in imported
-    assert '_DEFAULT = "AnthropicSubscription"' in imported
+    assert '_DEFAULT = "INTERNAL_VALUE"' in imported
     assert "return 2" in imported
     # Re-export reproduces the public head.
     assert strip_source_text(imported, transform) == public_head_module
@@ -1003,15 +1083,14 @@ def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path)
 def test_merge_import_reconciles_public_rewrite_of_stripped_region_context(
     tmp_path: Path,
 ):
-    """A public rewrite around an ``internal_lines`` region merges, not refuses.
+    """A public rewrite BELOW an ``internal_lines`` region merges, not refuses.
 
-    The ``cli.py #281`` class: a public edit REWROTE a function whose body held
-    ``# copybarista:internal`` lines (reflowed it, dropped the internal entries).
-    The offset splice no longer re-strips back to the incoming public text, so the
-    old per-file gate refused with "does not reproduce". The importer must instead
-    diff3-reconcile the source-only region with the public rewrite: re-insert the
-    stripped line and fold in the surrounding rewrite. Re-export then strips the
-    line again, reproducing public head.
+    A public edit rewrites lines beneath a stripped region, leaving the region's
+    neighbor lines intact. The offset splice no longer re-strips back to the
+    incoming public text (the size change above shifts the offset), so the old
+    per-file gate refused with "does not reproduce". The importer must instead
+    anchor the source-only line to its (unique, surviving) neighbor and re-insert
+    it there. Re-export then strips the line again, reproducing public head.
     """
     source_module = (
         "HEADER = 1\n"
