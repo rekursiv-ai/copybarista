@@ -30,10 +30,12 @@ import sys
 import tempfile
 import time
 
+from copybarista.config import Transform, load_config
 from copybarista.sync_setup import (
     SyncSettings,
     load_sync_settings,
 )
+from copybarista.template import compile_replace
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -810,6 +812,9 @@ def _resolve_pr_replay_plan(
         current_source_rev=current_source_rev,
         forbidden_text=request.forbidden_pr_text,
         scope=request.replay_settings.scope,
+        text_transforms=_load_pr_text_transforms(
+            source_dir=request.source_dir, project_path=request.project_path
+        ),
     )
     _log(
         "PR metadata replay: "
@@ -1019,6 +1024,7 @@ def _source_pr_metadata(
     current_source_rev: str,
     forbidden_text: tuple[str, ...],
     scope: str,
+    text_transforms: tuple[Transform, ...] = (),
 ) -> tuple[PrMetadataPatch, ...]:
     """Read and parse source commit PR metadata in replay order."""
     if replay_base:
@@ -1046,6 +1052,7 @@ def _source_pr_metadata(
         result.stdout,
         forbidden_text=forbidden_text,
         scope=scope,
+        text_transforms=text_transforms,
     )
 
 
@@ -1292,7 +1299,11 @@ def export_pr_text(
 
 
 def _parse_pr_metadata_log(
-    log_output: str, *, forbidden_text: tuple[str, ...], scope: str = ""
+    log_output: str,
+    *,
+    forbidden_text: tuple[str, ...],
+    scope: str = "",
+    text_transforms: tuple[Transform, ...] = (),
 ) -> tuple[PrMetadataPatch, ...]:
     """Parse NUL-framed git log output into PR metadata patches."""
     parts = [part for part in log_output.split("\0") if part]
@@ -1306,6 +1317,7 @@ def _parse_pr_metadata_log(
             message=parts[idx + 3],
             forbidden_text=forbidden_text,
             scope=scope,
+            text_transforms=text_transforms,
         )
         patches.extend(commit_patches)
     return tuple(patches)
@@ -1318,6 +1330,7 @@ def _parse_pr_metadata_message(
     message: str,
     forbidden_text: tuple[str, ...],
     scope: str,
+    text_transforms: tuple[Transform, ...] = (),
 ) -> tuple[PrMetadataPatch, ...]:
     """Parse one commit message's Copybarista PR metadata."""
     target_scope = _normalized_scope(scope)
@@ -1338,6 +1351,7 @@ def _parse_pr_metadata_message(
                 block_scope=block_scope,
                 target_scope=target_scope,
                 forbidden_text=forbidden_text,
+                text_transforms=text_transforms,
             )
             if patch:
                 patches.append(patch)
@@ -1368,6 +1382,7 @@ def _parse_pr_metadata_message(
                 block_scope=block_scope,
                 target_scope=target_scope,
                 forbidden_text=forbidden_text,
+                text_transforms=text_transforms,
             )
             if patch:
                 patches.append(patch)
@@ -1404,6 +1419,7 @@ def _parse_pr_metadata_message(
         block_scope=block_scope,
         target_scope=target_scope,
         forbidden_text=forbidden_text,
+        text_transforms=text_transforms,
     )
     if patch:
         patches.append(patch)
@@ -1419,6 +1435,7 @@ def _patch_from_metadata_block(
     block_scope: str,
     target_scope: str,
     forbidden_text: tuple[str, ...],
+    text_transforms: tuple[Transform, ...] = (),
 ) -> PrMetadataPatch | None:
     """Build one scoped metadata patch when it applies to this export."""
     if not values:
@@ -1431,10 +1448,16 @@ def _patch_from_metadata_block(
         raise _metadata_error(commit_sha, "Body-Mode", "must be append or replace")
     if "Body-Mode" in values and "Body" not in values:
         raise _metadata_error(commit_sha, "Body-Mode", "requires Copybarista-PR-Body")
+    # Rewrite source paths to their public form via the same export transforms
+    # BEFORE validation and storage, so an author referencing e.g. a source
+    # module in the PR text lands scrubbed in the public PR rather than tripping
+    # the leak check. The leak check below still guards anything transforms miss.
+    title = _rewrite_public_text(values.get("Title", ""), text_transforms)
+    body = _rewrite_public_text(body, text_transforms)
     _validate_metadata_text(
         commit_sha=commit_sha,
         field="Title",
-        value=values.get("Title", ""),
+        value=title,
         forbidden_text=forbidden_text,
     )
     _validate_metadata_text(
@@ -1446,7 +1469,7 @@ def _patch_from_metadata_block(
     return PrMetadataPatch(
         commit_sha=commit_sha,
         scope=normalized_block_scope,
-        title=values.get("Title", ""),
+        title=title,
         author=_validated_source_author(
             commit_sha=commit_sha,
             author=commit_author,
@@ -1901,6 +1924,48 @@ def _metadata_error(commit_sha: str, field: str, reason: str) -> PrMetadataError
     return PrMetadataError(
         f"Commit {_short_rev(commit_sha)} Copybarista-PR-{field}: {reason}."
     )
+
+
+def _load_pr_text_transforms(
+    *, source_dir: Path, project_path: Path
+) -> tuple[Transform, ...]:
+    """Load the project's ``replace`` transforms for rewriting PR metadata text.
+
+    The same ``copy.barista.toml`` ``[[transform]] type = "replace"`` rules that
+    rewrite exported file CONTENTS (a private module namespace to its public
+    package name) also apply to a commit's ``Copybarista-PR-Title``/``-Body``: an
+    author naturally references source paths there, and those must be rewritten
+    to their public form -- not hand-scrubbed per commit -- before the leak check
+    runs. A missing or unparseable config yields no transforms (the leak check
+    still guards).
+    """
+    config_path = source_dir / project_path / "copy.barista.toml"
+    if not config_path.is_file():
+        return ()
+    return tuple(t for t in load_config(config_path).transforms if t.type == "replace")
+
+
+def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
+    """Apply each ``replace`` transform to ``value`` as the export does to files.
+
+    Path scoping is intentionally ignored: PR metadata is prose, not a file, so
+    every ``replace`` rule whose ``before`` token appears is applied. Mirrors
+    ``transforms._replace``'s core (regex-group template or literal), minus the
+    filesystem.
+    """
+    for transform in transforms:
+        if not transform.before:
+            continue
+        if transform.regex_groups:
+            template = compile_replace(
+                before=transform.before,
+                after=transform.after,
+                regex_groups=transform.regex_groups,
+            )
+            value = template.apply(value)
+        else:
+            value = value.replace(transform.before, transform.after)
+    return value
 
 
 def _validate_metadata_text(

@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from copybarista.config import Transform
 from copybarista.scripts import sync_export_pr
 from copybarista.scripts.sync_export_pr import (
     ExportRequest,
@@ -579,6 +580,71 @@ def test_parse_pr_metadata_rejects_forbidden_text():
         )
 
 
+def test_parse_pr_metadata_rewrites_source_path_via_literal_transform():
+    # A PR body referencing a source path is REWRITTEN to its public form by the
+    # same export replace-transform, then passes the leak check -- rather than the
+    # author having to hand-scrub the token per commit. Regression: a private
+    # module prefix in the body used to hard-fail the export.
+    # (Synthetic ``priv``/``pub`` tokens keep this test's own text export-safe.)
+    transforms = (
+        Transform(
+            id="lib", type="replace", path="**", before="priv.mod", after="pub.mod"
+        ),
+    )
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Copybarista-PR-Title: Fix import path\n"
+            "Copybarista-PR-Body:\n"
+            "Use submodule path `priv.mod.testing.main`.\n"
+        ),
+        forbidden_text=("priv.", "priv/"),
+        text_transforms=transforms,
+    )
+    assert tuple(p.body for p in patches) == (
+        "Use submodule path `pub.mod.testing.main`.",
+    )
+
+
+def test_parse_pr_metadata_rewrites_source_path_via_regex_group_transform():
+    # The regex_groups template form (priv.pkg.${s} -> pub.${s}) rewrites a
+    # dotted identifier reference in the title, then the leak check passes.
+    transforms = (
+        Transform(
+            id="pkg",
+            type="replace",
+            path="**",
+            before="priv.pkg.${s}",
+            after="pub.${s}",
+            regex_groups=(("s", "[A-Za-z_]"),),
+        ),
+    )
+    patches = _parse_pr_metadata_log(
+        _metadata_log(
+            "Copybarista-PR-Title: Touch priv.pkg.fetch\n"
+            "Copybarista-PR-Body:\nBody text.\n"
+        ),
+        forbidden_text=("priv.",),
+        text_transforms=transforms,
+    )
+    assert tuple(p.title for p in patches) == ("Touch pub.fetch",)
+
+
+def test_parse_pr_metadata_leak_check_still_guards_untransformed_text():
+    # The rewrite is not a bypass: a forbidden token no transform covers still
+    # fails the leak check.
+    transforms = (
+        Transform(
+            id="lib", type="replace", path="**", before="priv.mod", after="pub.mod"
+        ),
+    )
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
+        _parse_pr_metadata_log(
+            _metadata_log("Copybarista-PR-Body:\nMentions private-org/secret repo.\n"),
+            forbidden_text=("private-org/secret",),
+            text_transforms=transforms,
+        )
+
+
 def test_prefix_term_ignores_prose_word():
     # A dotted/path prefix term must not trip on the same word ending a sentence.
     patches = _parse_pr_metadata_log(
@@ -1020,8 +1086,10 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         current_source_rev: str,
         forbidden_text: tuple[str, ...],
         scope: str,
+        text_transforms: tuple[Transform, ...] = (),
     ) -> tuple[PrMetadataPatch, ...]:
         del source_dir, replay_base, current_source_rev, forbidden_text, scope
+        del text_transforms
         return (
             PrMetadataPatch(
                 commit_sha="222222222222",
