@@ -218,7 +218,6 @@ def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
         [files]
         include = ["**"]
         destination_prefix = "demo"
-        destination_prefix_exclude = ["pyproject.toml", "*.md"]
 
         [[files.copy]]
         source = "internal/demo/.export"
@@ -234,6 +233,52 @@ def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
     )
     assert (
         mapper.source_path("CONTRIBUTING.md") == "internal/demo/.export/CONTRIBUTING.md"
+    )
+
+
+def test_import_root_copy_yields_to_destination_prefix_exclude(tmp_path: Path):
+    """A root path in `destination_prefix_exclude` maps to the main sweep, not `.`.
+
+    When a package nests under a `destination_prefix` but a repo-metadata file
+    (e.g. `README.md`) stays at the public root via `destination_prefix_exclude`,
+    that file is placed by the main source-root selection (a back-move in
+    Copybara), NOT by the verbatim-ship `.export` copy to `.`. The reverse map
+    must therefore return `<source_root>/README.md`, not `<source>/.export/...`.
+
+    Regression: the `destination = "."` copy claimed EVERY root-level path
+    matching its `**` include, so `README.md` wrongly mapped into `.export/`.
+    On re-export the imported tree then held README.md at both the root (via
+    the main sweep) and inside `.export` (via the copy), colliding with
+    ``Export destination already exists: ./README.md``. Matches real Copybara
+    reverse, which maps a public-root `README.md` back to `<source_root>`.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "demo"
+        destination_prefix_exclude = ["README.md"]
+
+        [[files.copy]]
+        source = "internal/demo/.export"
+        destination = "."
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    # README stays at root via destination_prefix_exclude -> main sweep source.
+    assert mapper.source_path("README.md") == "internal/demo/README.md"
+    # A non-excluded root file is still owned by the .export copy.
+    assert (
+        mapper.source_path("pyproject.toml") == "internal/demo/.export/pyproject.toml"
     )
 
 
@@ -1922,3 +1967,234 @@ def test_reinsert_gate_rejects_public_edit_that_disturbs_stripped_region(
 def _copy_tree(source: Path, destination: Path) -> Path:
     shutil.copytree(source, destination, symlinks=True)
     return destination
+
+
+def _unmapped_fixture(tmp_path: Path) -> _FixturePaths:
+    """Build a fixture with a path that maps to no config rule.
+
+    The package ships under ``destination_prefix = "pub"``; an out-of-prefix
+    repo-root path (``typings/brotli/...``) exists in the public tree but has no
+    ``[[files.copy]]`` and is not in ``destination_prefix_exclude`` -- i.e. it is
+    UNMAPPED, the ``typings/brotli`` class left behind when an export mapping is
+    dropped from config. Mirrors Copybara, where such a path matches no
+    ``core.move`` rule and keeps its identical path on both sides.
+    """
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/module.py").write_text(
+        "VALUE = 'base'\n", encoding="utf-8"
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pub/pkg").mkdir(parents=True)
+    (public_base / "pub/pkg/module.py").write_text("VALUE = 'base'\n", encoding="utf-8")
+    (public_base / "typings/brotli").mkdir(parents=True)
+    (public_base / "typings/brotli/__init__.pyi").write_text(
+        "MODE_GENERIC: int\n", encoding="utf-8"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        destination_prefix = "pub"
+        """,
+        encoding="utf-8",
+    )
+    return _FixturePaths(
+        config=config,
+        public_base=public_base,
+        source_base=source_base,
+    )
+
+
+def test_source_path_maps_prefixed_path_and_leaves_unmapped_as_identity(
+    tmp_path: Path,
+):
+    """An unmapped public path resolves to its identical path, never raising.
+
+    Mirrors Copybara's ``CopyOrMove``: a path matching no relocation is untouched
+    (its source path equals its public path). A prefixed path still maps back
+    through the prefix. Regression: ``PathMapper.source_path`` raised
+    ``excluded or unmapped`` on the out-of-prefix path, wedging import.
+    """
+    paths = _unmapped_fixture(tmp_path)
+    mapper = PathMapper(config=load_config(paths.config))
+
+    assert mapper.source_path("pub/pkg/module.py") == "internal/demo/pkg/module.py"
+    assert (
+        mapper.source_path("typings/brotli/__init__.pyi")
+        == "typings/brotli/__init__.pyi"
+    )
+
+
+def test_merge_import_propagates_delete_of_unmapped_path(tmp_path: Path):
+    """Deleting an unmapped public path imports as a no-op, not an error.
+
+    The ``typings/brotli`` class: the path is gone from source already, so its
+    public deletion has nothing to remove on the source side. Copybara's reverse
+    handles this cleanly (unmatched ``core.move``); our importer must too.
+    """
+    paths = _unmapped_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "typings/brotli/__init__.pyi").unlink()
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    # The deletion targets a path absent from source: a no-op that must not raise
+    # and must leave the source tree untouched.
+    assert [change.action for change in result.changes] == ["deleted"]
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 'base'\n"
+
+
+def test_source_path_rejects_excluded_path_outside_prefix(tmp_path: Path):
+    """An `exclude`d path outside `destination_prefix` is rejected, not identity.
+
+    A path matching an `exclude` glob is deliberately kept out of the export, so
+    it can never appear in a faithful public tree. If the public repo adds such a
+    path, importing it must raise rather than silently write it at its identity
+    source path. Regression: with a `destination_prefix` set, an out-of-prefix
+    path that is neither prefixed nor in `destination_prefix_exclude` returned its
+    identity path WITHOUT consulting `self.matcher`, so an `exclude` glob matching
+    an out-of-prefix path was dropped. The genuinely-unmapped case (no matching
+    exclude, e.g. `typings/brotli`) must still resolve to identity -- only a path
+    the config explicitly excludes is rejected.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        exclude = ["typings/secret/**"]
+        destination_prefix = "pub"
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    # Explicitly excluded out-of-prefix path added/modified: rejected.
+    with pytest.raises(ImportRequestError, match="unmapped"):
+        mapper.source_path("typings/secret/key.pyi")
+    # DELETING an excluded path is a source-side no-op, not a rejection: it
+    # resolves to identity so the whole import does not wedge (brotli class).
+    assert mapper.source_path("typings/secret/key.pyi", action="deleted") == (
+        "typings/secret/key.pyi"
+    )
+    # Unmapped-but-not-excluded out-of-prefix path: identity (brotli class).
+    assert mapper.source_path("typings/brotli/__init__.pyi") == (
+        "typings/brotli/__init__.pyi"
+    )
+
+
+def test_merge_import_propagates_delete_of_excluded_path(tmp_path: Path):
+    """Deleting an EXCLUDED public path imports as a no-op, not a hard error.
+
+    Regression: rejecting an excluded add/modify (so a faithful export's invariant
+    holds) must NOT extend to deletions. ``plan()`` maps every change -- including
+    deletes -- through ``source_path`` before the ``deleted`` action is handled, so
+    a delete of an excluded path (e.g. a stale ``htmlcov/`` artifact removed
+    upstream) would raise and wedge the entire import, the exact failure class the
+    ``typings/brotli`` fix removed. The delete must resolve to identity and no-op
+    on the absent source path.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        exclude = ["htmlcov/**"]
+        destination_prefix = "pub"
+        """,
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pub/pkg").mkdir(parents=True)
+    (public_base / "pub/pkg/module.py").write_text("VALUE = 'base'\n", encoding="utf-8")
+    (public_base / "htmlcov").mkdir()
+    (public_base / "htmlcov/index.html").write_text("<html>\n", encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "htmlcov/index.html").unlink()
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/module.py").write_text(
+        "VALUE = 'base'\n", encoding="utf-8"
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert [change.action for change in result.changes] == ["deleted"]
+    # The source tree is untouched: the excluded deletion targets an absent path.
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 'base'\n"
+
+
+def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path):
+    """Modifying an unmapped public path writes it at its identical source path.
+
+    Copybara keeps an unmatched path at its identical location on both sides, so a
+    public edit to ``typings/brotli`` lands at ``typings/brotli`` in source.
+    """
+    paths = _unmapped_fixture(tmp_path)
+    # Source carries the unmapped path too (it is shipped, just unmapped by config).
+    (paths.source_base / "typings/brotli").mkdir(parents=True)
+    (paths.source_base / "typings/brotli/__init__.pyi").write_text(
+        "MODE_GENERIC: int\n", encoding="utf-8"
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "typings/brotli/__init__.pyi").write_text(
+        "MODE_GENERIC: int\nMODE_TEXT: int\n", encoding="utf-8"
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert (destination / "typings/brotli/__init__.pyi").read_text(
+        encoding="utf-8"
+    ) == "MODE_GENERIC: int\nMODE_TEXT: int\n"

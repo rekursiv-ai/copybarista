@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, cast
+from typing import cast
 
 import ast
 import textwrap
@@ -23,20 +23,6 @@ from copybarista.config import (
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
-
-
-SUPPORTED_WORKFLOW_KEYS: Final = {
-    "name",
-    "origin",
-    "destination",
-    "origin_files",
-    "destination_files",
-    "authoring",
-    "mode",
-    "transformations",
-}
-CORE_MOVE_ARG_COUNT: Final = 2
-STRIP_MARKER_LINE_COUNT: Final = 2
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -70,6 +56,21 @@ class MoveSpec:
 
     source: str
     destination: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CopySpec:
+    """A parsed `core.copy` transform.
+
+    ``core.copy(SOURCE, DEST, paths=glob([...]))`` copies the ``paths``-matched
+    files from ``SOURCE`` to ``DEST`` (leaving the originals in place). Maps to a
+    ``[[files.copy]]`` with an ``include`` glob.
+    """
+
+    source: str
+    destination: str
+    include: tuple[str, ...] = ("**",)
+    relocate: bool = False
 
 
 def _transform_to_raw(transform: Transform) -> dict[str, object]:
@@ -148,6 +149,8 @@ class TranslatedWorkflow:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     transforms: tuple[Transform, ...]
+    destination_prefix: str = ""
+    destination_prefix_exclude: tuple[str, ...] = ()
     copies: tuple[FileCopy, ...] = ()
     folder_path: str = ""
     git_url: str = ""
@@ -166,6 +169,8 @@ class TranslatedWorkflow:
             "files": {
                 "include": list(self.include),
                 "exclude": list(self.exclude),
+                "destination_prefix": self.destination_prefix,
+                "destination_prefix_exclude": list(self.destination_prefix_exclude),
                 "copy": [
                     {
                         "source": copy.source,
@@ -310,7 +315,20 @@ class _CopyBaraSkyParser:
         """Translate a supported `core.workflow` call."""
         if call.args:
             raise ConfigError("core.workflow positional args are not supported")
-        kwargs = self._kwargs(call, env, allowed=SUPPORTED_WORKFLOW_KEYS)
+        kwargs = self._kwargs(
+            call,
+            env,
+            allowed={
+                "name",
+                "origin",
+                "destination",
+                "origin_files",
+                "destination_files",
+                "authoring",
+                "mode",
+                "transformations",
+            },
+        )
         mode = _require_string(kwargs.get("mode", "SQUASH"), "core.workflow.mode")
         if mode != "SQUASH":
             raise ConfigError("Only mode = 'SQUASH' is supported")
@@ -330,19 +348,42 @@ class _CopyBaraSkyParser:
         transformations = _object_list(
             kwargs.get("transformations", []), "core.workflow.transformations"
         )
-        source_root_move, transforms = self._parse_transformations(transformations)
+        (
+            source_root_move,
+            transforms,
+            prefix_excludes,
+            subtree_copies,
+            sweep_excludes,
+        ) = self._parse_transformations(
+            transformations, origin_roots=_origin_move_roots(origin_files.include)
+        )
         if "authoring" not in kwargs:
             raise ConfigError("core.workflow.authoring is required")
         source_root = source_root_move.source if source_root_move is not None else ""
+        destination_prefix = (
+            source_root_move.destination if source_root_move is not None else ""
+        )
+        _reject_partial_flatten_of_whole_tree(
+            source_root_move=source_root_move,
+            origin_include=origin_files.include,
+        )
 
-        include, copies = _strip_prefixes_and_file_copies(
+        include, origin_copies = _strip_prefixes_and_file_copies(
             origin_files.include, source_root
         )
+        copies = (*origin_copies, *subtree_copies)
         if source_root and not include:
             raise ConfigError(
                 f"origin_files pattern is outside core.move source root: {source_root}"
             )
         exclude = _strip_prefixes(origin_files.exclude, source_root)
+        # A subtree shipped verbatim to root by its own copy must not ALSO be
+        # swept in under the prefix by the main selection: exclude it. Copybara
+        # gets this for free because its move relocates the files out of the
+        # selection; our copy reads from source directly, so exclude explicitly.
+        # .export-style subtree copies + relocate (glob-move) copies must not
+        # ALSO be swept in under the prefix; exclude them from the main selection.
+        exclude = (*exclude, *sweep_excludes)
         git_url, git_branch = _git_destination_fields(destination)
         git_committer_name, git_committer_email = _git_author_fields(
             authoring=kwargs.get("authoring"),
@@ -355,6 +396,8 @@ class _CopyBaraSkyParser:
             name=workflow_name,
             mode="squash",
             source_root=source_root,
+            destination_prefix=destination_prefix,
+            destination_prefix_exclude=prefix_excludes,
             include=include,
             exclude=exclude,
             transforms=tuple(transforms),
@@ -366,19 +409,74 @@ class _CopyBaraSkyParser:
         )
 
     def _parse_transformations(
-        self, transformations: list[object]
-    ) -> tuple[MoveSpec | None, list[Transform]]:
-        """Parse supported workflow transforms."""
-        source_root_move: MoveSpec | None = None
+        self,
+        transformations: list[object],
+        *,
+        origin_roots: frozenset[str] = frozenset(),
+    ) -> tuple[
+        MoveSpec | None,
+        list[Transform],
+        tuple[str, ...],
+        tuple[FileCopy, ...],
+        tuple[str, ...],
+    ]:
+        """Parse supported workflow transforms.
+
+        A ``core.move(SOURCE, DEST)`` whose SOURCE is the origin-files root is the
+        source-root move: DEST empty flattens the package to the public root, and
+        a non-empty DEST ships it under that prefix (mapped to
+        ``destination_prefix``). A move OUT of that prefix back to the root
+        (``core.move("<prefix>/x", "x")``) keeps ``x`` at the public root and
+        maps to a ``destination_prefix_exclude`` entry. A move of an in-package
+        subtree to the root (``core.move("<root>/.export", "")``) maps to a
+        ``[[files.copy]]`` to ``.`` (a verbatim-ship staging dir). Any other move
+        is a per-file move transform.
+        """
+        # Pass 1: locate the source-root move so its prefix/root is known before
+        # classifying the other moves, which may appear before or after it.
+        source_root_move = self._source_root_move(transformations, origin_roots)
+        prefix = source_root_move.destination if source_root_move is not None else ""
+        root = source_root_move.source if source_root_move is not None else ""
         parsed: list[Transform] = []
+        prefix_excludes: list[str] = []
+        subtree_copies: list[FileCopy] = []
+        sweep_excludes: list[str] = []
         for idx, item in enumerate(transformations, start=1):
             if isinstance(item, MoveSpec):
-                if not item.destination:
-                    if source_root_move is not None:
-                        raise ConfigError(
-                            "Only one core.move(SOURCE, '') transform is supported"
+                if item is source_root_move:
+                    continue
+                back = _prefix_back_move(item, prefix)
+                if back is not None:
+                    # A move can carry a file or a directory; the translator
+                    # cannot tell which. Emit both the bare path (matches a file)
+                    # and ``<path>/**`` (matches a directory's children) so the
+                    # kept-at-root selection covers either, matching the .toml's
+                    # per-file/per-tree destination_prefix_exclude entries.
+                    prefix_excludes.append(back)
+                    prefix_excludes.append(f"{back}/**")
+                    continue
+                if _is_subtree_to_root_move(item, root):
+                    # Copybara's move only relocates SELECTED files, so
+                    # origin_files excludes (rebuildable caches) never ride along.
+                    # Our copy reads from source directly, so carry the same cache
+                    # excludes to keep the verbatim ship free of junk.
+                    subtree_copies.append(
+                        FileCopy(
+                            source=item.source,
+                            destination=".",
+                            exclude=(
+                                ".ruff_cache/**",
+                                "**/.ruff_cache/**",
+                                "__pycache__/**",
+                                "**/__pycache__/**",
+                                "*.pyc",
+                                "**/*.pyc",
+                                ".pytest_cache/**",
+                                "**/.pytest_cache/**",
+                            ),
                         )
-                    source_root_move = item
+                    )
+                    _add_sweep_exclude(sweep_excludes, item.source, root, ("**",))
                     continue
                 parsed.append(
                     Transform(
@@ -388,6 +486,17 @@ class _CopyBaraSkyParser:
                         destination=item.destination,
                     )
                 )
+                continue
+            if isinstance(item, CopySpec):
+                subtree_copies.append(
+                    FileCopy(
+                        source=item.source,
+                        destination=item.destination,
+                        include=item.include,
+                    )
+                )
+                if item.relocate:
+                    _add_sweep_exclude(sweep_excludes, item.source, root, item.include)
                 continue
             if isinstance(item, Transform):
                 # Transformation order is observable in failure messages.
@@ -410,7 +519,39 @@ class _CopyBaraSkyParser:
                 )
                 continue
             raise ConfigError(f"Unsupported transformation: {item!r}")
-        return source_root_move, parsed
+        return (
+            source_root_move,
+            parsed,
+            tuple(prefix_excludes),
+            tuple(subtree_copies),
+            tuple(sweep_excludes),
+        )
+
+    def _source_root_move(
+        self, transformations: list[object], origin_roots: frozenset[str]
+    ) -> MoveSpec | None:
+        """Return the single source-root move, or None; reject duplicates.
+
+        The source-root move relocates the whole package: its source is an
+        origin-files root. A move with an empty destination whose source is a
+        SUBPATH of a root (e.g. ``<root>/.export`` -> "") is a subtree-to-root
+        move, not the source-root move, and is excluded here.
+        """
+        found: MoveSpec | None = None
+        for item in transformations:
+            if not isinstance(item, MoveSpec):
+                continue
+            is_root = item.source in origin_roots or (
+                not item.destination
+                and not _is_subpath_of_any(item.source, origin_roots)
+            )
+            if is_root:
+                if found is not None:
+                    raise ConfigError(
+                        "Only one source-root core.move transform is supported"
+                    )
+                found = item
+        return found
 
     def _eval(self, node: ast.AST, env: dict[str, object]) -> object:
         """Evaluate one supported expression node."""
@@ -455,6 +596,8 @@ class _CopyBaraSkyParser:
             result = self._reverse_group_from_call(call, env)
         elif name == "core.move":
             result = self._move_from_call(call, env)
+        elif name == "core.copy":
+            result = self._copy_from_call(call, env)
         elif name == "core.replace":
             result = self._replace_from_call(call, env)
         else:
@@ -496,15 +639,56 @@ class _CopyBaraSkyParser:
             ),
         )
 
-    def _move_from_call(self, call: ast.Call, env: dict[str, object]) -> MoveSpec:
-        """Evaluate a supported `core.move(...)` call."""
-        if len(call.args) != CORE_MOVE_ARG_COUNT:
+    def _move_from_call(
+        self, call: ast.Call, env: dict[str, object]
+    ) -> MoveSpec | CopySpec:
+        """Evaluate a supported `core.move(...)` call.
+
+        A plain ``core.move(source, destination)`` is a whole-path move. A
+        glob-scoped ``core.move(source, destination, paths=glob([...]))``
+        RELOCATES only the matched files, mapping to a copy-with-include plus a
+        sweep-exclude (CopySpec with ``relocate=True``).
+        """
+        if len(call.args) != 2:
             raise ConfigError("core.move requires source and destination args")
-        return MoveSpec(
-            source=_require_string(self._eval(call.args[0], env), "core.move source"),
+        source = _require_string(self._eval(call.args[0], env), "core.move source")
+        destination = _require_string(
+            self._eval(call.args[1], env), "core.move destination"
+        )
+        kwargs = self._kwargs(call, env, allowed={"paths"})
+        paths = kwargs.get("paths")
+        if paths is None:
+            return MoveSpec(source=source, destination=destination)
+        if not isinstance(paths, GlobSpec):
+            raise ConfigError("core.move paths must be glob(...)")
+        if paths.exclude:
+            raise ConfigError("core.move paths must not have exclude patterns")
+        return CopySpec(
+            source=source,
+            destination=destination,
+            include=paths.include,
+            relocate=True,
+        )
+
+    def _copy_from_call(self, call: ast.Call, env: dict[str, object]) -> CopySpec:
+        """Evaluate a supported `core.copy(source, destination, paths=...)` call."""
+        if len(call.args) != 2:
+            raise ConfigError("core.copy requires source and destination args")
+        kwargs = self._kwargs(call, env, allowed={"paths"})
+        paths = kwargs.get("paths")
+        include: tuple[str, ...] = ("**",)
+        if paths is not None:
+            if not isinstance(paths, GlobSpec):
+                raise ConfigError("core.copy paths must be glob(...)")
+            if paths.exclude:
+                raise ConfigError("core.copy paths must not have exclude patterns")
+            include = paths.include
+        return CopySpec(
+            source=_require_string(self._eval(call.args[0], env), "core.copy source"),
             destination=_require_string(
-                self._eval(call.args[1], env), "core.move destination"
+                self._eval(call.args[1], env), "core.copy destination"
             ),
+            include=include,
         )
 
     def _pass_thru_author_from_call(
@@ -651,6 +835,109 @@ class _CopyBaraSkyParser:
                 )
             values[keyword.arg] = self._eval(keyword.value, env)
         return values
+
+
+def _prefix_back_move(move: MoveSpec, prefix: str) -> str | None:
+    """Return the prefix-relative path a back-move keeps at root, or None.
+
+    A ``core.move("<prefix>/x", "x")`` moves ``x`` out of the destination prefix
+    back to the public root -- i.e. ``x`` is a ``destination_prefix_exclude``
+    entry. Recognized only when a prefix exists and the destination is exactly
+    the source with the ``<prefix>/`` stripped.
+    """
+    if not prefix:
+        return None
+    prefix_slash = f"{prefix}/"
+    if not move.source.startswith(prefix_slash):
+        return None
+    if move.destination == move.source.removeprefix(prefix_slash):
+        return move.destination
+    return None
+
+
+def _is_subpath_of_any(path: str, roots: frozenset[str]) -> bool:
+    """Return whether ``path`` is strictly under any of ``roots``."""
+    return any(path.startswith(f"{root}/") for root in roots)
+
+
+def _is_subtree_to_root_move(move: MoveSpec, root: str) -> bool:
+    """Return whether a move ships an in-package subtree to the export root.
+
+    ``core.move("<root>/.export", "")`` moves a verbatim-ship staging dir that
+    lives inside the source root to the public root; it maps to a copy to ``.``.
+    """
+    return bool(root) and not move.destination and move.source.startswith(f"{root}/")
+
+
+def _add_sweep_exclude(
+    excludes: list[str],
+    copy_source: str,
+    source_root: str,
+    include: tuple[str, ...],
+) -> None:
+    """Add main-sweep excludes for a copy whose files must not also be swept.
+
+    ``copy_source`` is the full monorepo path of the copy's source; when it lies
+    under ``source_root`` the excludes are emitted source-root-relative. A
+    whole-subtree copy (include ``("**",)``, e.g. ``<root>/.export``) excludes the
+    subtree (``.export/**``); a relocate of a glob subset from the root itself
+    (e.g. ``*_test.py``) excludes exactly that glob so no original remains under
+    the prefix.
+    """
+    prefix = f"{source_root.rstrip('/')}/" if source_root else ""
+    if source_root and copy_source == source_root:
+        # Relocate of a glob subset from the package root: exclude the glob(s).
+        excludes.extend(include)
+        return
+    if not (prefix and copy_source.startswith(prefix)):
+        return
+    rel = copy_source.removeprefix(prefix)
+    if include == ("**",):
+        excludes.append(f"{rel}/**")
+    else:
+        excludes.extend(f"{rel}/{pattern}" for pattern in include)
+
+
+def _origin_move_roots(include: tuple[str, ...]) -> frozenset[str]:
+    """Return candidate source-root paths from origin_files include patterns.
+
+    A ``core.move(ROOT, PREFIX)`` names its source as the package root that
+    origin_files selects via ``ROOT + "/**"``. Collecting those roots lets the
+    transform parser recognize a source-root move (which carries the
+    ``destination_prefix``) even when its destination is a non-empty prefix
+    rather than the empty root.
+    """
+    roots: set[str] = set()
+    for pattern in include:
+        if pattern.endswith("/**"):
+            roots.add(pattern.removesuffix("/**"))
+    return frozenset(roots)
+
+
+def _reject_partial_flatten_of_whole_tree(
+    *, source_root_move: MoveSpec | None, origin_include: tuple[str, ...]
+) -> None:
+    """Reject a subtree flatten under a whole-tree (``**``) origin selection.
+
+    When ``origin_files`` selects the entire tree (``**`` with no ``<root>/**``
+    pattern) and a ``core.move(SUB, "")`` flattens only a strict subtree, real
+    Copybara leaves every sibling path at its identity location while lifting the
+    subtree to the root -- a mixed tree copybarista's single ``source_root`` /
+    ``destination_prefix`` model cannot represent. Reject it here with a clear
+    message rather than misclassify ``SUB`` as the whole ``source_root`` and fail
+    later in prefix-stripping with a misleading "outside core.move source root".
+    """
+    if source_root_move is None:
+        return
+    selects_whole_tree = "**" in origin_include and not _origin_move_roots(
+        origin_include
+    )
+    if selects_whole_tree and source_root_move.source not in ("", "."):
+        raise ConfigError(
+            "core.move flattening a subtree under a whole-tree origin selection "
+            "(glob(['**'])) is unsupported: it mixes lifted-subtree and "
+            "identity-kept paths, which has no single source_root/destination_prefix"
+        )
 
 
 def _call_name(call: ast.Call) -> str:
@@ -859,7 +1146,8 @@ def _strip_markers(before: str) -> tuple[str, str]:
 def _looks_like_strip_block(before: str) -> bool:
     """Return whether a multiline replacement is a marker-delimited strip."""
     lines = [line for line in before.splitlines() if line.strip()]
-    if len(lines) < STRIP_MARKER_LINE_COUNT:
+    # A strip block needs at least a start and an end marker line.
+    if len(lines) < 2:
         return False
     marker_text = "\n".join((lines[0], lines[-1]))
     return "copybarista:" in marker_text or "copybara:" in marker_text
