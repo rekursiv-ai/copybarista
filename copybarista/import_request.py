@@ -868,6 +868,16 @@ class ChangeRequestImporter:
         rebuilt = _anchor_source_only_regions(
             source_text=source_text, public_text=public_text, transform=transform
         )
+        if rebuilt is None:
+            # A source-only run has no UNIQUE surviving anchor in the rewritten
+            # public text (e.g. its neighbor token recurs in several functions), so
+            # any placement is a guess the re-strip gate cannot validate. Reject
+            # rather than drop the run into the wrong location.
+            raise ImportRequestError(
+                f"Re-inserting source-only regions for transform '{transform.id}' "
+                f"cannot uniquely place a stripped region in {public_path}: a "
+                "public edit rewrote its surrounding context. Resolve by hand."
+            )
         # The anchored placement is best-effort, but the correctness contract is
         # absolute: re-stripping the rebuilt source MUST reproduce the incoming
         # public text (only the source-only regions were added, nothing else
@@ -1148,21 +1158,21 @@ def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
 
 def _anchor_source_only_regions(
     *, source_text: str, public_text: str, transform: Transform
-) -> str:
+) -> str | None:
     """Re-insert source-only regions anchored to their surviving source siblings.
 
     Used when a public edit rewrote the immediate context of a stripped region so
     the offset splice would land inside a rewritten line. Instead of an offset,
-    each contiguous run of source-only lines is anchored to the nearest KEPT
-    (exported) source line that precedes it; the run is inserted right after that
-    anchor line in the public text. When the preceding kept line did not survive
-    the public rewrite, the run is anchored to the nearest following kept line and
-    inserted before it. When neither neighbor survived, the run is appended at the
-    region's original offset as a last resort (still valid, just less precise).
+    each contiguous run of source-only lines is anchored to a UNIQUELY-occurring
+    surviving neighbor line (the kept source line just before it, else the one
+    just after). A source-only line carries its marker, so re-stripping removes it
+    wherever it lands -- the caller's re-strip gate cannot catch a mis-placement.
+    Placement is therefore only trusted when the anchor is unambiguous; if a run
+    has no unique surviving anchor, this returns ``None`` so the caller rejects
+    the import for human review rather than silently drop the run into the wrong
+    location (its neighbor token may recur elsewhere in the rewritten file).
 
-    The result always re-strips back to a superset of the public text with the
-    source-only lines removed, so re-export reproduces the public head. Placement
-    is best-effort and meant for human review in the import PR.
+    Returns the rebuilt text, or ``None`` when any run cannot be uniquely placed.
     """
     source_lines = source_text.splitlines(keepends=True)
     marks = _source_only_line_mask(source_lines=source_lines, transform=transform)
@@ -1187,12 +1197,15 @@ def _anchor_source_only_regions(
         runs.append((before, "".join(source_lines[start:index]), after))
     result = public_text
     for before, region_text, after in reversed(runs):
-        result = _insert_anchored_region(
+        placed = _insert_anchored_region(
             public_text=result,
             before_anchor=before,
             after_anchor=after,
             region_text=region_text,
         )
+        if placed is None:
+            return None
+        result = placed
     return result
 
 
@@ -1225,48 +1238,46 @@ def _source_only_line_mask(
 
 def _insert_anchored_region(
     *, public_text: str, before_anchor: str, after_anchor: str, region_text: str
-) -> str:
-    """Insert one source-only run into ``public_text`` beside a surviving anchor.
+) -> str | None:
+    """Insert one source-only run into ``public_text`` beside a UNIQUE anchor.
 
-    Prefers inserting right after the ``before_anchor`` line; falls back to right
-    before the ``after_anchor`` line; if neither survives verbatim, tries the
-    anchor's distinctive token (the longest run of identifier/quote characters),
-    so a line the public rewrite merely reflowed (e.g. dropped a trailing comma or
-    collapsed onto one line) still anchors near its original neighbor. Only if no
-    trace of either anchor survives does the run append at end-of-file (still
-    valid source that re-strips away on export).
+    Anchoring is only trusted when it is unambiguous: an anchor (the whole
+    preceding/following source line, or its distinctive token) must occur EXACTLY
+    ONCE in the public text. A source-only run carries its marker, so re-stripping
+    removes it wherever it lands -- the caller's re-strip gate therefore CANNOT
+    catch a mis-placement. To avoid silently writing a run into the wrong location
+    (its neighbor token may recur elsewhere in the rewritten file), placement
+    requires a unique anchor and returns ``None`` when none exists, so the caller
+    rejects the import for human review rather than guess.
+
+    Prefers the ``before_anchor`` (insert on the next line); falls back to the
+    ``after_anchor`` (insert on its line). Within each, the whole stripped line is
+    tried before the distinctive token. The first UNIQUE match wins.
     """
-    cut = _anchor_cut(public_text, before_anchor, after=False)
+    cut = _unique_anchor_cut(public_text, before_anchor, after=False)
     if cut is not None:
         return public_text[:cut] + region_text + public_text[cut:]
-    cut = _anchor_cut(public_text, after_anchor, after=True)
+    cut = _unique_anchor_cut(public_text, after_anchor, after=True)
     if cut is not None:
         return public_text[:cut] + region_text + public_text[cut:]
-    if public_text and not public_text.endswith("\n"):
-        public_text += "\n"
-    return public_text + region_text
+    return None
 
 
-def _anchor_cut(public_text: str, anchor: str, *, after: bool) -> int | None:
-    """Return a LINE-BOUNDARY insert offset next to ``anchor``, or None.
+def _unique_anchor_cut(public_text: str, anchor: str, *, after: bool) -> int | None:
+    """Return a line-boundary offset next to a UNIQUELY-occurring anchor, or None.
 
-    Matches the whole anchor line first, then falls back to the anchor's most
-    distinctive token so a reflowed line still anchors. ``after`` selects whether
-    the run lands before (True) or after (False) the matched line. The returned
-    offset is ALWAYS a line boundary -- the start of the matched line (when
-    inserting before a following sibling) or the start of the next line (when
-    inserting after a preceding sibling) -- so a source-only run never splices
-    into the middle of a surviving public line, even when the anchor matched only
-    a token embedded in a reflowed line.
+    Tries the whole stripped anchor line, then its distinctive token; each is used
+    only if it occurs EXACTLY ONCE in ``public_text`` (``count == 1``). A repeated
+    anchor is rejected (returns None) because its position is ambiguous and a
+    mis-placement is invisible to the re-strip gate. The returned offset is always
+    a line boundary so a run never splices mid-line.
     """
     if not anchor:
         return None
     for needle in (anchor.strip(), _distinctive_token(anchor)):
-        if not needle:
+        if not needle or public_text.count(needle) != 1:
             continue
-        at = public_text.rfind(needle) if not after else public_text.find(needle)
-        if at == -1:
-            continue
+        at = public_text.find(needle)
         if after:
             # Start of the matched line: the run lands before the following
             # sibling on its own line.
