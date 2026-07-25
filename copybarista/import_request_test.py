@@ -837,6 +837,261 @@ def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
     )
 
 
+def test_merge_import_reconciles_public_collapse_of_construct_holding_marker(
+    tmp_path: Path,
+):
+    """A public rewrite that collapses the construct a marker lived in still merges.
+
+    The ``cli.py #281`` shape: source has a multi-line tuple whose entries carry
+    ``# copybarista:internal`` (stripped on export); a public edit collapses the
+    tuple to one line and drops the (already-absent) internal entries. There is no
+    surviving verbatim anchor line, so the importer anchors each source-only line
+    to a surviving token from its neighbor and re-inserts it there. The result
+    re-strips back to the public head exactly (only the source-only lines were
+    added), so re-export reproduces public -- the import merges instead of
+    refusing, and the placement is left for human review in the import PR.
+    """
+    source_module = (
+        "def fb(name):\n"
+        "    candidates = (\n"
+        '        "OpenAISub",\n'
+        '        "GoogleSub",  # copybarista:internal\n'
+        "    )\n"
+        "    return candidates\n"
+    )
+    public_head_module = (
+        "def fb(name, *, allow):\n"
+        '    candidates = ("AnthropicCLI", "OpenAISub")\n'
+        "    return tuple(c for c in candidates if c in allow)\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "internal_lines"
+        path = "pkg/*.py"
+        start = "# copybarista:internal"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    transform = load_config(config).transforms[0]
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(
+        strip_source_text(source_module, transform), encoding="utf-8"
+    )
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    # Public rewrite landed AND the source-only internal line survived.
+    assert '"GoogleSub",  # copybarista:internal' in imported
+    assert "allow" in imported
+    assert "AnthropicCLI" in imported
+    # Placement lands on its OWN line -- never spliced into the middle of a
+    # surviving public line (the anchor snaps to a line boundary).
+    for line in imported.splitlines():
+        if "# copybarista:internal" in line:
+            assert line.lstrip().startswith('"GoogleSub"')
+    # The import's correctness contract: re-export reproduces the public head.
+    assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path):
+    """An ``if internal/else/endif`` block reverses even with a public edit nearby.
+
+    An else-branch ``strip_block`` does not delete a region: on export it replaces
+    the whole block with its else branch, uncommented. The importer must reverse it
+    by restoring the full source block (internal branch + markers) around the
+    public edit, not refuse. Regression: else-branch strips raised "cannot be
+    reversed by re-insertion", wedging any import of a file that carries one (the
+    real ``sagent/bin/cli.py`` ``_DEFAULT_PROVIDER`` block). Re-export replays the
+    same substitution, reproducing the public head.
+    """
+    source_module = (
+        "HEADER = 0\n"
+        "# copybarista:if internal\n"
+        '_DEFAULT = "AnthropicSubscription"\n'
+        "# copybarista:else\n"
+        '# _DEFAULT = "Anthropic"\n'
+        "# copybarista:endif\n"
+        "def f():\n"
+        "    return 1\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "strip_block"
+        path = "pkg/*.py"
+        start = "# copybarista:if internal"
+        else = "# copybarista:else"
+        end = "# copybarista:endif"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    transform = load_config(config).transforms[0]
+    exported = strip_source_text(source_module, transform)
+    # public edit: change the function body BELOW the else block.
+    public_head_module = exported.replace("return 1", "return 2")
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(exported, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    # The internal branch and its markers are restored around the public edit.
+    assert "# copybarista:if internal" in imported
+    assert '_DEFAULT = "AnthropicSubscription"' in imported
+    assert "return 2" in imported
+    # Re-export reproduces the public head.
+    assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_reconciles_public_rewrite_of_stripped_region_context(
+    tmp_path: Path,
+):
+    """A public rewrite around an ``internal_lines`` region merges, not refuses.
+
+    The ``cli.py #281`` class: a public edit REWROTE a function whose body held
+    ``# copybarista:internal`` lines (reflowed it, dropped the internal entries).
+    The offset splice no longer re-strips back to the incoming public text, so the
+    old per-file gate refused with "does not reproduce". The importer must instead
+    diff3-reconcile the source-only region with the public rewrite: re-insert the
+    stripped line and fold in the surrounding rewrite. Re-export then strips the
+    line again, reproducing public head.
+    """
+    source_module = (
+        "HEADER = 1\n"
+        "\n"
+        "SECRET = 2  # copybarista:internal\n"
+        "\n"
+        "def public_fn(name):\n"
+        '    return "old body"\n'
+    )
+    # The public author rewrites lines BELOW the stripped region (the function
+    # body), leaving the marker line untouched. The insertion offset for the
+    # source-only line is displaced by the size change above it, so the plain
+    # offset splice no longer re-strips back to public -- but diff3 reconciles
+    # cleanly because nothing overlaps the marker line itself.
+    public_head_module = (
+        "HEADER = 1\n"
+        "\n"
+        "\n"
+        "def public_fn(name, *, extra):\n"
+        '    result = "new body"\n'
+        "    return result\n"
+    )
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "internal_lines"
+        path = "pkg/*.py"
+        start = "# copybarista:internal"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    # public base = the source's real export (internal line stripped).
+    stripped = strip_source_text(
+        source_module,
+        load_config(config).transforms[0],
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(stripped, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    # The public rewrite landed AND the source-only internal line was preserved.
+    assert "SECRET = 2  # copybarista:internal" in imported
+    assert "extra" in imported
+    assert "new body" in imported
+    # Re-stripping the imported source reproduces the public head exactly.
+    assert (
+        strip_source_text(imported, load_config(config).transforms[0])
+        == public_head_module
+    )
+
+
 @pytest.mark.parametrize(
     ("transform", "source", "edit_from", "edit_to"),
     [
@@ -1946,7 +2201,7 @@ def test_reinsert_gate_rejects_public_edit_that_disturbs_stripped_region(
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     original = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
 
-    with pytest.raises(ImportRequestError, match="stripped region"):
+    with pytest.raises(ImportRequestError, match=r"strip marker|stripped region"):
         import_change_request(
             ImportRequest(
                 config=load_config(paths.config),

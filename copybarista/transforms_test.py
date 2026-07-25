@@ -750,6 +750,49 @@ def test_internal_lines_removes_marked_lines(tmp_path: Path):
     ]
 
 
+def test_internal_lines_marker_does_not_claim_longer_block_marker(tmp_path: Path):
+    """The line marker must not match a block marker it is a prefix of.
+
+    ``# copybarista:internal`` is a prefix of the block markers
+    ``# copybarista:internal:start`` / ``:end``. A bare substring test would make
+    the ``internal_lines`` transform strip those block-marker lines too, which on
+    reverse-import reinserts them out of order and corrupts the tree. The line
+    marker matches ONLY when it is not immediately followed by ``:``.
+    """
+    path = tmp_path / "module.py"
+    path.write_text(
+        "keep_me = 1\n"
+        "# copybarista:internal:start\n"
+        "block_body = 2\n"
+        "# copybarista:internal:end\n"
+        "drop_me = 3  # copybarista:internal\n"
+        "keep_me_too = 4\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="omit-internal",
+                type="internal_lines",
+                path="module.py",
+                start="# copybarista:internal",
+            ),
+        ),
+    )
+
+    # Only the bare-marker line is removed; the block-marker lines stay untouched.
+    assert path.read_text(encoding="utf-8") == (
+        "keep_me = 1\n"
+        "# copybarista:internal:start\n"
+        "block_body = 2\n"
+        "# copybarista:internal:end\n"
+        "keep_me_too = 4\n"
+    )
+    assert result.count == 1
+
+
 def test_internal_lines_across_multiple_files(tmp_path: Path):
     (tmp_path / "a.py").write_text(
         "keep\nomit  # copybarista:internal\n", encoding="utf-8"
