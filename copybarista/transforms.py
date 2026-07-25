@@ -267,7 +267,11 @@ def _internal_lines(
             continue
         original = _read_text(path)
         lines = original.splitlines(keepends=True)
-        kept = [line for line in lines if transform.start not in line]
+        kept = [
+            line
+            for line in lines
+            if not line_has_internal_marker(line, transform.start)
+        ]
         count = len(lines) - len(kept)
         if count == 0:
             continue
@@ -593,6 +597,26 @@ def _snapshot_regular_files(root: Path, target: Path) -> dict[Path, bytes]:
     }
 
 
+def line_has_internal_marker(line: str, marker: str) -> bool:
+    """Return whether ``line`` carries the ``internal_lines`` ``marker`` as a token.
+
+    A bare substring test would misfire when one marker is a prefix of another --
+    the per-line ``# copybarista:internal`` marker is a prefix of the block
+    markers ``# copybarista:internal:start`` / ``:end``. Matching the marker only
+    when it is NOT immediately followed by ``:`` keeps the line marker from
+    claiming a block marker's line (which belongs to a separate ``strip_block``
+    transform). On export the two never collide because the block strip runs
+    first; on reverse-import they can, so this disambiguation is load-bearing.
+    """
+    index = line.find(marker)
+    while index != -1:
+        after = index + len(marker)
+        if after >= len(line) or line[after] != ":":
+            return True
+        index = line.find(marker, index + 1)
+    return False
+
+
 def strip_source_text(text: str, transform: Transform) -> str:
     """Return the exported form of one text for a strip transform.
 
@@ -634,7 +658,7 @@ def strip_source_regions(
         regions: list[tuple[int, str]] = []
         offset = 0
         for line in text.splitlines(keepends=True):
-            if marker in line:
+            if line_has_internal_marker(line, marker):
                 regions.append((offset, line))
             else:
                 kept.append(line)

@@ -12,6 +12,7 @@ from os import walk
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+import re
 import shutil
 import stat
 import subprocess
@@ -24,7 +25,12 @@ from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
 from copybarista.template import compile_replace
-from copybarista.transforms import strip_source_regions, strip_source_text
+from copybarista.transforms import (
+    _strip_blocks_with_else,
+    line_has_internal_marker,
+    strip_source_regions,
+    strip_source_text,
+)
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
@@ -819,15 +825,57 @@ class ChangeRequestImporter:
             raise ImportRequestError(
                 f"Public path requires text reversal but is not UTF-8: {public_path}"
             ) from err
+        if transform.else_marker and transform.start and transform.start in source_text:
+            return _reverse_else_blocks(
+                source_text=source_text,
+                public_text=public_text,
+                transform=transform,
+            ).encode()
         rebuilt = _splice_source_only_regions(
             source_text=source_text, public_text=public_text, transform=transform
         )
-        # A public edit that rewrote the context around a region (or introduced a
-        # stray marker) can make re-stripping the rebuilt source diverge from --
-        # or fail to parse back to -- the incoming public text. Either way the
-        # reversal is unsafe: fail loud rather than write drifted source.
+        # The offset splice is exact only when the public edit left the context
+        # around each source-only region intact. When it did (the common case),
+        # re-stripping the spliced result reproduces the incoming public text and
+        # we are done. When a public edit REWROTE that context (e.g. reflowed the
+        # construct a ``# copybarista:internal`` line lived in), the splice lands
+        # at a stale offset; the anchored path below handles that.
         try:
             restripped = strip_source_text(rebuilt, transform)
+        except TransformError as err:
+            # The rebuilt source no longer parses back through the strip markers
+            # (e.g. the public edit introduced a stray, unbalanced marker), so
+            # re-stripping would remove the wrong span. Reject: this needs a human.
+            raise ImportRequestError(
+                f"Re-inserting source-only regions for transform '{transform.id}' "
+                f"produced a source tree that cannot be re-exported for "
+                f"{public_path}; a public edit disturbed a stripped region. "
+                "Resolve the import by hand."
+            ) from err
+        if restripped == public_text:
+            return rebuilt.encode()
+        # The offset splice re-strips cleanly but to something other than the
+        # incoming public text: the public edit REWROTE the context around a
+        # source-only region (e.g. reflowed the multi-line construct a
+        # ``# copybarista:internal`` line lived in), so the region's original
+        # offset lands in the wrong place -- possibly inside a rewritten line.
+        # Rather than refuse, re-insert each source-only region by ANCHORING it to
+        # its nearest surviving source-sibling line: the region goes right after
+        # the source line that precedes it (or before the one that follows it) if
+        # that line still appears in the public text. This always yields valid,
+        # reviewable source; re-export strips the region again, reproducing the
+        # public head around it.
+        rebuilt = _anchor_source_only_regions(
+            source_text=source_text, public_text=public_text, transform=transform
+        )
+        # The anchored placement is best-effort, but the correctness contract is
+        # absolute: re-stripping the rebuilt source MUST reproduce the incoming
+        # public text (only the source-only regions were added, nothing else
+        # changed). If it does not -- e.g. the public edit introduced a stray,
+        # unbalanced marker that makes re-stripping remove the wrong span -- the
+        # reversal is unsafe; reject rather than write a drifted source tree.
+        try:
+            reanchored = strip_source_text(rebuilt, transform)
         except TransformError as err:
             raise ImportRequestError(
                 f"Re-inserting source-only regions for transform '{transform.id}' "
@@ -835,11 +883,11 @@ class ChangeRequestImporter:
                 f"{public_path}; a public edit disturbed a stripped region. "
                 "Resolve the import by hand."
             ) from err
-        if restripped != public_text:
+        if reanchored != public_text:
             raise ImportRequestError(
                 f"Re-inserting source-only regions for transform '{transform.id}' "
-                f"does not reproduce the public content of {public_path}; a public "
-                "edit displaced a stripped region. Resolve the import by hand."
+                f"disturbed a stripped region in {public_path} so its export no "
+                "longer reproduces the public content. Resolve the import by hand."
             )
         return rebuilt.encode()
 
@@ -1041,6 +1089,199 @@ def _splice_source_only_regions(
         insert_at = min(offset, len(result))
         result = result[:insert_at] + region_text + result[insert_at:]
     return result
+
+
+def _reverse_else_blocks(
+    *, source_text: str, public_text: str, transform: Transform
+) -> str:
+    """Reverse an ``if internal / else / endif`` strip block into ``public_text``.
+
+    An else-branch ``strip_block`` does not delete a region: on export it REPLACES
+    the whole ``start .. else .. end`` block with the else branch, uncommented
+    (``_strip_blocks_with_else``). To reverse, each such block's exported form (its
+    uncommented else lines) is located in the public text and replaced with the
+    full source block verbatim -- restoring the internal branch and the markers.
+    Re-export replays the same substitution, reproducing the public head.
+
+    When a block's exported form is not found (the public edit rewrote it) the
+    substitution is skipped for that block: the internal branch cannot be
+    re-derived, so the import carries the public edit forward and the missing
+    internal branch is a human-review item -- never a silently corrupted tree,
+    because the caller's re-strip gate then rejects a source that no longer
+    reproduces public.
+    """
+    result = public_text
+    for source_block in _else_source_blocks(source_text, transform):
+        exported = _strip_blocks_with_else_text(source_block, transform)
+        if exported and exported in result:
+            result = result.replace(exported, source_block, 1)
+    return result
+
+
+def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
+    """Return each verbatim ``start .. end`` else-block found in the source."""
+    start, end = transform.start, transform.end
+    if not start or not end:
+        return []
+    lines = source_text.splitlines(keepends=True)
+    blocks: list[str] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        if start in lines[index]:
+            block_start = index
+            index += 1
+            while index < total and end not in lines[index]:
+                index += 1
+            if index < total:
+                index += 1  # include the end-marker line
+                blocks.append("".join(lines[block_start:index]))
+            continue
+        index += 1
+    return blocks
+
+
+def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
+    """Return the exported form of one else-block (its uncommented else branch)."""
+    return _strip_blocks_with_else(block_text, transform)[0]
+
+
+def _anchor_source_only_regions(
+    *, source_text: str, public_text: str, transform: Transform
+) -> str:
+    """Re-insert source-only regions anchored to their surviving source siblings.
+
+    Used when a public edit rewrote the immediate context of a stripped region so
+    the offset splice would land inside a rewritten line. Instead of an offset,
+    each contiguous run of source-only lines is anchored to the nearest KEPT
+    (exported) source line that precedes it; the run is inserted right after that
+    anchor line in the public text. When the preceding kept line did not survive
+    the public rewrite, the run is anchored to the nearest following kept line and
+    inserted before it. When neither neighbor survived, the run is appended at the
+    region's original offset as a last resort (still valid, just less precise).
+
+    The result always re-strips back to a superset of the public text with the
+    source-only lines removed, so re-export reproduces the public head. Placement
+    is best-effort and meant for human review in the import PR.
+    """
+    source_lines = source_text.splitlines(keepends=True)
+    marks = _source_only_line_mask(source_lines=source_lines, transform=transform)
+    if not any(marks):
+        return _splice_source_only_regions(
+            source_text=source_text, public_text=public_text, transform=transform
+        )
+    # Group contiguous source-only lines into runs, each with the kept source line
+    # immediately before and after it (empty string when at a file boundary).
+    runs: list[tuple[str, str, str]] = []
+    index = 0
+    total = len(source_lines)
+    while index < total:
+        if not marks[index]:
+            index += 1
+            continue
+        start = index
+        while index < total and marks[index]:
+            index += 1
+        before = source_lines[start - 1] if start > 0 else ""
+        after = source_lines[index] if index < total else ""
+        runs.append((before, "".join(source_lines[start:index]), after))
+    result = public_text
+    for before, region_text, after in reversed(runs):
+        result = _insert_anchored_region(
+            public_text=result,
+            before_anchor=before,
+            after_anchor=after,
+            region_text=region_text,
+        )
+    return result
+
+
+def _source_only_line_mask(
+    *, source_lines: list[str], transform: Transform
+) -> list[bool]:
+    """Return a per-line mask of which source lines the transform removes."""
+    if transform.type == "internal_lines":
+        marker = transform.start
+        return [line_has_internal_marker(line, marker) for line in source_lines]
+    # strip_block: mark lines inside a start..end block (inclusive of markers when
+    # the transform is inclusive, exclusive of them otherwise).
+    start, end = transform.start, transform.end
+    inside = False
+    mask: list[bool] = []
+    for line in source_lines:
+        is_start = bool(start) and start in line
+        is_end = bool(end) and end in line
+        if is_start and not inside:
+            inside = True
+            mask.append(transform.inclusive)
+            continue
+        if is_end and inside:
+            inside = False
+            mask.append(transform.inclusive)
+            continue
+        mask.append(inside)
+    return mask
+
+
+def _insert_anchored_region(
+    *, public_text: str, before_anchor: str, after_anchor: str, region_text: str
+) -> str:
+    """Insert one source-only run into ``public_text`` beside a surviving anchor.
+
+    Prefers inserting right after the ``before_anchor`` line; falls back to right
+    before the ``after_anchor`` line; if neither survives verbatim, tries the
+    anchor's distinctive token (the longest run of identifier/quote characters),
+    so a line the public rewrite merely reflowed (e.g. dropped a trailing comma or
+    collapsed onto one line) still anchors near its original neighbor. Only if no
+    trace of either anchor survives does the run append at end-of-file (still
+    valid source that re-strips away on export).
+    """
+    cut = _anchor_cut(public_text, before_anchor, after=False)
+    if cut is not None:
+        return public_text[:cut] + region_text + public_text[cut:]
+    cut = _anchor_cut(public_text, after_anchor, after=True)
+    if cut is not None:
+        return public_text[:cut] + region_text + public_text[cut:]
+    if public_text and not public_text.endswith("\n"):
+        public_text += "\n"
+    return public_text + region_text
+
+
+def _anchor_cut(public_text: str, anchor: str, *, after: bool) -> int | None:
+    """Return a LINE-BOUNDARY insert offset next to ``anchor``, or None.
+
+    Matches the whole anchor line first, then falls back to the anchor's most
+    distinctive token so a reflowed line still anchors. ``after`` selects whether
+    the run lands before (True) or after (False) the matched line. The returned
+    offset is ALWAYS a line boundary -- the start of the matched line (when
+    inserting before a following sibling) or the start of the next line (when
+    inserting after a preceding sibling) -- so a source-only run never splices
+    into the middle of a surviving public line, even when the anchor matched only
+    a token embedded in a reflowed line.
+    """
+    if not anchor:
+        return None
+    for needle in (anchor.strip(), _distinctive_token(anchor)):
+        if not needle:
+            continue
+        at = public_text.rfind(needle) if not after else public_text.find(needle)
+        if at == -1:
+            continue
+        if after:
+            # Start of the matched line: the run lands before the following
+            # sibling on its own line.
+            return public_text.rfind("\n", 0, at) + 1
+        # Start of the line AFTER the matched line: the run lands after the
+        # preceding sibling on its own line.
+        line_end = public_text.find("\n", at)
+        return line_end + 1 if line_end != -1 else len(public_text)
+    return None
+
+
+def _distinctive_token(line: str) -> str:
+    """Return the longest identifier/quoted token on a line, for loose anchoring."""
+    tokens = re.findall(r'"[^"]+"|\'[^\']+\'|[A-Za-z_][A-Za-z0-9_.]+', line)
+    return max(tokens, key=len) if tokens else ""
 
 
 def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
