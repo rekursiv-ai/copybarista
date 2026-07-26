@@ -14,6 +14,7 @@ remain available for tests.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import argparse
 import shutil
@@ -22,7 +23,7 @@ import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-DEFAULT_TARGETS = (
+DEFAULT_TARGETS: Final = (
     ".coverage",
     ".pytest_cache",
     ".ruff_cache",
@@ -35,7 +36,7 @@ DEFAULT_TARGETS = (
     "scripts/__pycache__",
     "tests/__pycache__",
     "private/__pycache__",
-)  # config-globals: ignore -- fixed manifest of project-local artifact paths, not a tunable
+)
 
 
 def main() -> int:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Final, TextIO
 
 import argparse
 import json
@@ -31,9 +31,7 @@ import time
 
 # Dotted module path of the copybarista package, run via `python -m` with
 # cwd=target_dir so the import resolves under the monorepo checkout.
-_COPYBARISTA_MODULE = (
-    "copybarista"  # config-globals: ignore -- static default/protocol constant.
-)
+_COPYBARISTA_MODULE: Final = "copybarista"
 
 
 def _copybarista_argv(*, requirements: Path) -> list[str]:
@@ -94,21 +92,13 @@ def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> 
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_LABEL = (
-    "Copybarista"  # config-globals: ignore -- static default/protocol constant.
-)
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_SYNC_USER_NAME = (
-    "copybarista"  # config-globals: ignore -- static default/protocol constant.
-)
-DEFAULT_IMPORT_BRANCH_PREFIX = (
-    "copybarista/import/"  # config-globals: ignore -- static default/protocol constant.
-)
-CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
-GITHUB_RETRY_ATTEMPTS = 3  # config-globals: ignore -- static default/protocol constant.
-GITHUB_RETRY_DELAY_SEC = (
-    2  # config-globals: ignore -- static default/protocol constant.
-)
+DEFAULT_SYNC_LABEL: Final = "Copybarista"
+DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
+DEFAULT_SYNC_USER_NAME: Final = "copybarista"
+DEFAULT_IMPORT_BRANCH_PREFIX: Final = "copybarista/import/"
+CONTROL_CHAR_BOUND: Final = 32
+GITHUB_RETRY_ATTEMPTS: Final = 3
+GITHUB_RETRY_DELAY_SEC: Final = 2
 
 
 def main() -> int:

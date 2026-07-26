@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 from urllib.parse import unquote, urlparse
 
 import contextlib
@@ -43,7 +43,7 @@ from copybarista.workflow import (
 
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")
-LS_REMOTE_NO_MATCH = 2  # config-globals: ignore -- git ls-remote exit code (documented protocol), not a tunable
+LS_REMOTE_NO_MATCH: Final = 2
 
 
 class GitCommands(Protocol):

@@ -27,7 +27,7 @@ from copybarista.globs import GlobSet, Globstar
 from copybarista.template import compile_replace
 from copybarista.transforms import (
     _strip_blocks_with_else,
-    line_has_internal_marker,
+    line_has_marker_token,
     strip_source_regions,
     strip_source_text,
 )
@@ -1322,7 +1322,7 @@ def _source_only_line_mask(
     """Return a per-line mask of which source lines the transform removes."""
     if transform.type == "internal_lines":
         marker = transform.start
-        return [line_has_internal_marker(line, marker) for line in source_lines]
+        return [line_has_marker_token(line, marker) for line in source_lines]
     # strip_block: mark lines inside a start..end block (inclusive of markers when
     # the transform is inclusive, exclusive of them otherwise).
     start, end = transform.start, transform.end

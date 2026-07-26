@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import json
 import keyword
@@ -18,7 +18,7 @@ from copybarista.config import load_config
 from copybarista.errors import ConfigError
 
 
-DEFAULT_EXCLUDES = (
+DEFAULT_EXCLUDES: Final = (
     ".pytest_cache/**",
     "**/.pytest_cache/**",
     ".ruff_cache/**",
@@ -35,23 +35,19 @@ DEFAULT_EXCLUDES = (
     "copy.bara.sky",
     "copy.barista.toml",
     "copybarista.sync.toml",
-)  # config-globals: ignore -- static default/protocol constant.
-CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_SYNC_USER_NAME = (
-    "copybarista"  # config-globals: ignore -- static default/protocol constant.
 )
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_VALIDATION_PYTHON_VERSIONS = (
-    "3.12",
-)  # config-globals: ignore -- static default/protocol constant.
+CONTROL_CHAR_BOUND: Final = 32
+DEFAULT_SYNC_USER_NAME: Final = "copybarista"
+DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
+DEFAULT_VALIDATION_PYTHON_VERSIONS: Final = ("3.12",)
 # System (apt) packages installed before both public package validation and
 # public-to-source import validation. Both workflows run the same test suite, so
 # they MUST provision the same system tools; rendering this single setting into
 # both generated workflows keeps their environments aligned by construction.
-DEFAULT_SYSTEM_PACKAGES = (
+DEFAULT_SYSTEM_PACKAGES: Final = (
     "ripgrep",
     "fd-find",
-)  # config-globals: ignore -- static default/protocol constant.
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

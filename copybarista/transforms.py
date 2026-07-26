@@ -268,9 +268,7 @@ def _internal_lines(
         original = _read_text(path)
         lines = original.splitlines(keepends=True)
         kept = [
-            line
-            for line in lines
-            if not line_has_internal_marker(line, transform.start)
+            line for line in lines if not line_has_marker_token(line, transform.start)
         ]
         count = len(lines) - len(kept)
         if count == 0:
@@ -354,7 +352,13 @@ def _uncomment_text(text: str, transform: Transform) -> tuple[str, int]:
             result.extend(_uncomment_line(line) for line in lines[i + 1 : end_idx])
             i = end_idx + 1
             count += 1
-        elif transform.start in lines[i]:
+        elif line_has_marker_token(lines[i], transform.start):
+            # Inline marker (no block ``end``): uncomment the code before the
+            # marker and drop the marker itself. ``line_has_marker_token`` rejects
+            # a marker immediately followed by ``:`` so the inline
+            # ``# copybarista:external`` never claims a block ``:external:start``/
+            # ``:end`` line (whose prefix it shares); those belong to the paired
+            # block ``uncomment`` transform above.
             uncommented = lines[i].split(transform.start)[0].rstrip()
             result.append(_uncomment_line(uncommented))
             count += 1
@@ -597,16 +601,18 @@ def _snapshot_regular_files(root: Path, target: Path) -> dict[Path, bytes]:
     }
 
 
-def line_has_internal_marker(line: str, marker: str) -> bool:
-    """Return whether ``line`` carries the ``internal_lines`` ``marker`` as a token.
+def line_has_marker_token(line: str, marker: str) -> bool:
+    """Return whether ``line`` carries the inline ``marker`` as a whole token.
 
     A bare substring test would misfire when one marker is a prefix of another --
-    the per-line ``# copybarista:internal`` marker is a prefix of the block
-    markers ``# copybarista:internal:start`` / ``:end``. Matching the marker only
-    when it is NOT immediately followed by ``:`` keeps the line marker from
-    claiming a block marker's line (which belongs to a separate ``strip_block``
-    transform). On export the two never collide because the block strip runs
-    first; on reverse-import they can, so this disambiguation is load-bearing.
+    the per-line ``# copybarista:internal`` / ``# copybarista:external`` markers
+    are prefixes of the block markers ``# copybarista:internal:start`` / ``:end``
+    (and the ``:external`` equivalents). Matching the marker only when it is NOT
+    immediately followed by ``:`` keeps the line marker from claiming a block
+    marker's line (which belongs to a separate ``strip_block`` / block
+    ``uncomment`` transform). On export the two never collide because the block
+    transform runs first; on reverse-import they can, so this disambiguation is
+    load-bearing.
     """
     index = line.find(marker)
     while index != -1:
@@ -658,7 +664,7 @@ def strip_source_regions(
         regions: list[tuple[int, str]] = []
         offset = 0
         for line in text.splitlines(keepends=True):
-            if line_has_internal_marker(line, marker):
+            if line_has_marker_token(line, marker):
                 regions.append((offset, line))
             else:
                 kept.append(line)

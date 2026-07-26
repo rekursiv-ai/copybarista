@@ -998,6 +998,49 @@ def test_uncomment_block_multiple(tmp_path: Path):
     assert result.count == 2
 
 
+def test_uncomment_inline_ignores_block_marker_lines(tmp_path: Path):
+    # The inline external marker (start="# copybarista:external", no end) is a
+    # prefix of the block markers ":external:start"/":end". The inline transform
+    # must NOT claim those block-marker lines -- they belong to the paired block
+    # uncomment transform, which runs first in the real config. Without the
+    # not-followed-by-":" token guard, the inline split would truncate a
+    # ":external:start" line at "# copybarista:external", corrupting it.
+    path = tmp_path / "cli.py"
+    path.write_text(
+        "candidates = (\n"
+        '    # "AnthropicCLI",  # copybarista:external\n'
+        "    # copybarista:external:start\n"
+        '    # "Other",\n'
+        "    # copybarista:external:end\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="uncomment-inline",
+                type="uncomment",
+                path="cli.py",
+                start="# copybarista:external",
+            ),
+        ),
+    )
+
+    # Only the inline line is uncommented; both block-marker lines and the
+    # commented body between them are left verbatim for the block transform.
+    assert path.read_text(encoding="utf-8") == (
+        "candidates = (\n"
+        '    "AnthropicCLI",\n'
+        "    # copybarista:external:start\n"
+        '    # "Other",\n'
+        "    # copybarista:external:end\n"
+        ")\n"
+    )
+    assert result.count == 1
+
+
 def test_uncomment_block_missing_end_raises(tmp_path: Path):
     path = tmp_path / "config.py"
     path.write_text(
