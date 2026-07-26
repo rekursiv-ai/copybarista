@@ -12,7 +12,7 @@ from os import walk
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-import re
+import difflib
 import shutil
 import stat
 import subprocess
@@ -869,14 +869,13 @@ class ChangeRequestImporter:
             source_text=source_text, public_text=public_text, transform=transform
         )
         if rebuilt is None:
-            # A source-only run has no UNIQUE surviving anchor in the rewritten
-            # public text (e.g. its neighbor token recurs in several functions), so
-            # any placement is a guess the re-strip gate cannot validate. Reject
-            # rather than drop the run into the wrong location.
+            # A source-only run has NO surviving neighbor that aligns to the
+            # public text: every kept line bracketing it was rewritten or removed,
+            # so its position is undetermined. Reject rather than guess.
             raise ImportRequestError(
                 f"Re-inserting source-only regions for transform '{transform.id}' "
-                f"cannot uniquely place a stripped region in {public_path}: a "
-                "public edit rewrote its surrounding context. Resolve by hand."
+                f"cannot place a stripped region in {public_path}: a public edit "
+                "rewrote all of its surrounding context. Resolve by hand."
             )
         # The anchored placement is best-effort, but the correctness contract is
         # absolute: re-stripping the rebuilt source MUST reproduce the incoming
@@ -1159,20 +1158,20 @@ def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
 def _anchor_source_only_regions(
     *, source_text: str, public_text: str, transform: Transform
 ) -> str | None:
-    """Re-insert source-only regions anchored to their surviving source siblings.
+    """Re-insert source-only regions by aligning the source's export with public.
 
-    Used when a public edit rewrote the immediate context of a stripped region so
-    the offset splice would land inside a rewritten line. Instead of an offset,
-    each contiguous run of source-only lines is anchored to a UNIQUELY-occurring
-    surviving neighbor line (the kept source line just before it, else the one
-    just after). A source-only line carries its marker, so re-stripping removes it
-    wherever it lands -- the caller's re-strip gate cannot catch a mis-placement.
-    Placement is therefore only trusted when the anchor is unambiguous; if a run
-    has no unique surviving anchor, this returns ``None`` so the caller rejects
-    the import for human review rather than silently drop the run into the wrong
-    location (its neighbor token may recur elsewhere in the rewritten file).
+    No guessing: the source-only lines are exactly those ``strip_source_text``
+    removes, so the KEPT source lines are the source's own exported form. Diffing
+    that exported form against the incoming public text (a real line alignment,
+    which absorbs reflow via its matching blocks) says, for every kept source
+    line, which public line it became. Each source-only run sits immediately after
+    a kept source line; the run is re-inserted right after that line's ALIGNED
+    public position. The correctness contract is then verified by the caller:
+    re-stripping the result must reproduce public exactly.
 
-    Returns the rebuilt text, or ``None`` when any run cannot be uniquely placed.
+    A run whose preceding kept line did not align to any public line (its context
+    was deleted/rewritten past recognition) has no determined position -- this
+    returns ``None`` so the caller rejects rather than guess.
     """
     source_lines = source_text.splitlines(keepends=True)
     marks = _source_only_line_mask(source_lines=source_lines, transform=transform)
@@ -1180,33 +1179,141 @@ def _anchor_source_only_regions(
         return _splice_source_only_regions(
             source_text=source_text, public_text=public_text, transform=transform
         )
-    # Group contiguous source-only lines into runs, each with the kept source line
-    # immediately before and after it (empty string when at a file boundary).
-    runs: list[tuple[str, str, str]] = []
+    kept_lines = [
+        line for line, mark in zip(source_lines, marks, strict=True) if not mark
+    ]
+    public_lines = public_text.splitlines(keepends=True)
+    # Map each kept-source line index -> aligned public line index (or None).
+    kept_to_public = _align_kept_to_public(kept_lines, public_lines)
+
+    # Each source-only run sits between kept-source line ``kept_seen - 1`` (before)
+    # and ``kept_seen`` (after). Its slot survived ONLY when its IMMEDIATE
+    # bracketing kept lines still align AND their public positions are adjacent --
+    # i.e. the run's original gap is still an intact gap in public. Placement uses
+    # only that intact-slot signal; a run whose local context was rewritten (an
+    # immediate neighbor is unaligned, or the aligned neighbors straddle a rewrite)
+    # has an UNDETERMINED position and is rejected, rather than being dropped next
+    # to a far-away aligned line in a different scope (a mis-placement the re-strip
+    # gate cannot catch, since the marker line strips away wherever it lands).
+    # Compute each run's public insertion index, recording runs in SOURCE order.
+    insertions: list[tuple[int, str]] = []
+    kept_seen = 0
     index = 0
     total = len(source_lines)
+    for_public_count = len(public_lines)
     while index < total:
         if not marks[index]:
+            kept_seen += 1
             index += 1
             continue
         start = index
         while index < total and marks[index]:
             index += 1
-        before = source_lines[start - 1] if start > 0 else ""
-        after = source_lines[index] if index < total else ""
-        runs.append((before, "".join(source_lines[start:index]), after))
-    result = public_text
-    for before, region_text, after in reversed(runs):
-        placed = _insert_anchored_region(
-            public_text=result,
-            before_anchor=before,
-            after_anchor=after,
-            region_text=region_text,
+        run_text = "".join(source_lines[start:index])
+        insert_at = _placement_index(
+            kept_to_public=kept_to_public,
+            before_index=kept_seen - 1,
+            after_index=kept_seen,
+            public_line_count=for_public_count,
         )
-        if placed is None:
+        if insert_at is None:
             return None
-        result = placed
-    return result
+        # Detachment guard: if the run's immediate following kept line did NOT
+        # align (difflib dropped it) yet its content still exists in public BEFORE
+        # the chosen insert point, public reordered it ahead of the run -- placing
+        # the run here would detach it from that neighbor. Reject rather than
+        # silently emit the run in the wrong place (re-strip cannot catch it).
+        if kept_seen < len(kept_to_public) and kept_to_public[kept_seen] is None:
+            follower = kept_lines[kept_seen]
+            if follower in public_lines[:insert_at]:
+                return None
+        insertions.append((insert_at, run_text))
+
+    # Insert forward, tracking a cumulative offset, so runs that share the same
+    # public index keep their SOURCE order (a bottom-up splice would reverse them).
+    result = list(public_lines)
+    for offset, (public_index, run_text) in enumerate(insertions):
+        at = public_index + offset
+        result[at:at] = [run_text]
+    return "".join(result)
+
+
+def _placement_index(
+    *,
+    kept_to_public: list[int | None],
+    before_index: int,
+    after_index: int,
+    public_line_count: int,
+) -> int | None:
+    """Return the public insert index for a source-only run, or ``None`` to reject.
+
+    ``before_index`` / ``after_index`` are the kept-line indices immediately
+    before and after the run. Placement is decided by alignment only:
+
+    - Immediate before-neighbor aligns: insert right after its public line. When
+      the immediate after-neighbor ALSO aligns, its public position must be at or
+      after the before-neighbor's -- an inverted slot (public reordered the two
+      past each other) has no determined position and is rejected, so a run is
+      never detached from its neighbors.
+    - Else the run's preceding context was rewritten; anchor FORWARD to the
+      nearest aligned kept line at/after the run and insert right before it, so
+      the run lands at the tail of the rewritten span it belonged to. Forward-only
+      avoids jumping BACKWARD across a rewritten region into an earlier, unrelated
+      scope (a mis-placement the re-strip gate cannot catch).
+    - No aligned line before or forward: the run is trailing (nothing survived
+      after it), so append at end -- an unambiguous position.
+    """
+    # The run must land in the public gap bracketed by its context: strictly after
+    # every kept line BEFORE it that aligns, and at/before every kept line AFTER it
+    # that aligns. If any following kept line aligns to a position <= a preceding
+    # one (public reordered them past each other, or dropped one to an earlier
+    # spot), no contiguous slot survives -- reject rather than detach the run.
+    before_max = _max_aligned(kept_to_public, 0, before_index + 1)
+    after_min = _min_aligned(kept_to_public, after_index, len(kept_to_public))
+    if before_max is not None and after_min is not None and after_min <= before_max:
+        return None
+    if after_min is None:
+        # No kept line aligns AFTER the run: it is trailing. Append at the end --
+        # the only unambiguous position when nothing survived after it.
+        return public_line_count
+    before_aligned = kept_to_public[before_index] if before_index >= 0 else None
+    if before_aligned is not None:
+        # Immediate preceding line survived: keep the run right after it.
+        return before_aligned + 1
+    # The immediate preceding line was rewritten but a later line aligns: land the
+    # run right before that nearest aligned following line (tail of the rewritten
+    # span it belonged to).
+    return after_min
+
+
+def _max_aligned(kept_to_public: list[int | None], start: int, stop: int) -> int | None:
+    """Return the greatest aligned public index in ``kept_to_public[start:stop]``."""
+    values = [v for v in kept_to_public[start:stop] if v is not None]
+    return max(values) if values else None
+
+
+def _min_aligned(kept_to_public: list[int | None], start: int, stop: int) -> int | None:
+    """Return the smallest aligned public index in ``kept_to_public[start:stop]``."""
+    values = [v for v in kept_to_public[start:stop] if v is not None]
+    return min(values) if values else None
+
+
+def _align_kept_to_public(
+    kept_lines: list[str], public_lines: list[str]
+) -> list[int | None]:
+    """Return, per kept-source line, the aligned public line index or ``None``.
+
+    Uses ``difflib.SequenceMatcher`` matching blocks: lines in an 'equal' block
+    map one-to-one to their public counterparts. A kept line inside a 'replace' or
+    'delete' block (its public counterpart was rewritten or removed) maps to
+    ``None``.
+    """
+    matcher = difflib.SequenceMatcher(a=kept_lines, b=public_lines, autojunk=False)
+    aligned: list[int | None] = [None] * len(kept_lines)
+    for a_start, b_start, size in matcher.get_matching_blocks():
+        for offset in range(size):
+            aligned[a_start + offset] = b_start + offset
+    return aligned
 
 
 def _source_only_line_mask(
@@ -1234,65 +1341,6 @@ def _source_only_line_mask(
             continue
         mask.append(inside)
     return mask
-
-
-def _insert_anchored_region(
-    *, public_text: str, before_anchor: str, after_anchor: str, region_text: str
-) -> str | None:
-    """Insert one source-only run into ``public_text`` beside a UNIQUE anchor.
-
-    Anchoring is only trusted when it is unambiguous: an anchor (the whole
-    preceding/following source line, or its distinctive token) must occur EXACTLY
-    ONCE in the public text. A source-only run carries its marker, so re-stripping
-    removes it wherever it lands -- the caller's re-strip gate therefore CANNOT
-    catch a mis-placement. To avoid silently writing a run into the wrong location
-    (its neighbor token may recur elsewhere in the rewritten file), placement
-    requires a unique anchor and returns ``None`` when none exists, so the caller
-    rejects the import for human review rather than guess.
-
-    Prefers the ``before_anchor`` (insert on the next line); falls back to the
-    ``after_anchor`` (insert on its line). Within each, the whole stripped line is
-    tried before the distinctive token. The first UNIQUE match wins.
-    """
-    cut = _unique_anchor_cut(public_text, before_anchor, after=False)
-    if cut is not None:
-        return public_text[:cut] + region_text + public_text[cut:]
-    cut = _unique_anchor_cut(public_text, after_anchor, after=True)
-    if cut is not None:
-        return public_text[:cut] + region_text + public_text[cut:]
-    return None
-
-
-def _unique_anchor_cut(public_text: str, anchor: str, *, after: bool) -> int | None:
-    """Return a line-boundary offset next to a UNIQUELY-occurring anchor, or None.
-
-    Tries the whole stripped anchor line, then its distinctive token; each is used
-    only if it occurs EXACTLY ONCE in ``public_text`` (``count == 1``). A repeated
-    anchor is rejected (returns None) because its position is ambiguous and a
-    mis-placement is invisible to the re-strip gate. The returned offset is always
-    a line boundary so a run never splices mid-line.
-    """
-    if not anchor:
-        return None
-    for needle in (anchor.strip(), _distinctive_token(anchor)):
-        if not needle or public_text.count(needle) != 1:
-            continue
-        at = public_text.find(needle)
-        if after:
-            # Start of the matched line: the run lands before the following
-            # sibling on its own line.
-            return public_text.rfind("\n", 0, at) + 1
-        # Start of the line AFTER the matched line: the run lands after the
-        # preceding sibling on its own line.
-        line_end = public_text.find("\n", at)
-        return line_end + 1 if line_end != -1 else len(public_text)
-    return None
-
-
-def _distinctive_token(line: str) -> str:
-    """Return the longest identifier/quoted token on a line, for loose anchoring."""
-    tokens = re.findall(r'"[^"]+"|\'[^\']+\'|[A-Za-z_][A-Za-z0-9_.]+', line)
-    return max(tokens, key=len) if tokens else ""
 
 
 def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:

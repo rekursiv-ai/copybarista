@@ -19,6 +19,7 @@ from copybarista.import_request import (
     ImportRequest,
     PathMapper,
     TreeSnapshot,
+    _anchor_source_only_regions,
     _removed_regions,
     _splice_source_only_regions,
     _three_way_merge,
@@ -891,18 +892,19 @@ def _run_internal_lines_import(
     return destination / "internal/demo/pkg/m.py"
 
 
-def test_merge_import_reconciles_collapse_with_unique_surviving_anchor(
+def test_merge_import_reconciles_collapse_with_surviving_neighbor(
     tmp_path: Path,
 ):
-    """A collapse merges when the source-only line has a UNIQUE surviving anchor.
+    """A collapse merges when a kept neighbor line still ALIGNS to the public text.
 
     Source has a multi-line tuple whose entries carry ``# copybarista:internal``
-    (stripped on export); a public edit collapses the tuple to one line, keeping a
-    kept sibling (``ITEM_A``) that is unique in the file. The stripped line has no
-    surviving verbatim anchor LINE, but its neighbor's distinctive token survives
-    and is unique, so the importer re-inserts the line beside it. The result
-    re-strips to public head exactly, so re-export reproduces public -- placement
-    is left for human review in the import PR.
+    (stripped on export); a public edit collapses the tuple to one line, reflowing
+    the entry lines past verbatim recognition -- but a bracketing kept line
+    (``return items``) survives unchanged. Diffing the source's exported form
+    against public aligns that surviving line, so the importer re-inserts the
+    stripped line beside its nearest aligned neighbor (right before ``return``).
+    The result re-strips to public head exactly, so re-export reproduces public.
+    Placement is left for human review in the import PR.
     """
     config = _internal_lines_config(tmp_path)
     source_module = (
@@ -916,7 +918,7 @@ def test_merge_import_reconciles_collapse_with_unique_surviving_anchor(
     public_head_module = (
         "def fn(name, *, extra):\n"
         '    items = ("ITEM_NEW", "ITEM_A")\n'
-        "    return tuple(i for i in items if i in extra)\n"
+        "    return items\n"
     )
 
     imported = _run_internal_lines_import(
@@ -931,7 +933,7 @@ def test_merge_import_reconciles_collapse_with_unique_surviving_anchor(
     assert "extra" in imported
     assert "ITEM_NEW" in imported
     # Placement lands on its OWN line -- never spliced into the middle of a
-    # surviving public line (the anchor snaps to a line boundary).
+    # surviving public line.
     for line in imported.splitlines():
         if "# copybarista:internal" in line:
             assert line.lstrip().startswith('"SECRET_B"')
@@ -940,17 +942,14 @@ def test_merge_import_reconciles_collapse_with_unique_surviving_anchor(
     assert strip_source_text(imported, transform) == public_head_module
 
 
-def test_merge_import_rejects_collapse_with_ambiguous_anchor(tmp_path: Path):
-    """A collapse is REJECTED when the source-only line has no UNIQUE anchor.
+def test_merge_import_appends_trailing_run_when_all_context_rewritten(tmp_path: Path):
+    """A trailing run whose whole context was rewritten APPENDS at end, not reject.
 
-    When the public rewrite destroys the stripped line's surrounding context and
-    its only surviving neighbor token recurs elsewhere in the file, there is no
-    unambiguous place to re-insert the line. Because the line carries its marker,
-    re-stripping removes it wherever it lands, so a mis-placement is invisible to
-    the re-strip gate. The importer must therefore REJECT (leave it for a human)
-    rather than silently drop the line into the wrong location. Regression: an
-    earlier version anchored to an arbitrary occurrence, writing the line into an
-    unrelated function and producing invalid source.
+    The public rewrite replaces every line of the (only, last) function; the
+    stripped line has no surviving kept line before OR after it. Its position is
+    then unambiguous: nothing survived after it, so it appends at the end. The
+    result re-strips to public head exactly, so re-export reproduces public --
+    placement is left for human review in the import PR.
     """
     config = _internal_lines_config(tmp_path)
     source_module = (
@@ -960,47 +959,93 @@ def test_merge_import_rejects_collapse_with_ambiguous_anchor(tmp_path: Path):
         '        "SECRET",  # copybarista:internal\n'
         "    )\n"
         "    return items\n"
-        "def setup(name):\n"
-        '    if name == "COMMON":\n'
-        '        return "cmd"\n'
-        "    return None\n"
     )
-    # Public collapses the tuple; "COMMON" (the stripped line's neighbor) now recurs
-    # in both functions, so no unique anchor survives.
     public_head_module = (
         "def fallbacks(name, *, allow):\n"
-        '    items = ("NEW", "COMMON")\n'
-        "    return tuple(i for i in items if i in allow)\n"
-        "def setup(name):\n"
-        '    if name == "COMMON":\n'
-        '        return "cmd"\n'
-        "    return None\n"
+        '    picked = ("NEW", "COMMON")\n'
+        "    return [p for p in picked if p in allow]\n"
     )
-    source_base = tmp_path / "source-base"
-    (source_base / "internal/demo/pkg").mkdir(parents=True)
-    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
-    transform = load_config(config).transforms[0]
-    public_base = tmp_path / "public-base"
-    (public_base / "pkg").mkdir(parents=True)
-    (public_base / "pkg/m.py").write_text(
-        strip_source_text(source_module, transform), encoding="utf-8"
-    )
-    public_head = tmp_path / "public-head"
-    (public_head / "pkg").mkdir(parents=True)
-    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
-    destination = _copy_tree(source_base, tmp_path / "destination")
+    imported = _run_internal_lines_import(
+        tmp_path=tmp_path,
+        config=config,
+        source_module=source_module,
+        public_head_module=public_head_module,
+    ).read_text(encoding="utf-8")
 
-    with pytest.raises(ImportRequestError, match=r"uniquely place|Resolve"):
-        import_change_request(
-            ImportRequest(
-                config=load_config(config),
-                public_base=public_base,
-                public_head=public_head,
-                source_base=source_base,
-                destination=destination,
-                merge_import=True,
-            )
-        )
+    assert '"SECRET",  # copybarista:internal' in imported
+    transform = load_config(config).transforms[0]
+    assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_never_jumps_run_backward_into_earlier_scope(tmp_path: Path):
+    """A run whose preceding context was rewritten anchors FORWARD, never backward.
+
+    The stripped run's own function body is rewritten in public (no line inside it
+    aligns), but an UNRELATED earlier line (a module-level import) still aligns.
+    Placement must NOT jump backward to that earlier line -- dropping the run at
+    module top level, an entirely different scope, which the re-strip gate cannot
+    catch (the marker line strips away wherever it lands). Instead it anchors to
+    the nearest aligned line AT/AFTER the run, so the run lands at the tail of the
+    rewritten span it belonged to (here within ``a``, before ``def b``).
+    """
+    config = _internal_lines_config(tmp_path)
+    source_module = (
+        "import os\n"
+        "def a():\n"
+        "    tmp = compute()\n"
+        "    secret = 0  # copybarista:internal\n"
+        "    return tmp\n"
+        "def b():\n"
+        "    return 2\n"
+    )
+    public_head_module = (
+        "import os\ndef a(x):\n    return x * 2\ndef b():\n    return 2\n"
+    )
+    imported = _run_internal_lines_import(
+        tmp_path=tmp_path,
+        config=config,
+        source_module=source_module,
+        public_head_module=public_head_module,
+    ).read_text(encoding="utf-8")
+
+    lines = imported.splitlines()
+    secret_line = next(i for i, s in enumerate(lines) if "secret = 0" in s)
+    import_line = next(i for i, s in enumerate(lines) if s.startswith("import os"))
+    def_a_line = next(i for i, s in enumerate(lines) if s.startswith("def a"))
+    def_b_line = next(i for i, s in enumerate(lines) if s.startswith("def b"))
+    # Must NOT sit at module top (right after 'import os', before def a).
+    assert secret_line != import_line + 1
+    # Lands within a's region: after def a, before def b.
+    assert def_a_line < secret_line < def_b_line
+    transform = load_config(config).transforms[0]
+    assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_appends_run_when_last_function_wholly_rewritten(tmp_path: Path):
+    """A run in the last function, whose whole body was rewritten, appends at end.
+
+    The run's preceding context is rewritten AND no kept line aligns after it, so
+    it is trailing: append at the end. Re-export strips it again, reproducing the
+    public head; placement is left for human review in the import PR.
+    """
+    config = _internal_lines_config(tmp_path)
+    source_module = (
+        "def a(name):\n"
+        "    tmp = build()\n"
+        "    secret = 0  # copybarista:internal\n"
+        "    return tmp\n"
+    )
+    public_head_module = "def a(name, *, extra):\n    return [extra, 1, 2]\n"
+    imported = _run_internal_lines_import(
+        tmp_path=tmp_path,
+        config=config,
+        source_module=source_module,
+        public_head_module=public_head_module,
+    ).read_text(encoding="utf-8")
+
+    assert "secret = 0  # copybarista:internal" in imported
+    transform = load_config(config).transforms[0]
+    assert strip_source_text(imported, transform) == public_head_module
 
 
 def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path):
@@ -1261,6 +1306,77 @@ def test_splice_source_only_regions_reinserts_and_round_trips(
         source_text=source, public_text=public, transform=transform
     )
     assert strip_source_text(reversed_text, transform) == public
+
+
+_INTERNAL_LINES = Transform(id="il", type="internal_lines", path="m.py", start="# INT")
+
+
+def test_anchor_preserves_source_order_of_multiple_runs():
+    """Two source-only runs must keep their SOURCE order when placed together.
+
+    When several runs collapse onto the same public anchor position (their local
+    context was rewritten to a single line), inserting them must preserve their
+    original file order. Regression: a bottom-up splice at one index prepended
+    each later run, reversing them -- the two distinct removed regions came out
+    swapped while re-strip still equalled public (the gate cannot see order).
+    """
+    source = (
+        "aaa\n"
+        "first_A = 0  # INT\n"
+        "first_B = 0  # INT\n"
+        "bbb\n"
+        "second_A = 0  # INT\n"
+        "second_B = 0  # INT\n"
+        "tail\n"
+    )
+    public = "X\ntail\n"
+
+    out = _anchor_source_only_regions(
+        source_text=source, public_text=public, transform=_INTERNAL_LINES
+    )
+    assert out is not None
+    assert strip_source_text(out, _INTERNAL_LINES) == public
+    # first_* run must appear before second_* run.
+    assert out.index("first_A") < out.index("second_A")
+
+
+def test_anchor_rejects_non_monotonic_public_reorder():
+    """A public block REORDER (non-monotonic alignment) must not silently detach.
+
+    When public reorders whole blocks so the run's neighbors move past each other,
+    the run's surviving neighbors no longer bracket a single slot; placing it by
+    one neighbor detaches it from the others. That is an undetermined position and
+    must be rejected, not silently emitted at the wrong spot. Regression: the run
+    landed at end-of-file, detached from its true neighbors.
+    """
+    source = "h1\nh2\nnote = 0  # INT\nt1\nt2\n"
+    public = "t1\nt2\nh1\nh2\n"  # blocks reordered
+
+    out = _anchor_source_only_regions(
+        source_text=source, public_text=public, transform=_INTERNAL_LINES
+    )
+    # The run's slot did not survive as a contiguous region -> reject.
+    assert out is None
+
+
+def test_anchor_places_trailing_run_after_rewritten_neighbor():
+    """A run at EOF whose neighbor was rewritten appends after it, not reject.
+
+    When a run is the last thing in the file and its only neighbor (the preceding
+    line) was rewritten, tail placement is unambiguous: it goes after that
+    rewritten line. Regression: this was falsely rejected because no kept line
+    followed the run and the before-neighbor did not align.
+    """
+    source = "keep_top\nreal = 1\nnote = 0  # INT\n"
+    public = "keep_top\nreal = 2\n"  # 'real' rewritten
+
+    out = _anchor_source_only_regions(
+        source_text=source, public_text=public, transform=_INTERNAL_LINES
+    )
+    assert out is not None
+    assert strip_source_text(out, _INTERNAL_LINES) == public
+    # The run lands after the rewritten 'real = 2' line (tail of its region).
+    assert out.index("note") > out.index("real = 2")
 
 
 def test_removed_regions_rejects_else_block_rewrite():
