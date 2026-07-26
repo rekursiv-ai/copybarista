@@ -23,7 +23,7 @@ TransformType = Literal[
     "internal_lines",
     "uncomment",
 ]
-DEFAULT_GIT_BRANCH: Final = "main"
+DEFAULT_GIT_BRANCH: Final = "main"  # config-globals: ignore -- shared default imported by copy_bara_sky.py; threading would cross the module boundary
 
 
 class _SkyConfigLoader(Protocol):

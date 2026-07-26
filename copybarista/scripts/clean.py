@@ -35,7 +35,7 @@ DEFAULT_TARGETS = (
     "scripts/__pycache__",
     "tests/__pycache__",
     "private/__pycache__",
-)
+)  # config-globals: ignore -- fixed manifest of project-local artifact paths, not a tunable
 
 
 def main() -> int:

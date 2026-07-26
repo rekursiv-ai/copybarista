@@ -43,7 +43,7 @@ from copybarista.workflow import (
 
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")
-LS_REMOTE_NO_MATCH = 2
+LS_REMOTE_NO_MATCH = 2  # config-globals: ignore -- git ls-remote exit code (documented protocol), not a tunable
 
 
 class GitCommands(Protocol):
