@@ -17,6 +17,7 @@ public checkout, and run it again in the public repository with
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import argparse
 import sys
@@ -43,7 +44,7 @@ BLOCKED_ROOT_PATHS = frozenset(
     )
 )
 BLOCKED_EXACT_PATHS = frozenset((".github/workflows/pages.yml",))
-PRIVATE_SYNC_MARKERS = (  # config-globals: ignore -- static release-policy table.
+PRIVATE_SYNC_MARKERS: Final = (
     "<!-- copybarista:private-sync:start -->",
     "<!-- copybarista:private-sync:end -->",
 )
@@ -56,7 +57,7 @@ TEXT_SCAN_SKIP_PATHS = frozenset(
         "copybarista/scripts/check_release_tree_test.py",
     )
 )
-BLOCKED_TEXT = (  # config-globals: ignore -- static release-policy table.
+BLOCKED_TEXT: Final = (
     ("loop" + "/experimental", "monorepo path"),
     ("loop" + ".experimental", "monorepo import"),
     ("loop" + "/lib", "monorepo path"),
@@ -70,7 +71,7 @@ BLOCKED_TEXT = (  # config-globals: ignore -- static release-policy table.
     ("Rat" + "lab", "private project name"),
     ("rat" + "lab", "private project name"),
 )
-BLOCKED_TEXT_BY_PATH = {  # config-globals: ignore -- static release-policy table.
+BLOCKED_TEXT_BY_PATH: Final = {
     ".gitignore": ("private/fixtures",),
     ".pre-commit-config.yaml": (
         "|private/",
@@ -83,7 +84,7 @@ BLOCKED_TEXT_BY_PATH = {  # config-globals: ignore -- static release-policy tabl
         '"private/fixtures/**/*.py"',
     ),
 }
-REQUIRED_PATHS = (  # config-globals: ignore -- static release-policy table.
+REQUIRED_PATHS: Final = (
     ".github/workflows/sync-to-source.yml",
     "LICENSE",
     "README.md",
@@ -91,7 +92,7 @@ REQUIRED_PATHS = (  # config-globals: ignore -- static release-policy table.
     "copybarista/scripts",
     "pyproject.toml",
 )
-REQUIRED_ANY_PATH_GROUPS = (  # config-globals: ignore -- static release-policy table.
+REQUIRED_ANY_PATH_GROUPS: Final = (
     (".github/workflows/ci.yml", ".github/workflows/package-validation.yml"),
 )
 

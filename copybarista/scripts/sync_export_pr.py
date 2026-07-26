@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TextIO, cast
+from typing import Final, TextIO, cast
 
 import argparse
 import hashlib
@@ -39,29 +39,19 @@ from copybarista.template import compile_replace
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
-DEFAULT_SYNC_LABEL = (
-    "Copybarista"  # config-globals: ignore -- static default/protocol constant.
-)
-DEFAULT_SYNC_USER_EMAIL = "copybarista@example.com"  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_SYNC_USER_NAME = (
-    "copybarista"  # config-globals: ignore -- static default/protocol constant.
-)
-DEFAULT_EXPORT_BRANCH_PREFIX = (
-    "copybarista/export/"  # config-globals: ignore -- static default/protocol constant.
-)
-DEFAULT_EXPORT_TITLE = "Update public export"  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_EXPORT_DESCRIPTION = "Updates the generated public repository export."  # config-globals: ignore -- static default/protocol constant.
-CONTROL_CHAR_BOUND = 32  # config-globals: ignore -- static default/protocol constant.
-PR_STATE_VERSION = "1"  # config-globals: ignore -- static default/protocol constant.
-PR_MARKER_PREFIX = "<!-- copybarista:pr-state "  # config-globals: ignore -- static default/protocol constant.
-PR_ENTRY_PREFIX = "<!-- copybarista:pr-entry "  # config-globals: ignore -- static default/protocol constant.
-DEFAULT_TYPE_CHECK_TARGETS = (
-    ".",
-)  # config-globals: ignore -- static default/protocol constant.
-GITHUB_RETRY_ATTEMPTS = 3  # config-globals: ignore -- static default/protocol constant.
-GITHUB_RETRY_DELAY_SEC = (
-    2  # config-globals: ignore -- static default/protocol constant.
-)
+DEFAULT_SYNC_LABEL: Final = "Copybarista"
+DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
+DEFAULT_SYNC_USER_NAME: Final = "copybarista"
+DEFAULT_EXPORT_BRANCH_PREFIX: Final = "copybarista/export/"
+DEFAULT_EXPORT_TITLE: Final = "Update public export"
+DEFAULT_EXPORT_DESCRIPTION: Final = "Updates the generated public repository export."
+CONTROL_CHAR_BOUND: Final = 32
+PR_STATE_VERSION: Final = "1"
+PR_MARKER_PREFIX: Final = "<!-- copybarista:pr-state "
+PR_ENTRY_PREFIX: Final = "<!-- copybarista:pr-entry "
+DEFAULT_TYPE_CHECK_TARGETS: Final = (".",)
+GITHUB_RETRY_ATTEMPTS: Final = 3
+GITHUB_RETRY_DELAY_SEC: Final = 2
 PR_TEMPLATE_PATHS = (
     Path(".github/PULL_REQUEST_TEMPLATE.md"),
     Path(".github/pull_request_template.md"),
