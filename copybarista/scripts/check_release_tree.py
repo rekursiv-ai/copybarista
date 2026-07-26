@@ -17,7 +17,6 @@ public checkout, and run it again in the public repository with
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
 
 import argparse
 import sys
@@ -44,10 +43,6 @@ BLOCKED_ROOT_PATHS = frozenset(
     )
 )
 BLOCKED_EXACT_PATHS = frozenset((".github/workflows/pages.yml",))
-PRIVATE_SYNC_MARKERS: Final = (
-    "<!-- copybarista:private-sync:start -->",
-    "<!-- copybarista:private-sync:end -->",
-)
 TEXT_SCAN_NAMES = frozenset((".gitignore", ".pre-commit-config.yaml"))
 TEXT_SCAN_SUFFIXES = frozenset((".md", ".mmd", ".py", ".toml", ".yaml", ".yml"))
 TEXT_SCAN_SKIP_PATHS = frozenset(
@@ -56,44 +51,6 @@ TEXT_SCAN_SKIP_PATHS = frozenset(
         "copybarista/scripts/check_release_tree.py",
         "copybarista/scripts/check_release_tree_test.py",
     )
-)
-BLOCKED_TEXT: Final = (
-    ("loop" + "/experimental", "monorepo path"),
-    ("loop" + ".experimental", "monorepo import"),
-    ("loop" + "/lib", "monorepo path"),
-    ("loop" + ".lib", "monorepo import"),
-    ("/Users" + "/dan", "local developer path"),
-    ("~/" + "loop", "local developer path"),
-    ("Switch" + "board", "private project name"),
-    ("switch" + "board", "private project name"),
-    ("Rab" + "ble", "private project name"),
-    ("rab" + "ble", "private project name"),
-    ("Rat" + "lab", "private project name"),
-    ("rat" + "lab", "private project name"),
-)
-BLOCKED_TEXT_BY_PATH: Final = {
-    ".gitignore": ("private/fixtures",),
-    ".pre-commit-config.yaml": (
-        "|private/",
-        "|site/",
-        "|copy\\.bara\\.sky",
-        "|copy\\.barista\\.toml",
-    ),
-    "pyproject.toml": (
-        '"private/**"',
-        '"private/fixtures/**/*.py"',
-    ),
-}
-REQUIRED_PATHS: Final = (
-    ".github/workflows/sync-to-source.yml",
-    "LICENSE",
-    "README.md",
-    "copybarista",
-    "copybarista/scripts",
-    "pyproject.toml",
-)
-REQUIRED_ANY_PATH_GROUPS: Final = (
-    (".github/workflows/ci.yml", ".github/workflows/package-validation.yml"),
 )
 
 
@@ -128,12 +85,21 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
         return (f"Release tree root does not exist: {root}",)
     errors: list[str] = [
         f"Missing required release path: {required}"
-        for required in REQUIRED_PATHS
+        for required in (
+            ".github/workflows/sync-to-source.yml",
+            "LICENSE",
+            "README.md",
+            "copybarista",
+            "copybarista/scripts",
+            "pyproject.toml",
+        )
         if not (root / required).exists()
     ]
     errors.extend(
         f"Missing required release path: one of {', '.join(group)}"
-        for group in REQUIRED_ANY_PATH_GROUPS
+        for group in (
+            (".github/workflows/ci.yml", ".github/workflows/package-validation.yml"),
+        )
         if not any((root / required).exists() for required in group)
     )
     errors.extend(_content_errors(root))
@@ -191,18 +157,49 @@ def _root_path_errors(*, rel: str, parts: tuple[str, ...]) -> tuple[str, ...]:
 
 def _content_errors(root: Path) -> tuple[str, ...]:
     """Return release-policy errors that require reading file contents."""
+    private_sync_markers = (
+        "<!-- copybarista:private-sync:start -->",
+        "<!-- copybarista:private-sync:end -->",
+    )
+    blocked_text = (
+        ("loop" + "/experimental", "monorepo path"),
+        ("loop" + ".experimental", "monorepo import"),
+        ("loop" + "/lib", "monorepo path"),
+        ("loop" + ".lib", "monorepo import"),
+        ("/Users" + "/dan", "local developer path"),
+        ("~/" + "loop", "local developer path"),
+        ("Switch" + "board", "private project name"),
+        ("switch" + "board", "private project name"),
+        ("Rab" + "ble", "private project name"),
+        ("rab" + "ble", "private project name"),
+        ("Rat" + "lab", "private project name"),
+        ("rat" + "lab", "private project name"),
+    )
+    blocked_text_by_path = {
+        ".gitignore": ("private/fixtures",),
+        ".pre-commit-config.yaml": (
+            "|private/",
+            "|site/",
+            "|copy\\.bara\\.sky",
+            "|copy\\.barista\\.toml",
+        ),
+        "pyproject.toml": (
+            '"private/**"',
+            '"private/fixtures/**/*.py"',
+        ),
+    }
     errors: list[str] = []
     for path in _content_paths(root):
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
-        if any(marker in text for marker in PRIVATE_SYNC_MARKERS):
+        if any(marker in text for marker in private_sync_markers):
             errors.append(f"Private sync marker must not be exported: {rel}")
-        for token, label in BLOCKED_TEXT:
+        for token, label in blocked_text:
             if token in text:
                 errors.append(f"{label} must not be exported: {rel}")
         errors.extend(
             f"Source-only config text must not be exported: {rel}"
-            for token in BLOCKED_TEXT_BY_PATH.get(rel, ())
+            for token in blocked_text_by_path.get(rel, ())
             if token in text
         )
     return tuple(errors)

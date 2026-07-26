@@ -42,14 +42,12 @@ DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_LABEL: Final = "Copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
-DEFAULT_EXPORT_BRANCH_PREFIX: Final = "copybarista/export/"
 DEFAULT_EXPORT_TITLE: Final = "Update public export"
 DEFAULT_EXPORT_DESCRIPTION: Final = "Updates the generated public repository export."
 CONTROL_CHAR_BOUND: Final = 32
 PR_STATE_VERSION: Final = "1"
 PR_MARKER_PREFIX: Final = "<!-- copybarista:pr-state "
 PR_ENTRY_PREFIX: Final = "<!-- copybarista:pr-entry "
-DEFAULT_TYPE_CHECK_TARGETS: Final = (".",)
 GITHUB_RETRY_ATTEMPTS: Final = 3
 GITHUB_RETRY_DELAY_SEC: Final = 2
 PR_TEMPLATE_PATHS = (
@@ -120,7 +118,7 @@ def run(argv: list[str] | None = None) -> int:
         release_check_script=Path(args.release_check_script)
         if args.release_check_script
         else None,
-        type_check_targets=tuple(args.type_check_target) or DEFAULT_TYPE_CHECK_TARGETS,
+        type_check_targets=tuple(args.type_check_target) or (".",),
         smoke_import=args.smoke_import,
         validation_commands=tuple(args.validation_command),
         dry_run=args.dry_run,
@@ -397,7 +395,7 @@ def _parser() -> argparse.ArgumentParser:
         "--branch-prefix",
         default=os.environ.get(
             "COPYBARISTA_EXPORT_BRANCH_PREFIX",
-            DEFAULT_EXPORT_BRANCH_PREFIX,
+            "copybarista/export/",
         ),
     )
     parser.add_argument(
