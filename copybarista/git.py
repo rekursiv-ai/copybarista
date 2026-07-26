@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Protocol
 from urllib.parse import unquote, urlparse
 
 import contextlib
@@ -43,7 +43,6 @@ from copybarista.workflow import (
 
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")
-LS_REMOTE_NO_MATCH: Final = 2
 
 
 class GitCommands(Protocol):
@@ -262,7 +261,7 @@ def _remote_branch_exists(
     )
     if result.returncode == 0:
         return True
-    if result.returncode == LS_REMOTE_NO_MATCH and not result.stderr.strip():
+    if result.returncode == 2 and not result.stderr.strip():
         return False
     raise ExportError(result.stderr.strip() or "Failed to inspect Git destination")
 

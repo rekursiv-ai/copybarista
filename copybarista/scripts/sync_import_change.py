@@ -29,11 +29,6 @@ import tempfile
 import time
 
 
-# Dotted module path of the copybarista package, run via `python -m` with
-# cwd=target_dir so the import resolves under the monorepo checkout.
-_COPYBARISTA_MODULE: Final = "copybarista"
-
-
 def _copybarista_argv(*, requirements: Path) -> list[str]:
     """Return the argv prefix that runs copybarista dependency-free.
 
@@ -56,7 +51,9 @@ def _copybarista_argv(*, requirements: Path) -> list[str]:
         str(requirements),
         "python",
         "-m",
-        _COPYBARISTA_MODULE,
+        # Dotted module path of the copybarista package, run via `python -m` with
+        # cwd=target_dir so the import resolves under the monorepo checkout.
+        "copybarista",
     ]
 
 
@@ -95,7 +92,6 @@ DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_LABEL: Final = "Copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
-DEFAULT_IMPORT_BRANCH_PREFIX: Final = "copybarista/import/"
 CONTROL_CHAR_BOUND: Final = 32
 GITHUB_RETRY_ATTEMPTS: Final = 3
 GITHUB_RETRY_DELAY_SEC: Final = 2
@@ -247,7 +243,7 @@ def _parser() -> argparse.ArgumentParser:
         "--branch-prefix",
         default=os.environ.get(
             "COPYBARISTA_IMPORT_BRANCH_PREFIX",
-            DEFAULT_IMPORT_BRANCH_PREFIX,
+            "copybarista/import/",
         ),
     )
     parser.add_argument(

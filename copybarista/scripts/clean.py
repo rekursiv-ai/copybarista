@@ -14,7 +14,6 @@ remain available for tests.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
 
 import argparse
 import shutil
@@ -22,21 +21,6 @@ import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-DEFAULT_TARGETS: Final = (
-    ".coverage",
-    ".pytest_cache",
-    ".ruff_cache",
-    "build",
-    "dist",
-    "htmlcov",
-    "copybarista.egg-info",
-    "copybarista/__pycache__",
-    "examples/__pycache__",
-    "scripts/__pycache__",
-    "tests/__pycache__",
-    "private/__pycache__",
-)
 
 
 def main() -> int:
@@ -57,7 +41,20 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    targets: list[str] = list(DEFAULT_TARGETS)
+    targets: list[str] = [
+        ".coverage",
+        ".pytest_cache",
+        ".ruff_cache",
+        "build",
+        "dist",
+        "htmlcov",
+        "copybarista.egg-info",
+        "copybarista/__pycache__",
+        "examples/__pycache__",
+        "scripts/__pycache__",
+        "tests/__pycache__",
+        "private/__pycache__",
+    ]
     if args.venv:
         targets.append(".venv")
 
