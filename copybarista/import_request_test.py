@@ -705,6 +705,89 @@ def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     )
 
 
+def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
+    """A whole-tree ``ruff_format`` (``path = "."``) reformats imported files.
+
+    Every shipped config declares ``ruff_format`` with ``path = "."`` (format the
+    whole staged tree), not a per-file glob. The post-import reformat must treat
+    that whole-tree marker as matching every reversed file; otherwise it never
+    runs and a namespace reversal that reorders import groups lands unsorted,
+    tripping ``I001`` in the import PR (the wesearch s2 import regression).
+    """
+    source_base = tmp_path / "source-base"
+    source_project = source_base / "internal/demo"
+    (source_project / "pkg").mkdir(parents=True)
+    (source_project / "pkg/module.py").write_text(
+        "from deep.pkg.providers import client\n"
+        "from shallow.lib import util\n"
+        "\n"
+        "VALUE = (client, util)\n",
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    public_body = (
+        "from pub.lib import util\n"
+        "from pub.providers import client\n"
+        "\n"
+        "VALUE = (client, util)\n"
+    )
+    (public_base / "pkg/module.py").write_text(public_body, encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        public_body + "EXTRA = 1\n", encoding="utf-8"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from shallow.lib"
+        after = "from pub.lib"
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "from deep.pkg.providers"
+        after = "from pub.providers"
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+    (destination / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+    )
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            verify=False,
+        )
+    )
+
+    written = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
+    assert written.index("from deep.pkg.providers") < written.index(
+        "from shallow.lib"
+    ), f"whole-tree ruff_format did not reformat imported file:\n{written}"
+
+
 def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
     paths = _fixture(tmp_path, with_transform=False)
     config = tmp_path / "copy-empty-after.toml"
@@ -1886,6 +1969,100 @@ def test_merge_import_regex_groups_reverse_only_rewrites_module_tokens(
         'rules = root / ".widget" / "rules"\n'
         '"""Configure a widget model here."""\n'
         "LOCAL = 9\n"
+    )
+
+
+def test_import_overlapping_namespace_transforms_do_not_double_prefix(
+    tmp_path: Path,
+):
+    """Reversing a dotted + bare namespace pair never doubles the source prefix.
+
+    Mirrors the wesearch config: a dotted ``loop.pkg.${s}`` <-> ``pkg.${s}`` rule
+    plus a bare unanchored ``loop.pkg`` <-> ``pkg`` mop-up rule. Forward, the
+    dotted rule runs first and the bare rule only catches leftovers. Reversing
+    naively (each rule applied to the previous rule's output) makes the bare
+    reverse rewrite ``pkg.x`` -> ``loop.pkg.x`` and the dotted reverse then match
+    ``pkg.x`` inside it, producing ``loop.loop.pkg.x``. The reverse must instead
+    rewrite each public token exactly once.
+
+    Runs under ``merge_import`` -- the mode the sync automation uses
+    (``scripts/sync_import_change.py`` passes ``--merge-import``), which skips
+    the strict-mode injective guard and whole-tree re-export check. That is the
+    exact path that shipped the doubled ``loop.loop.wesearch`` import PR.
+    """
+    source_base = tmp_path / "source-base"
+    source_project = source_base / "internal/demo"
+    (source_project / "pkg").mkdir(parents=True)
+    (source_project / "pkg/module.py").write_text(
+        "from loop.acme.errors import FetchError\n"
+        "from loop.acme.fetch import fetch\n"
+        'data_dir = home("loop.acme")\n',
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/module.py").write_text(
+        "from acme.errors import FetchError\n"
+        "from acme.fetch import fetch\n"
+        'data_dir = home("acme")\n',
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from acme.errors import FetchError\n"
+        "from acme.fetch import fetch\n"
+        "from acme.paper import PaperRecord\n"
+        'data_dir = home("acme")\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "loop.acme.${s}"
+        after = "acme.${s}"
+        regex_groups = { s = "[A-Za-z_]" }
+        required = false
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "loop.acme"
+        after = "acme"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8"
+    ) == (
+        "from loop.acme.errors import FetchError\n"
+        "from loop.acme.fetch import fetch\n"
+        "from loop.acme.paper import PaperRecord\n"
+        'data_dir = home("loop.acme")\n'
     )
 
 
