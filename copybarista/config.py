@@ -25,14 +25,17 @@ TransformType = Literal[
 ]
 DEFAULT_GIT_BRANCH: Final = "main"
 
-# Python build artifacts and local virtualenvs that must never be swept into an
-# export. A local `uv sync`/`pytest` run in the source tree (or in a verbatim
-# `.export/` staging dir) leaves these behind; the `.venv` in particular holds
-# symlinks pointing outside the source root, which the export symlink guard
-# rejects outright. Every export selection and `[[files.copy]]` prepends these
-# unless it opts out with `use_default_python_excludes = false`. Dir-scoped: each
-# matches the named directory at any depth (and `*.pyc` at any depth), never a
-# same-named file.
+# Python build artifacts, caches, and local virtualenvs that must never be swept
+# into an export. A local `uv sync`/`pytest` run in the source tree (or in a
+# verbatim `.export/` staging dir) leaves these behind; the `.venv` in particular
+# holds symlinks pointing outside the source root, which the export symlink guard
+# rejects outright. An export selection or `[[files.copy]]` prepends these only
+# when it opts in with `use_default_python_excludes = true`. This is the
+# single source of truth for Python artifacts; `sync_setup.DEFAULT_EXCLUDES`
+# extends it with copybarista control files. Each `dir/**` entry matches the
+# directory's contents at the selection root and, via its `**/dir/**` sibling, at
+# any depth; a bare directory node with no contents (or a same-named file) is not
+# matched, which is harmless because the export walker never stages empty dirs.
 DEFAULT_PYTHON_EXCLUDES: Final = (
     ".venv/**",
     "**/.venv/**",
@@ -50,6 +53,14 @@ DEFAULT_PYTHON_EXCLUDES: Final = (
     "**/*.pyc",
     "*.egg-info/**",
     "**/*.egg-info/**",
+    "build/**",
+    "**/build/**",
+    "dist/**",
+    "**/dist/**",
+    "htmlcov/**",
+    "**/htmlcov/**",
+    ".coverage",
+    "**/.coverage",
 )
 
 
@@ -100,7 +111,7 @@ class FileCopy:
     destination: str
     include: tuple[str, ...] = ("**",)
     exclude: tuple[str, ...] = ()
-    use_default_python_excludes: bool = True
+    use_default_python_excludes: bool = False
 
     def effective_exclude(self) -> tuple[str, ...]:
         """Return exclude patterns with default Python artifacts prepended."""
@@ -131,7 +142,7 @@ class FileSelection:
     destination_prefix_exclude: tuple[str, ...] = ()
     copy: tuple[FileCopy, ...] = ()
     write: tuple[FileWrite, ...] = ()
-    use_default_python_excludes: bool = True
+    use_default_python_excludes: bool = False
 
     def effective_exclude(self) -> tuple[str, ...]:
         """Return exclude patterns with default Python artifacts prepended."""
@@ -322,7 +333,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             for idx, entry in enumerate(_list(files, "copy"), start=1)
         ),
         use_default_python_excludes=_bool(
-            files, "use_default_python_excludes", default=True
+            files, "use_default_python_excludes", default=False
         ),
         write=tuple(
             _parse_file_write(idx=idx, raw_write=entry)
@@ -405,8 +416,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             "destination_prefix_exclude = "
             f"{_toml_list(config.files.destination_prefix_exclude)}"
         )
-    if not config.files.use_default_python_excludes:
-        lines.append("use_default_python_excludes = false")
+    if config.files.use_default_python_excludes:
+        lines.append("use_default_python_excludes = true")
     for file_copy in config.files.copy:
         lines.extend(["", "[[files.copy]]"])
         lines.append(f"source = {_toml_string(file_copy.source)}")
@@ -415,8 +426,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             lines.append(f"include = {_toml_list(file_copy.include)}")
         if file_copy.exclude:
             lines.append(f"exclude = {_toml_list(file_copy.exclude)}")
-        if not file_copy.use_default_python_excludes:
-            lines.append("use_default_python_excludes = false")
+        if file_copy.use_default_python_excludes:
+            lines.append("use_default_python_excludes = true")
     for file_write in config.files.write:
         lines.extend(["", "[[files.write]]"])
         lines.append(f"path = {_toml_string(file_write.path)}")
@@ -605,7 +616,7 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
             )
         ),
         use_default_python_excludes=_bool(
-            raw_copy, "use_default_python_excludes", default=True
+            raw_copy, "use_default_python_excludes", default=False
         ),
     )
 
