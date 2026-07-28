@@ -509,7 +509,7 @@ class ChangeRequestImporter:
         """
         if not any(
             transform.type == "ruff_format"
-            and _ruff_format_matches(transform, change.public, self.config.globstar)
+            and _ruff_format_matches(transform, change.public)
             for transform in self.config.transforms
         ):
             return
@@ -1028,20 +1028,22 @@ def _matches_transform(
     return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
 
 
-def _ruff_format_matches(
-    transform: Transform, public_path: str, globstar: Globstar
-) -> bool:
+def _ruff_format_matches(transform: Transform, public_path: str) -> bool:
     """Return whether a ``ruff_format`` transform reformats a public path.
 
-    Forward, ``ruff_format`` targets ``root / transform.path`` and formats it
-    whole (``transforms._ruff_format``), so ``path = "."`` / ``""`` means the
-    entire staged tree -- every file. A plain glob match on ``.`` matches only
-    the literal string ``"."`` and would exclude every real file, so the
-    whole-tree marker is special-cased to match unconditionally.
+    Forward, ``ruff_format`` targets ``root / transform.path`` and formats that
+    whole SUBTREE (``transforms._ruff_format``): ``path = "pkg"`` formats every
+    file under ``pkg/``, and ``path = "."`` / ``""`` formats the entire tree. So
+    the import-side match must be a subtree test, not a literal glob match -- a
+    glob on ``"pkg"`` matches only the path ``"pkg"`` itself, never ``pkg/foo.py``
+    (and a glob on ``"."`` matches nothing), which would silently skip the
+    post-import reformat for every file under the target.
     """
-    if transform.path in (".", "", "./"):
+    path = transform.path
+    if path in (".", "", "./"):
         return True
-    return _matches_transform(transform, public_path, globstar)
+    path = path.removesuffix("/")
+    return public_path == path or public_path.startswith(f"{path}/")
 
 
 def _has_explicit_reversal(transform: Transform) -> bool:

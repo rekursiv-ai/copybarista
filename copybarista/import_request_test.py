@@ -21,6 +21,7 @@ from copybarista.import_request import (
     TreeSnapshot,
     _anchor_source_only_regions,
     _removed_regions,
+    _ruff_format_matches,
     _splice_source_only_regions,
     _three_way_merge,
     import_change_request,
@@ -786,6 +787,43 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     assert written.index("from deep.pkg.providers") < written.index(
         "from shallow.lib"
     ), f"whole-tree ruff_format did not reformat imported file:\n{written}"
+
+
+@pytest.mark.parametrize(
+    ("ruff_path", "public_path", "expected"),
+    [
+        # Whole-tree markers match every file.
+        (".", "pkg/module.py", True),
+        ("", "pkg/module.py", True),
+        ("./", "module.py", True),
+        # A subtree path matches the directory and everything under it, mirroring
+        # forward ``root / transform.path`` (a whole-subtree format), but nothing
+        # outside it -- and not a sibling sharing the name as a prefix.
+        ("pkg", "pkg", True),
+        ("pkg", "pkg/module.py", True),
+        ("pkg", "pkg/sub/deep.py", True),
+        ("pkg/", "pkg/module.py", True),
+        ("pkg", "other/module.py", False),
+        ("pkg", "pkgother/module.py", False),
+        # A single-file target matches exactly that file.
+        ("pkg/module.py", "pkg/module.py", True),
+        ("pkg/module.py", "pkg/other.py", False),
+    ],
+)
+def test_ruff_format_matches_treats_path_as_subtree(
+    ruff_path: str, public_path: str, expected: bool
+) -> None:
+    """``ruff_format`` path matching mirrors the forward whole-subtree format.
+
+    Forward ``_ruff_format`` formats ``root / transform.path`` as a subtree, so a
+    subdir path (``pkg``) must match every file under it on import -- not only the
+    literal path string. A literal-glob match would silently skip the post-import
+    reformat for every file under a non-``"."`` target.
+    """
+    transform = Transform(
+        id="fmt", type="ruff_format", path=ruff_path, required=False, reversible=True
+    )
+    assert _ruff_format_matches(transform, public_path) is expected
 
 
 def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
