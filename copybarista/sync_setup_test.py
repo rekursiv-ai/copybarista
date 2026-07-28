@@ -7,8 +7,10 @@ from typing import Any
 
 import pytest
 
+from copybarista.config import DEFAULT_PYTHON_EXCLUDES
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
+    DEFAULT_EXCLUDES,
     SyncSettings,
     check_sync_config,
     export_workflow,
@@ -73,6 +75,115 @@ def test_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
     check_sync_config(root=tmp_path)
+
+
+def test_sync_setup_python_excludes_derive_from_config_defaults():
+    # The single source of truth for Python artifacts is config.DEFAULT_PYTHON_
+    # EXCLUDES. sync_setup adds only the copybarista control files on top, so the
+    # two lists never diverge.
+    assert set(DEFAULT_PYTHON_EXCLUDES) <= set(DEFAULT_EXCLUDES)
+    control_only = set(DEFAULT_EXCLUDES) - set(DEFAULT_PYTHON_EXCLUDES)
+    assert control_only == {
+        "copy.bara.sky",
+        "copy.barista.toml",
+        "copybarista.sync.toml",
+    }
+
+
+def test_check_sync_config_accepts_config_relying_on_default_excludes(
+    tmp_path: Path,
+):
+    # A config that omits the Python-artifact patterns from [files].exclude is
+    # valid when it opts into the default set. Only the control-file exclusions
+    # (not covered by the default) remain mandatory.
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "configgle"
+        mode = "squash"
+        source_root = "packages/configgle"
+
+        [files]
+        include = ["**"]
+        use_default_python_excludes = true
+        exclude = [
+          "copy.bara.sky",
+          "copy.barista.toml",
+          "copybarista.sync.toml",
+        ]
+
+        [[leak_check.forbidden_path]]
+        id = "source-only-paths"
+        paths = ["private/**"]
+        message = "source-only path was exported"
+        """,
+        encoding="utf-8",
+    )
+
+    check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_config_not_opting_into_default_excludes(
+    tmp_path: Path,
+):
+    # A managed config that neither lists Python artifacts nor opts into the
+    # default set would leak caches/venvs; the gate rejects it.
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "configgle"
+        mode = "squash"
+        source_root = "packages/configgle"
+
+        [files]
+        include = ["**"]
+        exclude = [
+          "copy.bara.sky",
+          "copy.barista.toml",
+          "copybarista.sync.toml",
+        ]
+
+        [[leak_check.forbidden_path]]
+        id = "source-only-paths"
+        paths = ["private/**"]
+        message = "source-only path was exported"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="use_default_python_excludes"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_config_missing_control_excludes(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "configgle"
+        mode = "squash"
+        source_root = "packages/configgle"
+
+        [files]
+        include = ["**"]
+        use_default_python_excludes = true
+        exclude = ["copy.bara.sky"]
+
+        [[leak_check.forbidden_path]]
+        id = "source-only-paths"
+        paths = ["private/**"]
+        message = "source-only path was exported"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"must exclude copy\.barista\.toml"):
+        check_sync_config(root=tmp_path)
 
 
 def test_check_sync_config_rejects_missing_public_import_workflow(tmp_path: Path):

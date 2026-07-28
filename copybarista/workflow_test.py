@@ -111,29 +111,12 @@ def test_workflow_runner_rejects_symlink_outside_source_root(tmp_path: Path):
 
 def test_default_python_excludes_skip_out_of_root_venv_symlink(tmp_path: Path):
     # A local `uv sync` leaves .venv/bin/python as a symlink to an interpreter
-    # outside the source root. The default python excludes must filter it before
+    # outside the source root. Opting into the python excludes filters it before
     # the symlink guard runs, so the export does not abort.
     source_ref = tmp_path / "repo"
     project = source_ref / "project"
     (project / ".venv" / "bin").mkdir(parents=True)
     (project / "module.py").write_text("x = 1\n", encoding="utf-8")
-    outside = tmp_path / "python"
-    outside.write_text("#!/bin/sh\n", encoding="utf-8")
-    (project / ".venv" / "bin" / "python").symlink_to(outside)
-
-    staged = WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-        tmp_path / "stage"
-    )
-
-    destinations = {entry.destination for entry in staged.files}
-    assert "module.py" in destinations
-    assert not any(".venv" in dest for dest in destinations)
-
-
-def test_venv_symlink_rejected_when_default_excludes_disabled(tmp_path: Path):
-    source_ref = tmp_path / "repo"
-    project = source_ref / "project"
-    (project / ".venv" / "bin").mkdir(parents=True)
     outside = tmp_path / "python"
     outside.write_text("#!/bin/sh\n", encoding="utf-8")
     (project / ".venv" / "bin" / "python").symlink_to(outside)
@@ -144,15 +127,36 @@ def test_venv_symlink_rejected_when_default_excludes_disabled(tmp_path: Path):
         files=FileSelection(
             include=("**",),
             exclude=(),
-            use_default_python_excludes=False,
+            use_default_python_excludes=True,
         ),
         transforms=(),
         folder=FolderDestination(),
         git=GitDestination(),
     )
 
+    staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
+        tmp_path / "stage"
+    )
+
+    destinations = {entry.destination for entry in staged.files}
+    assert "module.py" in destinations
+    assert not any(".venv" in dest for dest in destinations)
+
+
+def test_venv_symlink_rejected_when_default_excludes_disabled(tmp_path: Path):
+    # With the python excludes off (the default), an out-of-root .venv symlink is
+    # not filtered and the export aborts at the symlink guard.
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    (project / ".venv" / "bin").mkdir(parents=True)
+    outside = tmp_path / "python"
+    outside.write_text("#!/bin/sh\n", encoding="utf-8")
+    (project / ".venv" / "bin" / "python").symlink_to(outside)
+
     with pytest.raises(ExportError, match="Symlink points outside"):
-        WorkflowRunner(config=config, source_ref=source_ref).stage(tmp_path / "stage")
+        WorkflowRunner(config=_config(), source_ref=source_ref).stage(
+            tmp_path / "stage"
+        )
 
 
 def test_workflow_runner_rejects_source_root_symlink_escape(tmp_path: Path):

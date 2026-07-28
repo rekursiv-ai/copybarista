@@ -14,28 +14,24 @@ import tomllib
 
 import yaml
 
-from copybarista.config import load_config
+from copybarista.config import DEFAULT_PYTHON_EXCLUDES, load_config
 from copybarista.errors import ConfigError
 
 
-DEFAULT_EXCLUDES: Final = (
-    ".pytest_cache/**",
-    "**/.pytest_cache/**",
-    ".ruff_cache/**",
-    "**/.ruff_cache/**",
-    ".venv/**",
-    "**/__pycache__/**",
-    "**/*.pyc",
-    "*.egg-info/**",
-    "**/*.egg-info/**",
-    "build/**",
-    "dist/**",
-    "htmlcov/**",
-    ".coverage",
+# Copybarista control files that must be excluded from every export selection.
+# Unlike Python build artifacts (which the export applies by default via
+# `config.DEFAULT_PYTHON_EXCLUDES`), these are not covered by that default, so a
+# generated config must list them explicitly and `check_sync_config` enforces it.
+CONTROL_EXCLUDES: Final = (
     "copy.bara.sky",
     "copy.barista.toml",
     "copybarista.sync.toml",
 )
+# Full exclude set rendered into a freshly generated `copy.barista.toml`: the
+# shared Python-artifact default plus the copybarista control files. The Python
+# subset is applied by default at export time even if a config omits it; it is
+# still rendered into new configs for readability and to document intent.
+DEFAULT_EXCLUDES: Final = DEFAULT_PYTHON_EXCLUDES + CONTROL_EXCLUDES
 CONTROL_CHAR_BOUND: Final = 32
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
@@ -331,7 +327,15 @@ def check_sync_config(*, root: Path) -> None:
     workflow_text = (root / ".github" / "workflows" / "sync-to-source.yml").read_text(
         encoding="utf-8"
     )
-    for path in DEFAULT_EXCLUDES:
+    # Managed configs opt into the shared Python-artifact default rather than
+    # enumerating caches/venvs; without it the export would leak them.
+    if not config.files.use_default_python_excludes:
+        raise ConfigError(
+            "copy.barista.toml [files] must set use_default_python_excludes = true."
+        )
+    # The copybarista control files are not covered by the default set, so they
+    # must still appear in the selection's exclude list.
+    for path in CONTROL_EXCLUDES:
         if path not in config.files.exclude:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
     if not config.leak_check.forbidden_path:
@@ -355,7 +359,7 @@ def copy_barista_toml(settings: SyncSettings) -> str:
       toml: Rendered ``copy.barista.toml`` contents.
 
     """
-    excludes = "\n".join(f"  {_toml_str(path)}," for path in DEFAULT_EXCLUDES)
+    excludes = "\n".join(f"  {_toml_str(path)}," for path in CONTROL_EXCLUDES)
     return _render_template(
         "copy.barista.toml.tmpl",
         {

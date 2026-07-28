@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from copybarista.cli import main
-from copybarista.config import load_config
+from copybarista.config import FileCopy, load_config, parse_config
 from copybarista.copy_bara_sky import (
+    TranslatedWorkflow,
     translate_copy_bara_sky_to_toml,
 )
 from copybarista.errors import ConfigError
@@ -684,6 +685,30 @@ def test_loads_sky_multiline_literal_replace(tmp_path: Path):
     assert all(transform.type == "replace" for transform in config.transforms)
     assert config.transforms[0].before == "old\nvalue"
     assert config.transforms[0].after == "new\nvalue"
+
+
+def test_to_raw_config_round_trips_copy_default_python_excludes_opt_in():
+    workflow = TranslatedWorkflow(
+        name="export",
+        mode="squash",
+        source_root="pkg",
+        include=("**",),
+        exclude=(),
+        transforms=(),
+        copies=(
+            FileCopy(
+                source="pkg/.export",
+                destination=".",
+                use_default_python_excludes=True,
+            ),
+        ),
+    )
+
+    parsed = parse_config(workflow.to_raw_config())
+
+    # The opt-in survives the sky -> raw -> parsed round trip (the field defaults
+    # to False, so a dropped field would silently disable it).
+    assert parsed.files.copy[0].use_default_python_excludes is True
 
 
 def test_translate_outputs_copybarista_toml(tmp_path: Path):

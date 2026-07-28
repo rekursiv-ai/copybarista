@@ -177,6 +177,9 @@ class TranslatedWorkflow:
                         "destination": copy.destination,
                         "include": list(copy.include),
                         "exclude": list(copy.exclude),
+                        "use_default_python_excludes": (
+                            copy.use_default_python_excludes
+                        ),
                     }
                     for copy in self.copies
                 ],

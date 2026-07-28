@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from copybarista.config import (
+    DEFAULT_PYTHON_EXCLUDES,
     load_config,
     workflow_to_toml,
 )
@@ -147,7 +148,7 @@ def test_loads_file_write_config(tmp_path: Path):
     assert 'content = "\\"\\"\\"Web helpers.\\"\\"\\"\\n"' in serialized
 
 
-def test_default_python_excludes_applied_by_default(tmp_path: Path):
+def test_default_python_excludes_off_by_default(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         """
@@ -166,6 +167,47 @@ def test_default_python_excludes_applied_by_default(tmp_path: Path):
         [[files.copy]]
         source = "shared/pkg"
         destination = "demo/pkg"
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    # The default set is opt-in: absent the flag, nothing is prepended.
+    assert config.files.use_default_python_excludes is False
+    assert config.files.effective_exclude() == ("build/**",)
+    assert config.files.copy[0].use_default_python_excludes is False
+    assert config.files.copy[0].effective_exclude() == ()
+
+
+def test_default_python_excludes_cover_build_artifacts():
+    # Build outputs and coverage artifacts are Python-generated and belong in the
+    # single default set, not duplicated in a second sync-only list.
+    for pattern in ("build/**", "dist/**", "htmlcov/**", ".coverage"):
+        assert pattern in DEFAULT_PYTHON_EXCLUDES
+
+
+def test_use_default_python_excludes_opt_in(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [destination.folder]
+        path = "/tmp/copybarista-demo"
+
+        [files]
+        include = ["**"]
+        exclude = ["build/**"]
+        use_default_python_excludes = true
+
+        [[files.copy]]
+        source = "shared/pkg"
+        destination = "demo/pkg"
+        use_default_python_excludes = true
         """,
         encoding="utf-8",
     )
@@ -173,7 +215,7 @@ def test_default_python_excludes_applied_by_default(tmp_path: Path):
     config = load_config(config_path)
 
     assert config.files.use_default_python_excludes is True
-    # Config-declared exclude is preserved and the defaults are prepended.
+    # Opting in prepends the defaults while preserving the declared exclude.
     effective = config.files.effective_exclude()
     assert ".venv/**" in effective
     assert "**/.venv/**" in effective
@@ -181,45 +223,11 @@ def test_default_python_excludes_applied_by_default(tmp_path: Path):
     assert "build/**" in effective
     # The raw config field stays exactly what the TOML declared.
     assert config.files.exclude == ("build/**",)
-    # A copy with no explicit opt-out also inherits the defaults.
     assert config.files.copy[0].use_default_python_excludes is True
     assert ".venv/**" in config.files.copy[0].effective_exclude()
-
-
-def test_use_default_python_excludes_opt_out(tmp_path: Path):
-    config_path = tmp_path / "copy.barista.toml"
-    config_path.write_text(
-        """
-        [workflow]
-        name = "demo"
-        mode = "squash"
-        source_root = "project"
-
-        [destination.folder]
-        path = "/tmp/copybarista-demo"
-
-        [files]
-        include = ["**"]
-        exclude = ["build/**"]
-        use_default_python_excludes = false
-
-        [[files.copy]]
-        source = "shared/pkg"
-        destination = "demo/pkg"
-        use_default_python_excludes = false
-        """,
-        encoding="utf-8",
-    )
-
-    config = load_config(config_path)
-
-    assert config.files.use_default_python_excludes is False
-    assert config.files.effective_exclude() == ("build/**",)
-    assert config.files.copy[0].use_default_python_excludes is False
-    assert config.files.copy[0].effective_exclude() == ()
-    # Round-trip preserves the opt-out on both the selection and the copy.
+    # Round-trip preserves the opt-in on both the selection and the copy.
     serialized = workflow_to_toml(config)
-    assert serialized.count("use_default_python_excludes = false") == 2
+    assert serialized.count("use_default_python_excludes = true") == 2
 
 
 def test_loads_leak_check_policy(tmp_path: Path):
