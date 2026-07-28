@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import difflib
+import re
 import shutil
 import stat
 import subprocess
@@ -24,7 +25,7 @@ from copybarista.config import Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
-from copybarista.template import compile_replace
+from copybarista.template import ReplaceTemplate, compile_replace
 from copybarista.transforms import (
     _strip_blocks_with_else,
     line_has_marker_token,
@@ -500,11 +501,15 @@ class ChangeRequestImporter:
 
         Runs with ``cwd=self.destination`` so ruff discovers the source tree's
         own config (e.g. ``known-first-party``), and only when a ``ruff_format``
-        transform's glob matches this change's public path.
+        transform's glob matches this change's public path. A whole-tree
+        ``ruff_format`` (``path = "."`` / ``""``, the shape every shipped config
+        uses) formats the entire staged tree on export, so it matches every
+        reversed file here -- a literal ``.`` glob would match nothing and the
+        reformat would silently never run (leaving isort-dirty imports).
         """
         if not any(
             transform.type == "ruff_format"
-            and _matches_transform(transform, change.public, self.config.globstar)
+            and _ruff_format_matches(transform, change.public, self.config.globstar)
             for transform in self.config.transforms
         ):
             return
@@ -656,18 +661,32 @@ class ChangeRequestImporter:
         return _with_outcome(change, "merged"), conflicted
 
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
-        """Undo supported content transforms for one public file."""
+        """Undo supported content transforms for one public file.
+
+        Reversible ``replace`` transforms are applied in one SIMULTANEOUS pass
+        per contiguous run (see ``_reverse_replace_all``): applying them
+        sequentially double-rewrites text whenever two forward transforms have
+        overlapping ``after`` strings (the wesearch bare/dotted namespace pair).
+        A ``strip_block`` / ``internal_lines`` reversal breaks a run because it
+        re-inserts source-only regions between replace groups; those runs are
+        fused separately, preserving each strip's exact position.
+        """
         content = data
         match_path = _reverse_move_path(
             public_path=public_path,
             transforms=self.config.transforms,
         )
+        pending: list[Transform] = []
         for transform in reversed(self.config.transforms):
             if transform.type in ("move", "ruff_format") or not transform.reversible:
                 continue
             if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
             if transform.type in ("strip_block", "internal_lines"):
+                content = self._flush_reverse_replaces(
+                    public_path=public_path, transforms=pending, content=content
+                )
+                pending = []
                 # Neither transform is invertible from the public tree: the
                 # removed source content (a marker-delimited block, or each line
                 # carrying the marker) is absent from public, so reversal cannot
@@ -681,28 +700,39 @@ class ChangeRequestImporter:
                     public_path=public_path, transform=transform, content=content
                 )
                 continue
-            try:
-                text = content.decode()
-            except UnicodeDecodeError as err:
-                raise ImportRequestError(
-                    f"Public path requires text reversal but is not UTF-8: "
-                    f"{public_path}"
-                ) from err
-            # A regex_groups transform anchors its reverse symmetrically, so the
-            # reversal is unambiguous by construction -- no heuristic guard.
-            # For a plain literal transform, strict imports use this guard as a
-            # proxy for "is the reversal unambiguous"; merge imports establish
-            # that ground truth directly by comparing the source's actual export
-            # to the public base/head, so the heuristic is redundant and wrong
-            # there (the source legitimately carries exported text from drift).
-            if not transform.regex_groups and not self.merge_import:
-                self._check_injective_reverse(
-                    public_path=public_path,
-                    transform=transform,
-                    text=text,
-                )
-            content = _reverse_replace(transform=transform, text=text).encode()
-        return content
+            pending.append(transform)
+        return self._flush_reverse_replaces(
+            public_path=public_path, transforms=pending, content=content
+        )
+
+    def _flush_reverse_replaces(
+        self, *, public_path: str, transforms: list[Transform], content: bytes
+    ) -> bytes:
+        """Reverse one contiguous run of ``replace`` transforms in a single pass."""
+        if not transforms:
+            return content
+        try:
+            text = content.decode()
+        except UnicodeDecodeError as err:
+            raise ImportRequestError(
+                f"Public path requires text reversal but is not UTF-8: {public_path}"
+            ) from err
+        # A regex_groups transform anchors its reverse symmetrically, so the
+        # reversal is unambiguous by construction -- no heuristic guard.
+        # For a plain literal transform, strict imports use this guard as a
+        # proxy for "is the reversal unambiguous"; merge imports establish
+        # that ground truth directly by comparing the source's actual export
+        # to the public base/head, so the heuristic is redundant and wrong
+        # there (the source legitimately carries exported text from drift).
+        if not self.merge_import:
+            for transform in transforms:
+                if not transform.regex_groups:
+                    self._check_injective_reverse(
+                        public_path=public_path,
+                        transform=transform,
+                        text=text,
+                    )
+        return _reverse_replace_all(transforms=tuple(transforms), text=text).encode()
 
     def _check_injective_reverse(
         self, *, public_path: str, transform: Transform, text: str
@@ -998,6 +1028,22 @@ def _matches_transform(
     return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
 
 
+def _ruff_format_matches(
+    transform: Transform, public_path: str, globstar: Globstar
+) -> bool:
+    """Return whether a ``ruff_format`` transform reformats a public path.
+
+    Forward, ``ruff_format`` targets ``root / transform.path`` and formats it
+    whole (``transforms._ruff_format``), so ``path = "."`` / ``""`` means the
+    entire staged tree -- every file. A plain glob match on ``.`` matches only
+    the literal string ``"."`` and would exclude every real file, so the
+    whole-tree marker is special-cased to match unconditionally.
+    """
+    if transform.path in (".", "", "./"):
+        return True
+    return _matches_transform(transform, public_path, globstar)
+
+
 def _has_explicit_reversal(transform: Transform) -> bool:
     """Return whether a transform defines a custom public-to-source rewrite."""
     return bool(transform.reverse_before or transform.reverse_after)
@@ -1045,6 +1091,101 @@ def _reverse_replace(*, transform: Transform, text: str) -> str:
             regex_groups=transform.regex_groups,
         ).apply(text)
     return text.replace(reverse_before, reverse_after)
+
+
+def _reverse_replace_all(*, transforms: tuple[Transform, ...], text: str) -> str:
+    """Apply several reverse replacements in ONE simultaneous left-to-right pass.
+
+    Applying reverse replacements one after another (each fed the previous one's
+    output) is wrong whenever two forward transforms have overlapping ``after``
+    strings. Forward, a later transform only mops up text an earlier one did not
+    consume; reversed, the earlier transform's reverse output becomes visible to
+    the later transform's reverse, which re-matches it and doubles the rewrite.
+    The wesearch pair is the canonical case: bare ``loop.wesearch`` <-> ``wesearch``
+    plus dotted ``loop.wesearch.${s}`` <-> ``wesearch.${s}``. Sequentially,
+    ``wesearch.errors`` -> ``loop.wesearch.errors`` (bare reverse) -> then the
+    dotted reverse matches ``wesearch.e`` inside it -> ``loop.loop.wesearch.errors``.
+
+    A single pass fixes this: scan the ORIGINAL public text once and, at each
+    position, take the longest reverse-``before`` match among all transforms,
+    emit its reverse-``after``, and advance past the consumed span. No transform
+    ever sees another's output, so each public token is rewritten exactly once.
+    Longest-match-wins makes the dotted rule (``wesearch.${s}``, which consumes
+    the following identifier char) win over the bare rule (``wesearch``) at a
+    shared start, reproducing the forward pipeline's precedence in reverse.
+
+    ``transforms`` are the reversible ``replace`` transforms in reversed
+    (public-to-source) order; ties at equal length break toward the earlier one
+    in that order, matching the sequential precedence this replaces.
+    """
+    if not transforms:
+        return text
+    if len(transforms) == 1:
+        return _reverse_replace(transform=transforms[0], text=text)
+    # Compile each reverse rule once: a regex_groups rule keeps its full
+    # ReplaceTemplate (pattern + after_tokens) so a match renders without
+    # recompiling; a literal rule matches its escaped reverse-before and emits
+    # a constant reverse-after.
+    matchers = tuple(_ReverseMatcher.build(transform) for transform in transforms)
+    result: list[str] = []
+    pos = 0
+    length = len(text)
+    while pos < length:
+        best: tuple[int, int, _ReverseMatcher, re.Match[str]] | None = None
+        for order, matcher in enumerate(matchers):
+            match = matcher.pattern.match(text, pos)
+            if match is None:
+                continue
+            span = match.end() - match.start()
+            if span == 0:
+                continue
+            # Longest match wins; on a tie the earlier reversed-order transform
+            # wins (lower ``order``), matching the sequential precedence.
+            if best is None or span > best[0] or (span == best[0] and order < best[1]):
+                best = (span, order, matcher, match)
+        if best is None:
+            result.append(text[pos])
+            pos += 1
+            continue
+        _, _, matcher, match = best
+        result.append(matcher.render(match))
+        pos = match.end()
+    return "".join(result)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ReverseMatcher:
+    """One reverse ``replace`` rule compiled once for the simultaneous pass."""
+
+    pattern: re.Pattern[str]
+    template: ReplaceTemplate | None
+    literal_after: str
+
+    @classmethod
+    def build(cls, transform: Transform) -> _ReverseMatcher:
+        """Compile a transform's reverse rule for repeated position matching."""
+        reverse_before = _reverse_before(transform)
+        if transform.regex_groups:
+            template = compile_replace(
+                before=reverse_before,
+                after=_reverse_after(transform),
+                regex_groups=transform.regex_groups,
+            )
+            return cls(pattern=template.pattern, template=template, literal_after="")
+        return cls(
+            pattern=re.compile(re.escape(reverse_before)),
+            template=None,
+            literal_after=_reverse_after(transform),
+        )
+
+    def render(self, match: re.Match[str]) -> str:
+        """Render this rule's reverse output for one match."""
+        if self.template is None:
+            return self.literal_after
+        return "".join(
+            match.group(token.value) if token.is_group else token.value
+            for token in self.template.after_tokens
+        )
 
 
 def _removed_regions(
