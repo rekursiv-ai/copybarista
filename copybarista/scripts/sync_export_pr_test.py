@@ -2445,9 +2445,7 @@ def test_postleakcheck_validation_runs_ty_check(
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
 
-    _postleakcheck_validation(
-        project=Path("/repo/pkg"), type_check_targets=("configgle",)
-    )
+    _postleakcheck_validation(project=Path("/repo/pkg"))
 
     assert [
         "uv",
@@ -2459,6 +2457,9 @@ def test_postleakcheck_validation_runs_ty_check(
         "check",
         ".",
     ] in calls
+    # Source-side basedpyright targets ``.`` (source layout), not the
+    # export-relative type_check_targets.
+    assert ["basedpyright", "/repo/pkg", "."] in calls
 
 
 def test_preleakcheck_validation_runs_lint_not_types(

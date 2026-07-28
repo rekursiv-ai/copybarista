@@ -93,7 +93,7 @@ class WorkflowRunner:
                 staging=staging,
                 matcher=GlobSet(
                     include=self.config.files.include,
-                    exclude=self.config.files.exclude,
+                    exclude=self.config.files.effective_exclude(),
                     globstar=self.config.globstar,
                 ),
                 prefixer=DestinationPrefixer.from_config(self.config),
@@ -110,7 +110,7 @@ class WorkflowRunner:
                     destination=file_copy.destination,
                     matcher=GlobSet(
                         include=file_copy.include,
-                        exclude=file_copy.exclude,
+                        exclude=file_copy.effective_exclude(),
                         globstar=self.config.globstar,
                     ),
                     record_phase=record_phase,

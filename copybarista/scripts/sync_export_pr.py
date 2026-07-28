@@ -308,9 +308,7 @@ def _run_export_sync(request: ExportRequest) -> None:
             manifest=manifest,
         )
         _log("Validating source checkout (types/tests).")
-        _postleakcheck_validation(
-            project=project, type_check_targets=request.type_check_targets
-        )
+        _postleakcheck_validation(project=project)
     if request.release_check_script:
         _log("Checking exported release tree.")
         # The release-check script ships inside the exported package (e.g.
@@ -625,13 +623,16 @@ def _preleakcheck_validation(*, project: Path) -> None:
     )
 
 
-def _postleakcheck_validation(
-    *, project: Path, type_check_targets: tuple[str, ...]
-) -> None:
+def _postleakcheck_validation(*, project: Path) -> None:
     """Run the slow source checks after the export+leak-check has passed."""
     uv_run = _uv_project_run(project)
     _run([*uv_run, "ty", "check", "."], cwd=project)
-    _run_basedpyright(project=project, targets=type_check_targets)
+    # Source checkout: the package sits directly in ``project``. type_check_targets
+    # are export-relative (e.g. ``madcatter``, which only exists as a subdir in the
+    # exported tree), so basedpyright the source against ``.`` like ``ty`` above.
+    # The exported tree's own basedpyright run happens in _validate_public via the
+    # configured validation_commands.
+    _run_basedpyright(project=project, targets=(".",))
     _run([*uv_run, "pytest", "-q"], cwd=project)
 
 

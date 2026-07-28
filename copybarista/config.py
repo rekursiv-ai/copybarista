@@ -25,6 +25,33 @@ TransformType = Literal[
 ]
 DEFAULT_GIT_BRANCH: Final = "main"
 
+# Python build artifacts and local virtualenvs that must never be swept into an
+# export. A local `uv sync`/`pytest` run in the source tree (or in a verbatim
+# `.export/` staging dir) leaves these behind; the `.venv` in particular holds
+# symlinks pointing outside the source root, which the export symlink guard
+# rejects outright. Every export selection and `[[files.copy]]` prepends these
+# unless it opts out with `use_default_python_excludes = false`. Dir-scoped: each
+# matches the named directory at any depth (and `*.pyc` at any depth), never a
+# same-named file.
+DEFAULT_PYTHON_EXCLUDES: Final = (
+    ".venv/**",
+    "**/.venv/**",
+    "__pycache__/**",
+    "**/__pycache__/**",
+    ".ruff_cache/**",
+    "**/.ruff_cache/**",
+    ".pytest_cache/**",
+    "**/.pytest_cache/**",
+    ".mypy_cache/**",
+    "**/.mypy_cache/**",
+    ".hypothesis/**",
+    "**/.hypothesis/**",
+    "*.pyc",
+    "**/*.pyc",
+    "*.egg-info/**",
+    "**/*.egg-info/**",
+)
+
 
 class _SkyConfigLoader(Protocol):
     """Deferred loader for `copy.bara.sky` configs.
@@ -73,6 +100,13 @@ class FileCopy:
     destination: str
     include: tuple[str, ...] = ("**",)
     exclude: tuple[str, ...] = ()
+    use_default_python_excludes: bool = True
+
+    def effective_exclude(self) -> tuple[str, ...]:
+        """Return exclude patterns with default Python artifacts prepended."""
+        if not self.use_default_python_excludes:
+            return self.exclude
+        return DEFAULT_PYTHON_EXCLUDES + self.exclude
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -97,6 +131,13 @@ class FileSelection:
     destination_prefix_exclude: tuple[str, ...] = ()
     copy: tuple[FileCopy, ...] = ()
     write: tuple[FileWrite, ...] = ()
+    use_default_python_excludes: bool = True
+
+    def effective_exclude(self) -> tuple[str, ...]:
+        """Return exclude patterns with default Python artifacts prepended."""
+        if not self.use_default_python_excludes:
+            return self.exclude
+        return DEFAULT_PYTHON_EXCLUDES + self.exclude
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -255,6 +296,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             "destination_prefix_exclude",
             "copy",
             "write",
+            "use_default_python_excludes",
         },
         "files",
     )
@@ -278,6 +320,9 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         copy=tuple(
             _parse_file_copy(idx=idx, raw_copy=entry)
             for idx, entry in enumerate(_list(files, "copy"), start=1)
+        ),
+        use_default_python_excludes=_bool(
+            files, "use_default_python_excludes", default=True
         ),
         write=tuple(
             _parse_file_write(idx=idx, raw_write=entry)
@@ -360,6 +405,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             "destination_prefix_exclude = "
             f"{_toml_list(config.files.destination_prefix_exclude)}"
         )
+    if not config.files.use_default_python_excludes:
+        lines.append("use_default_python_excludes = false")
     for file_copy in config.files.copy:
         lines.extend(["", "[[files.copy]]"])
         lines.append(f"source = {_toml_string(file_copy.source)}")
@@ -368,6 +415,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             lines.append(f"include = {_toml_list(file_copy.include)}")
         if file_copy.exclude:
             lines.append(f"exclude = {_toml_list(file_copy.exclude)}")
+        if not file_copy.use_default_python_excludes:
+            lines.append("use_default_python_excludes = false")
     for file_write in config.files.write:
         lines.extend(["", "[[files.write]]"])
         lines.append(f"path = {_toml_string(file_write.path)}")
@@ -523,7 +572,13 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
     raw_copy = cast("dict[str, object]", raw_copy)
     _check_keys(
         raw_copy,
-        {"source", "destination", "include", "exclude"},
+        {
+            "source",
+            "destination",
+            "include",
+            "exclude",
+            "use_default_python_excludes",
+        },
         f"files.copy[{idx}]",
     )
     source = _relative_path(_string(raw_copy, "source"), "files.copy.source")
@@ -548,6 +603,9 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
                 _string_list(raw_copy, "exclude", default=()),
                 "files.copy.exclude",
             )
+        ),
+        use_default_python_excludes=_bool(
+            raw_copy, "use_default_python_excludes", default=True
         ),
     )
 

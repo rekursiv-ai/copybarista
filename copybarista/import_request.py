@@ -169,7 +169,7 @@ class PathMapper:
             "matcher",
             GlobSet(
                 include=self.config.files.include,
-                exclude=self.config.files.exclude,
+                exclude=self.config.files.effective_exclude(),
                 globstar=self.config.globstar,
             ),
         )
@@ -259,7 +259,7 @@ class PathMapper:
         for file_copy in self.config.files.copy:
             matcher = GlobSet(
                 include=file_copy.include,
-                exclude=file_copy.exclude,
+                exclude=file_copy.effective_exclude(),
                 globstar=self.config.globstar,
             )
             if public_path == file_copy.destination:
