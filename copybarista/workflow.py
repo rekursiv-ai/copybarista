@@ -191,11 +191,11 @@ class MoveSequence:
     Copybara applies a sequence of ``core.move`` transforms: a whole-tree move
     (``path = ""``) relocates every path under a destination prefix, and a later
     per-subtree move relocates a matching subtree again (typically a back-move to
-    the public root). ``import_request._reverse_file_moves`` inverts this exactly
-    for injective move sequences -- the shape the config parser (non-empty
-    destinations) and the export-time destination-collision guard admit. A
-    non-injective sequence (two moves to one destination) cannot round-trip, but
-    such a config fails export before it can ship.
+    the public root). ``import_request._reverse_file_moves`` inverts this
+    exactly: the config parser rejects a non-injective sequence (two moves to
+    one destination) and an identity move (``path == destination``) at load
+    (``config._validate_moves_injective`` / ``config._parse_file_move``), so
+    every admitted sequence is injective and the reverse is a total inverse.
     """
 
     moves: tuple[FileMove, ...]
