@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import tomllib
+
 import pytest
 
 from copybarista.config import (
     DEFAULT_PYTHON_EXCLUDES,
     load_config,
+    parse_config,
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
@@ -52,15 +55,14 @@ def test_loads_sample_style_config(tmp_path: Path):
     assert config.source_root == "project"
     assert config.files.include == ("**",)
     assert config.files.exclude == ("build/**", "**/__pycache__/**")
-    assert config.files.destination_prefix == ""
-    assert config.files.destination_prefix_exclude == ()
+    assert config.files.moves == ()
     assert [transform.type for transform in config.transforms] == [
         "replace",
         "strip_block",
     ]
 
 
-def test_loads_destination_prefix_config(tmp_path: Path):
+def test_loads_moves_config(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         """
@@ -71,16 +73,84 @@ def test_loads_destination_prefix_config(tmp_path: Path):
 
         [files]
         include = ["**"]
-        destination_prefix = "pkg"
-        destination_prefix_exclude = ["README.md", ".github/**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "pkg"
+
+        [[files.moves]]
+        path = "pkg/README.md"
+        destination = "README.md"
+
+        [[files.moves]]
+        path = "pkg/.github"
+        destination = ".github"
         """,
         encoding="utf-8",
     )
 
     config = load_config(config_path)
 
-    assert config.files.destination_prefix == "pkg"
-    assert config.files.destination_prefix_exclude == ("README.md", ".github/**")
+    assert [(move.path, move.destination) for move in config.files.moves] == [
+        ("", "pkg"),
+        ("pkg/README.md", "README.md"),
+        ("pkg/.github", ".github"),
+    ]
+    # Writer round-trip: the ordered moves survive re-serialization verbatim.
+    serialized = workflow_to_toml(config)
+    assert "[[files.moves]]" in serialized
+    assert 'destination = "pkg"' in serialized
+    assert 'path = "pkg/README.md"' in serialized
+    reparsed = parse_config(tomllib.loads(serialized))
+    assert reparsed.files.moves == config.files.moves
+
+
+def test_rejects_move_with_empty_destination_and_nonempty_path():
+    """A non-whole-tree move with empty destination flattens irreversibly.
+
+    Forward placement strips the ``path`` prefix, but the import reverse cannot
+    re-prefix an ambiguous root path, so such a move is not invertible. The
+    parser must reject it, matching the ``move`` transform's non-empty
+    destination requirement.
+    """
+    raw = tomllib.loads(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = "sub"
+        destination = ""
+        """
+    )
+    with pytest.raises(ConfigError, match="destination"):
+        parse_config(raw)
+
+
+def test_rejects_move_with_empty_path_and_empty_destination():
+    """A move that neither prefixes nor relocates is a no-op config error."""
+    raw = tomllib.loads(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = ""
+        """
+    )
+    with pytest.raises(ConfigError, match="destination"):
+        parse_config(raw)
 
 
 def test_loads_file_copy_config(tmp_path: Path):

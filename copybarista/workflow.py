@@ -17,6 +17,7 @@ import stat
 import time
 
 from copybarista.config import (
+    FileMove,
     FileWrite,
     Transform,
     WorkflowConfig,
@@ -96,7 +97,7 @@ class WorkflowRunner:
                     exclude=self.config.files.effective_exclude(),
                     globstar=self.config.globstar,
                 ),
-                prefixer=DestinationPrefixer.from_config(self.config),
+                prefixer=MoveSequence(moves=self.config.files.moves),
                 source_prefix=self.config.source_root,
                 record_phase=record_phase,
             ),
@@ -174,40 +175,56 @@ def _apply_transform_destinations(
 
 def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _StagedFile:
     """Return `entry` with its destination rewritten by one move transform."""
-    if entry.destination == transform.path:
-        return replace(entry, destination=transform.destination)
-    prefix = f"{transform.path}/"
-    if entry.destination.startswith(prefix):
-        suffix = entry.destination.removeprefix(transform.path)
-        return replace(entry, destination=f"{transform.destination}{suffix}")
-    return entry
+    return replace(
+        entry,
+        destination=_relocate_path(
+            entry.destination, source=transform.path, destination=transform.destination
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class DestinationPrefixer:
-    """Map source-root paths to exported destination paths."""
+class MoveSequence:
+    """Map source-root paths to exported destination paths via ordered moves.
 
-    prefix: str
-    exclude: GlobSet | None = None
+    Applies each ``FileMove`` in order to a source-root-relative path, exactly as
+    Copybara applies a sequence of ``core.move`` transforms: a whole-tree move
+    (``path = ""``) relocates every path under a destination prefix, and a later
+    per-subtree move relocates a matching subtree again (typically a back-move to
+    the public root). ``import_request._reverse_file_moves`` inverts this exactly
+    for injective move sequences -- the shape the config parser (non-empty
+    destinations) and the export-time destination-collision guard admit. A
+    non-injective sequence (two moves to one destination) cannot round-trip, but
+    such a config fails export before it can ship.
+    """
 
-    @classmethod
-    def from_config(cls, config: WorkflowConfig) -> DestinationPrefixer:
-        """Build a destination prefixer from workflow config."""
-        exclude = (
-            GlobSet(
-                include=config.files.destination_prefix_exclude,
-                globstar=config.globstar,
-            )
-            if config.files.destination_prefix_exclude
-            else None
-        )
-        return cls(prefix=config.files.destination_prefix, exclude=exclude)
+    moves: tuple[FileMove, ...]
 
     def destination_path(self, rel: str) -> str:
         """Return the exported destination path for a source-relative path."""
-        if not self.prefix or (self.exclude is not None and self.exclude.matches(rel)):
-            return rel
-        return f"{self.prefix}/{rel}"
+        for move in self.moves:
+            rel = _relocate_path(rel, source=move.path, destination=move.destination)
+        return rel
+
+
+def _relocate_path(path: str, *, source: str, destination: str) -> str:
+    """Return ``path`` with a ``source`` prefix rewritten to ``destination``.
+
+    An empty ``source`` matches the whole tree, so every path gains the
+    ``destination`` prefix. A non-empty ``source`` matches its exact value or any
+    path under ``source/``, rewriting that prefix to ``destination``; a path
+    matching neither is returned unchanged. This is the single forward relocation
+    rule shared by the ``files.moves`` sequence and ``move`` transforms; its
+    inverse is ``import_request._reverse_relocation``.
+    """
+    if not source:
+        return f"{destination}/{path}"
+    if path == source:
+        return destination
+    prefix = f"{source}/"
+    if path.startswith(prefix):
+        return f"{destination}/{path.removeprefix(prefix)}"
+    return path
 
 
 def _copy_selected(
@@ -215,7 +232,7 @@ def _copy_selected(
     *,
     staging: Path,
     matcher: GlobSet,
-    prefixer: DestinationPrefixer,
+    prefixer: MoveSequence,
     source_prefix: str,
     record_phase: PhaseRecorder | None = None,
     phase_prefix: str = "",
@@ -290,7 +307,7 @@ def _copy_additional(
         source_root=source_path,
         staging=staging,
         matcher=matcher,
-        prefixer=DestinationPrefixer(prefix=destination),
+        prefixer=MoveSequence(moves=(FileMove(path="", destination=destination),)),
         source_prefix=source,
         record_phase=record_phase,
         phase_prefix=f"copy:{destination}.",

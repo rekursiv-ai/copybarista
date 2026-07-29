@@ -129,6 +129,28 @@ class FileWrite:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FileMove:
+    """One ordered source-root placement move for the main file selection.
+
+    ``moves`` replaces the older ``destination_prefix`` + ``keep_at_root`` pair
+    with an ordered list that mirrors the ``core.move`` sequence of a
+    ``copy.bara.sky`` config 1:1. Each move relocates a source-root-relative
+    subtree to a public destination; moves apply top to bottom, so a whole-tree
+    package move (``path = ""``) followed by per-subtree back-moves
+    (``path = "docs", destination = "docs"``) reproduce the blanket-prefix +
+    keep-at-root behavior without any special-cased field.
+
+    Attributes:
+      path: Source-root-relative subtree to relocate. ``""`` is the whole tree.
+      destination: Public destination path. ``""`` is the export root.
+
+    """
+
+    path: str
+    destination: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FileSelection:
     """Include and exclude patterns relative to the source root.
 
@@ -138,8 +160,7 @@ class FileSelection:
 
     include: tuple[str, ...]
     exclude: tuple[str, ...]
-    destination_prefix: str = ""
-    destination_prefix_exclude: tuple[str, ...] = ()
+    moves: tuple[FileMove, ...] = ()
     copy: tuple[FileCopy, ...] = ()
     write: tuple[FileWrite, ...] = ()
     use_default_python_excludes: bool = False
@@ -303,8 +324,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         {
             "include",
             "exclude",
-            "destination_prefix",
-            "destination_prefix_exclude",
+            "moves",
             "copy",
             "write",
             "use_default_python_excludes",
@@ -318,15 +338,9 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         exclude=tuple(
             _glob_list(_string_list(files, "exclude", default=()), "files.exclude")
         ),
-        destination_prefix=_relative_path(
-            _string(files, "destination_prefix", default=""),
-            "files.destination_prefix",
-        ),
-        destination_prefix_exclude=tuple(
-            _glob_list(
-                _string_list(files, "destination_prefix_exclude", default=()),
-                "files.destination_prefix_exclude",
-            )
+        moves=tuple(
+            _parse_file_move(idx=idx, raw_move=entry)
+            for idx, entry in enumerate(_list(files, "moves"), start=1)
         ),
         copy=tuple(
             _parse_file_copy(idx=idx, raw_copy=entry)
@@ -407,17 +421,12 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             f"exclude = {_toml_list(config.files.exclude)}",
         ]
     )
-    if config.files.destination_prefix:
-        lines.append(
-            f"destination_prefix = {_toml_string(config.files.destination_prefix)}"
-        )
-    if config.files.destination_prefix_exclude:
-        lines.append(
-            "destination_prefix_exclude = "
-            f"{_toml_list(config.files.destination_prefix_exclude)}"
-        )
     if config.files.use_default_python_excludes:
         lines.append("use_default_python_excludes = true")
+    for file_move in config.files.moves:
+        lines.extend(["", "[[files.moves]]"])
+        lines.append(f"path = {_toml_string(file_move.path)}")
+        lines.append(f"destination = {_toml_string(file_move.destination)}")
     for file_copy in config.files.copy:
         lines.extend(["", "[[files.copy]]"])
         lines.append(f"source = {_toml_string(file_copy.source)}")
@@ -621,6 +630,25 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
     )
 
 
+def _parse_file_move(idx: int, raw_move: object) -> FileMove:
+    """Parse one `[[files.moves]]` table into an ordered placement move."""
+    if not isinstance(raw_move, dict):
+        raise ConfigError("Each files.moves entry must be a table")
+    raw_move = cast("dict[str, object]", raw_move)
+    _check_keys(raw_move, {"path", "destination"}, f"files.moves[{idx}]")
+    destination = _string(raw_move, "destination", default="")
+    if not destination:
+        # An empty destination flattens ``path`` to the root, which the import
+        # reverse cannot re-prefix, so the move is not invertible. Mirror the
+        # ``move`` transform's non-empty destination requirement. The whole-tree
+        # package move uses ``path = ""`` but always a non-empty destination.
+        raise ConfigError("files.moves destination must be non-empty")
+    return FileMove(
+        path=_relative_path(_string(raw_move, "path", default=""), "files.moves.path"),
+        destination=_relative_path(destination, "files.moves.destination"),
+    )
+
+
 def _parse_file_write(idx: int, raw_write: object) -> FileWrite:
     """Parse one `[[files.write]]` table into a generated file config."""
     if not isinstance(raw_write, dict):
@@ -752,7 +780,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             f"transform[{idx}]",
         )
         if _has_glob_syntax(path):
-            raise ConfigError("move path must be an exact file path")
+            raise ConfigError("move path must be an exact file or directory")
         dest = _string(raw_transform, "destination", default="")
         if not dest:
             raise ConfigError("move destination must be non-empty")

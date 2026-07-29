@@ -17,6 +17,7 @@ import textwrap
 from copybarista.config import (
     DEFAULT_GIT_BRANCH,
     FileCopy,
+    FileMove,
     Transform,
     WorkflowConfig,
     parse_config,
@@ -149,8 +150,7 @@ class TranslatedWorkflow:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     transforms: tuple[Transform, ...]
-    destination_prefix: str = ""
-    destination_prefix_exclude: tuple[str, ...] = ()
+    moves: tuple[FileMove, ...] = ()
     copies: tuple[FileCopy, ...] = ()
     folder_path: str = ""
     git_url: str = ""
@@ -169,8 +169,10 @@ class TranslatedWorkflow:
             "files": {
                 "include": list(self.include),
                 "exclude": list(self.exclude),
-                "destination_prefix": self.destination_prefix,
-                "destination_prefix_exclude": list(self.destination_prefix_exclude),
+                "moves": [
+                    {"path": move.path, "destination": move.destination}
+                    for move in self.moves
+                ],
                 "copy": [
                     {
                         "source": copy.source,
@@ -354,7 +356,7 @@ class _CopyBaraSkyParser:
         (
             source_root_move,
             transforms,
-            prefix_excludes,
+            back_moves,
             subtree_copies,
             sweep_excludes,
         ) = self._parse_transformations(
@@ -395,12 +397,20 @@ class _CopyBaraSkyParser:
         workflow_name = _require_string(
             kwargs.get("name", "export"), "core.workflow.name"
         )
+        # Structural 1:1 with the .sky move sequence: the source-root move becomes
+        # the whole-tree placement ``{path="", destination=<prefix>}`` and each
+        # back-move out of the prefix is preserved verbatim in order. An empty
+        # prefix (flatten to root) leaves the package at the root with no moves.
+        moves = (
+            (FileMove(path="", destination=destination_prefix), *back_moves)
+            if destination_prefix
+            else ()
+        )
         return TranslatedWorkflow(
             name=workflow_name,
             mode="squash",
             source_root=source_root,
-            destination_prefix=destination_prefix,
-            destination_prefix_exclude=prefix_excludes,
+            moves=moves,
             include=include,
             exclude=exclude,
             transforms=tuple(transforms),
@@ -419,7 +429,7 @@ class _CopyBaraSkyParser:
     ) -> tuple[
         MoveSpec | None,
         list[Transform],
-        tuple[str, ...],
+        tuple[FileMove, ...],
         tuple[FileCopy, ...],
         tuple[str, ...],
     ]:
@@ -427,13 +437,13 @@ class _CopyBaraSkyParser:
 
         A ``core.move(SOURCE, DEST)`` whose SOURCE is the origin-files root is the
         source-root move: DEST empty flattens the package to the public root, and
-        a non-empty DEST ships it under that prefix (mapped to
-        ``destination_prefix``). A move OUT of that prefix back to the root
-        (``core.move("<prefix>/x", "x")``) keeps ``x`` at the public root and
-        maps to a ``destination_prefix_exclude`` entry. A move of an in-package
-        subtree to the root (``core.move("<root>/.export", "")``) maps to a
-        ``[[files.copy]]`` to ``.`` (a verbatim-ship staging dir). Any other move
-        is a per-file move transform.
+        a non-empty DEST ships it under that prefix (the whole-tree
+        ``[[files.moves]]`` entry). A move OUT of that prefix back to the root
+        (``core.move("<prefix>/x", "x")``) keeps ``x`` at the public root and is
+        preserved verbatim as an ordered ``[[files.moves]]`` back-move. A move of
+        an in-package subtree to the root (``core.move("<root>/.export", "")``)
+        maps to a ``[[files.copy]]`` to ``.`` (a verbatim-ship staging dir). Any
+        other move is a per-file move transform.
         """
         # Pass 1: locate the source-root move so its prefix/root is known before
         # classifying the other moves, which may appear before or after it.
@@ -441,7 +451,7 @@ class _CopyBaraSkyParser:
         prefix = source_root_move.destination if source_root_move is not None else ""
         root = source_root_move.source if source_root_move is not None else ""
         parsed: list[Transform] = []
-        prefix_excludes: list[str] = []
+        back_moves: list[FileMove] = []
         subtree_copies: list[FileCopy] = []
         sweep_excludes: list[str] = []
         for idx, item in enumerate(transformations, start=1):
@@ -450,13 +460,11 @@ class _CopyBaraSkyParser:
                     continue
                 back = _prefix_back_move(item, prefix)
                 if back is not None:
-                    # A move can carry a file or a directory; the translator
-                    # cannot tell which. Emit both the bare path (matches a file)
-                    # and ``<path>/**`` (matches a directory's children) so the
-                    # kept-at-root selection covers either, matching the .toml's
-                    # per-file/per-tree destination_prefix_exclude entries.
-                    prefix_excludes.append(back)
-                    prefix_excludes.append(f"{back}/**")
+                    # Preserve the back-move verbatim and in order: it structurally
+                    # mirrors the .sky ``core.move("<prefix>/x", "x")``, so the
+                    # forward export and reverse import reproduce Copybara's move
+                    # sequence 1:1 without collapsing it into a keep-at-root glob.
+                    back_moves.append(back)
                     continue
                 if _is_subtree_to_root_move(item, root):
                     # Copybara's move only relocates SELECTED files, so
@@ -525,7 +533,7 @@ class _CopyBaraSkyParser:
         return (
             source_root_move,
             parsed,
-            tuple(prefix_excludes),
+            tuple(back_moves),
             tuple(subtree_copies),
             tuple(sweep_excludes),
         )
@@ -840,13 +848,14 @@ class _CopyBaraSkyParser:
         return values
 
 
-def _prefix_back_move(move: MoveSpec, prefix: str) -> str | None:
-    """Return the prefix-relative path a back-move keeps at root, or None.
+def _prefix_back_move(move: MoveSpec, prefix: str) -> FileMove | None:
+    """Return the ordered back-move that keeps a subtree at root, or None.
 
     A ``core.move("<prefix>/x", "x")`` moves ``x`` out of the destination prefix
-    back to the public root -- i.e. ``x`` is a ``destination_prefix_exclude``
-    entry. Recognized only when a prefix exists and the destination is exactly
-    the source with the ``<prefix>/`` stripped.
+    back to the public root. It is preserved verbatim (prefix-space source, root
+    destination) as an ordered ``[[files.moves]]`` entry, structurally mirroring
+    the .sky move. Recognized only when a prefix exists and the destination is
+    exactly the source with the ``<prefix>/`` stripped.
     """
     if not prefix:
         return None
@@ -854,7 +863,7 @@ def _prefix_back_move(move: MoveSpec, prefix: str) -> str | None:
     if not move.source.startswith(prefix_slash):
         return None
     if move.destination == move.source.removeprefix(prefix_slash):
-        return move.destination
+        return FileMove(path=move.source, destination=move.destination)
     return None
 
 

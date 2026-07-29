@@ -164,8 +164,18 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
 
         [files]
         include = ["**"]
-        destination_prefix = "demo"
-        destination_prefix_exclude = [".gitignore", "README.md"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/.gitignore"
+        destination = ".gitignore"
+
+        [[files.moves]]
+        path = "demo/README.md"
+        destination = "README.md"
 
         [[transform]]
         type = "replace"
@@ -194,6 +204,64 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
     assert (tmp_path / "out" / "demo" / "__init__.py").read_text(
         encoding="utf-8"
     ) == "from demo import api\n"
+
+
+def test_folder_export_moves_apply_in_order(tmp_path: Path):
+    """Ordered `[[files.moves]]` place the tree exactly like a `core.move` chain.
+
+    The whole-tree move must run BEFORE the per-subtree back-moves: it nests
+    every path under the prefix, then each back-move lifts one prefix-space
+    subtree to the public root. A back-move listed before the whole-tree move
+    (or a whole-tree move that ran after) would leave the subtree buried under
+    the prefix. This pins the ordered semantics the refactor introduced.
+    """
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    (project / "pkg").mkdir(parents=True)
+    (project / "pkg/module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "README.md").write_text("readme\n", encoding="utf-8")
+    (project / "docs").mkdir()
+    (project / "docs/guide.md").write_text("guide\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "project"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/README.md"
+        destination = "README.md"
+
+        [[files.moves]]
+        path = "demo/docs"
+        destination = "docs"
+        """,
+        encoding="utf-8",
+    )
+
+    manifest = export_folder(
+        load_config(config_path),
+        source_ref=source_ref,
+        destination=tmp_path / "out",
+        force=True,
+    )
+
+    # README and the whole docs/ subtree land at the public root; only the real
+    # package module rides the prefix. (Manifest order follows the source walk.)
+    assert sorted(entry.destination for entry in manifest.files) == [
+        "README.md",
+        "demo/pkg/module.py",
+        "docs/guide.md",
+    ]
 
 
 def test_folder_export_can_run_ruff_format_transform(tmp_path: Path):
