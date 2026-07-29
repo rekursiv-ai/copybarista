@@ -368,14 +368,15 @@ def test_rejects_core_reverse_move(tmp_path: Path):
         load_config(config_path)
 
 
-def test_move_to_prefix_becomes_destination_prefix(tmp_path: Path):
-    """`core.move(ROOT, PREFIX)` maps to source_root + destination_prefix.
+def test_move_to_prefix_becomes_whole_tree_move(tmp_path: Path):
+    """`core.move(ROOT, PREFIX)` maps to source_root + a whole-tree move.
 
     A package that ships UNDER a public subdirectory (a monorepo path moved to a
     ``pkg/`` prefix) is expressed in Copybara as a move of the source root to a
     non-empty destination prefix. The translator must recognize this as the
-    source-root move with a prefix, not a per-file move transform, so the .sky
-    can mirror a .toml that uses destination_prefix.
+    source-root move and emit a whole-tree ``[[files.moves]]`` entry
+    (``path = ""``), not a per-file move transform, so the .sky mirrors a .toml
+    that uses ``moves``.
     """
     config_path = _write_sky(
         tmp_path,
@@ -396,17 +397,19 @@ def test_move_to_prefix_becomes_destination_prefix(tmp_path: Path):
     config = load_config(config_path)
 
     assert config.source_root == "project"
-    assert config.files.destination_prefix == "pkgpub"
+    assert [(move.path, move.destination) for move in config.files.moves] == [
+        ("", "pkgpub"),
+    ]
 
 
-def test_move_out_of_prefix_becomes_destination_prefix_exclude(tmp_path: Path):
-    """A move back out of the prefix maps to destination_prefix_exclude.
+def test_move_out_of_prefix_becomes_back_move(tmp_path: Path):
+    """A move back out of the prefix maps to an ordered back-move.
 
     When the package nests under a prefix but repo metadata (README, .github,
     ...) must stay at the public root, Copybara moves the whole root to the
-    prefix, then moves those specific paths back to root. The translator recovers
-    each such back-move as a destination_prefix_exclude entry so the .sky mirrors
-    a .toml that keeps metadata at root.
+    prefix, then moves those specific paths back to root. The translator
+    preserves each such back-move verbatim and in order as a ``[[files.moves]]``
+    entry so the .sky mirrors a .toml that keeps metadata at root 1:1.
     """
     config_path = _write_sky(
         tmp_path,
@@ -430,8 +433,10 @@ def test_move_out_of_prefix_becomes_destination_prefix_exclude(tmp_path: Path):
     config = load_config(config_path)
 
     assert config.source_root == "project"
-    assert config.files.destination_prefix == "pkgpub"
-    assert "README.md" in config.files.destination_prefix_exclude
+    assert [(move.path, move.destination) for move in config.files.moves] == [
+        ("", "pkgpub"),
+        ("pkgpub/README.md", "README.md"),
+    ]
 
 
 def test_move_subtree_to_root_becomes_copy_to_root(tmp_path: Path):

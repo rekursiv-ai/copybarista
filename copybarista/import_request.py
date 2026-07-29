@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 from copybarista.commands import CommandRunner
-from copybarista.config import Transform, WorkflowConfig
+from copybarista.config import FileMove, Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
@@ -161,7 +161,6 @@ class PathMapper:
 
     config: WorkflowConfig
     matcher: GlobSet = field(init=False)
-    destination_prefix_exclude: GlobSet | None = field(init=False)
 
     def __post_init__(self) -> None:
         """Compile file selection once for all changed paths."""
@@ -173,16 +172,6 @@ class PathMapper:
                 exclude=self.config.files.effective_exclude(),
                 globstar=self.config.globstar,
             ),
-        )
-        object.__setattr__(
-            self,
-            "destination_prefix_exclude",
-            GlobSet(
-                include=self.config.files.destination_prefix_exclude,
-                globstar=self.config.globstar,
-            )
-            if self.config.files.destination_prefix_exclude
-            else None,
         )
 
     def source_path(
@@ -208,7 +197,7 @@ class PathMapper:
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}"
             )
-        source_public_path = _reverse_move_path(
+        source_public_path = _reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -219,7 +208,7 @@ class PathMapper:
         copied_source = self._copied_source_path(source_public_path)
         if copied_source:
             return copied_source
-        prefixed = self._prefixed_source_relative_path(source_public_path)
+        prefixed = self._moved_source_relative_path(source_public_path)
         if prefixed is None:
             # A path under no relocation rule keeps its identical path on both
             # sides -- it lives at the same repo-root location in source and
@@ -272,24 +261,32 @@ class PathMapper:
             if file_copy.destination in (".", "./"):
                 # A directory copy with ``destination = "."`` lands its tree at
                 # the public root. It owns the root-level files it supplies (e.g.
-                # ``pyproject.toml``, ``CONTRIBUTING.md``); paths under the
-                # package's ``destination_prefix`` come from the main source-root
-                # selection, not this copy, so only claim root-level paths.
+                # ``pyproject.toml``, ``CONTRIBUTING.md``); paths relocated under
+                # the package prefix come from the main source-root selection, not
+                # this copy, so only claim root-level paths.
                 #
-                # A root path listed in ``destination_prefix_exclude`` is kept at
-                # the public root by the MAIN source-root selection (a back-move
-                # in Copybara), not by this ``.`` copy. It must yield to the main
-                # sweep so the reverse map returns ``<source_root>/<path>``; the
-                # ``.`` copy claiming it would place it inside ``.export`` and
-                # collide with the root copy on re-export. Matches Copybara
-                # reverse, which routes such a file back through the back-move.
+                # A root path a ``[[files.moves]]`` back-move keeps at the public
+                # root (its reverse maps it back under ``source_root``) is placed
+                # by the MAIN source-root selection, not by this ``.`` copy. It
+                # must yield to the main sweep so the reverse map returns
+                # ``<source_root>/<path>``; the ``.`` copy claiming it would place
+                # it inside ``.export`` and collide with the root copy on
+                # re-export. Matches Copybara reverse, which routes such a file
+                # back through the back-move.
+                #
+                # A root path a DEDICATED ``[[files.copy]]`` owns (its own
+                # ``destination = <path>``, e.g. the ``docs/AI_POLICY.md`` copy)
+                # likewise yields, so that copy claims it below rather than the
+                # ``.`` copy shadowing it into ``.export/<path>``.
+                _, moved = _reverse_file_moves(public_path, self.config.files.moves)
+                dedicated = any(
+                    other.destination == public_path for other in self.config.files.copy
+                )
                 if (
                     "/" in public_path
                     or not matcher.matches(public_path)
-                    or (
-                        self.destination_prefix_exclude is not None
-                        and self.destination_prefix_exclude.matches(public_path)
-                    )
+                    or moved
+                    or dedicated
                 ):
                     continue
                 return f"{file_copy.source}/{public_path}"
@@ -304,29 +301,21 @@ class PathMapper:
             )
         return ""
 
-    def _prefixed_source_relative_path(self, public_path: str) -> str | None:
+    def _moved_source_relative_path(self, public_path: str) -> str | None:
         """Return the source-root-relative path, or ``None`` if unrelocated.
 
-        A path under ``destination_prefix`` (or listed in
-        ``destination_prefix_exclude``, which the prefix leaves at root) belongs
-        to the source-root selection: its prefix is stripped and the caller
-        re-roots it under ``source_root``. A path matching neither is under no
-        relocation rule at all; ``None`` signals the caller to keep it at its
-        identical path (Copybara's unmatched-``core.move`` behavior) rather than
-        raise or wrongly re-root it under ``source_root``.
+        A path the ``[[files.moves]]`` sequence placed (whether under the package
+        prefix or kept at the public root by a back-move) belongs to the
+        source-root selection: reversing the moves yields its source-relative
+        path and the caller re-roots it under ``source_root``. A path no move
+        touched is under no relocation rule at all; ``None`` signals the caller
+        to keep it at its identical path (Copybara's unmatched-``core.move``
+        behavior) rather than raise or wrongly re-root it under ``source_root``.
         """
-        prefix = self.config.files.destination_prefix
-        if not prefix:
+        if not self.config.files.moves:
             return public_path
-        prefix_path = f"{prefix}/"
-        if public_path.startswith(prefix_path):
-            return public_path.removeprefix(prefix_path)
-        if (
-            self.destination_prefix_exclude is not None
-            and self.destination_prefix_exclude.matches(public_path)
-        ):
-            return public_path
-        return None
+        reversed_path, moved = _reverse_file_moves(public_path, self.config.files.moves)
+        return reversed_path if moved else None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -672,7 +661,7 @@ class ChangeRequestImporter:
         fused separately, preserving each strip's exact position.
         """
         content = data
-        match_path = _reverse_move_path(
+        match_path = _reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -766,6 +755,13 @@ class ChangeRequestImporter:
             # cannot be reversed unambiguously. We compare counts: the number of
             # `reverse_before` hits explained by `before` occurrences vs the
             # total in source.
+            #
+            # This count math is a conservative proxy, exact only when `before`
+            # and `reverse_before` do not self-overlap (``str.count`` is
+            # non-overlapping, so a self-nested token like ``before="aa"`` with
+            # ``reverse_before="a"`` mis-attributes and could false-reject). Every
+            # shipped transform is a namespace-prefix rewrite (``loop.pkg.`` ->
+            # ``pkg``) with no self-overlap, so the proxy is exact in practice.
             before_text = transform.before
             explained = (
                 source_text.count(before_text) * before_text.count(reverse_before)
@@ -800,7 +796,7 @@ class ChangeRequestImporter:
         reversal, so the decision is deferred to ``_reverse_content``.
         """
         ids: list[str] = []
-        match_path = _reverse_move_path(
+        match_path = _reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -1007,7 +1003,9 @@ def _tree_file(path: Path) -> TreeEntry:
     )
 
 
-def _reverse_move_path(*, public_path: str, transforms: tuple[Transform, ...]) -> str:
+def _reverse_move_transforms(
+    *, public_path: str, transforms: tuple[Transform, ...]
+) -> str:
     """Map a post-move public path back to the pre-move staged path."""
     path = PurePosixPath(public_path)
     for transform in reversed(transforms):
@@ -1019,6 +1017,52 @@ def _reverse_move_path(*, public_path: str, transforms: tuple[Transform, ...]) -
         elif path.is_relative_to(destination):
             path = PurePosixPath(transform.path) / path.relative_to(destination)
     return path.as_posix()
+
+
+def _reverse_file_moves(
+    public_path: str, moves: tuple[FileMove, ...]
+) -> tuple[str, bool]:
+    """Invert the ordered ``files.moves`` placement for one public path.
+
+    Applies each move in REVERSE order, inverting each: a public path under a
+    move's ``destination`` is rewritten back to its ``path``-space. Reports
+    whether any move matched, so the caller can distinguish a path the selection
+    placed (return the reversed source-relative path) from an identity path no
+    move touched (leave it alone). Exact inverse of
+    ``workflow.MoveSequence.destination_path`` for the injective move sequences
+    the config parser and export-time collision guard admit.
+
+    Returns:
+      source_relative: The path reversed back through the move sequence.
+      moved: Whether any move in the sequence matched ``public_path``.
+
+    """
+    path = public_path
+    moved = False
+    for move in reversed(moves):
+        relocated = _reverse_relocation(
+            path, source=move.path, destination=move.destination
+        )
+        if relocated is not None:
+            path = relocated
+            moved = True
+    return path, moved
+
+
+def _reverse_relocation(path: str, *, source: str, destination: str) -> str | None:
+    """Return ``path`` reversed from ``destination``-space to ``source``-space.
+
+    Inverse of ``workflow._relocate_path``: a path equal to ``destination`` or
+    under ``destination/`` is rewritten back under ``source``; a path matching
+    neither returns ``None`` to signal the move did not place it.
+    """
+    if path == destination:
+        return source
+    prefix = f"{destination}/"
+    if path.startswith(prefix):
+        suffix = path.removeprefix(prefix)
+        return f"{source}/{suffix}" if source else suffix
+    return None
 
 
 def _matches_transform(

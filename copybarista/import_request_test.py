@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from copybarista.cli import main
-from copybarista.config import Transform, load_config
+from copybarista.config import FileMove, Transform, load_config
 from copybarista.errors import ImportRequestError
 from copybarista.import_request import (
     ChangeRequestImporter,
@@ -21,12 +21,15 @@ from copybarista.import_request import (
     TreeSnapshot,
     _anchor_source_only_regions,
     _removed_regions,
+    _reverse_file_moves,
+    _reverse_relocation,
     _ruff_format_matches,
     _splice_source_only_regions,
     _three_way_merge,
     import_change_request,
 )
 from copybarista.transforms import strip_source_text
+from copybarista.workflow import MoveSequence, _relocate_path
 
 
 def test_import_public_edit_maps_to_source_root_and_reverses_replace(
@@ -159,7 +162,10 @@ def test_import_maps_extra_copy_destination_to_source(tmp_path: Path):
 
         [files]
         include = ["**"]
-        destination_prefix = "demo"
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
 
         [[files.copy]]
         source = "shared/web"
@@ -219,7 +225,10 @@ def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
 
         [files]
         include = ["**"]
-        destination_prefix = "demo"
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
 
         [[files.copy]]
         source = "internal/demo/.export"
@@ -238,11 +247,11 @@ def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
     )
 
 
-def test_import_root_copy_yields_to_destination_prefix_exclude(tmp_path: Path):
-    """A root path in `destination_prefix_exclude` maps to the main sweep, not `.`.
+def test_import_root_copy_yields_to_back_move(tmp_path: Path):
+    """A root path a `[[files.moves]]` back-move keeps maps to the main sweep.
 
-    When a package nests under a `destination_prefix` but a repo-metadata file
-    (e.g. `README.md`) stays at the public root via `destination_prefix_exclude`,
+    When a package nests under a whole-tree move but a repo-metadata file
+    (e.g. `README.md`) is moved back to the public root by an ordered back-move,
     that file is placed by the main source-root selection (a back-move in
     Copybara), NOT by the verbatim-ship `.export` copy to `.`. The reverse map
     must therefore return `<source_root>/README.md`, not `<source>/.export/...`.
@@ -264,8 +273,14 @@ def test_import_root_copy_yields_to_destination_prefix_exclude(tmp_path: Path):
 
         [files]
         include = ["**"]
-        destination_prefix = "demo"
-        destination_prefix_exclude = ["README.md"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/README.md"
+        destination = "README.md"
 
         [[files.copy]]
         source = "internal/demo/.export"
@@ -276,12 +291,127 @@ def test_import_root_copy_yields_to_destination_prefix_exclude(tmp_path: Path):
 
     mapper = PathMapper(config=load_config(config))
 
-    # README stays at root via destination_prefix_exclude -> main sweep source.
+    # README stays at root via the back-move -> main sweep source.
     assert mapper.source_path("README.md") == "internal/demo/README.md"
     # A non-excluded root file is still owned by the .export copy.
     assert (
         mapper.source_path("pyproject.toml") == "internal/demo/.export/pyproject.toml"
     )
+
+
+def test_reverse_moves_is_pointwise_inverse_of_move_sequence():
+    """`_reverse_file_moves` is the exact left inverse of `MoveSequence` per path.
+
+    Every source-relative path the ordered moves place must round-trip: forward
+    through `MoveSequence`, back through `_reverse_file_moves`, recovering the input
+    and reporting that a move matched. Ordering matters -- the back-move for
+    ``pkg/README.md`` runs after the whole-tree move forward, so its inverse must
+    run first, or a package README would reverse to the wrong prefix-space path.
+    """
+    moves = (
+        FileMove(path="", destination="demo"),
+        FileMove(path="demo/README.md", destination="README.md"),
+        FileMove(path="demo/docs", destination="docs"),
+    )
+    sequence = MoveSequence(moves=moves)
+    for source_relative in (
+        "pkg/module.py",
+        "README.md",
+        "docs/guide.md",
+        "docs/nested/deep.md",
+    ):
+        public = sequence.destination_path(source_relative)
+        recovered, moved = _reverse_file_moves(public, moves)
+        assert moved
+        assert recovered == source_relative
+
+
+def test_relocate_path_and_reverse_relocation_are_inverses():
+    """The shared forward/reverse relocation helpers round-trip every case.
+
+    `_relocate_path` is the single forward rule for both `files.moves` and `move`
+    transforms; `_reverse_relocation` inverts it. Exact match, subtree, whole-tree
+    prefix, and a non-matching path must all round-trip (the last reporting no
+    match), guarding the two collapsed appliers against divergence.
+    """
+    cases = (
+        ("src", "src", "dst"),
+        ("pkg/deep/mod.py", "pkg", "dst"),
+        ("anything/x", "", "prefix"),
+    )
+    for path, source, destination in cases:
+        forward = _relocate_path(path, source=source, destination=destination)
+        recovered = _reverse_relocation(forward, source=source, destination=destination)
+        assert recovered == path
+    # A path the move does not touch: forward leaves it, reverse reports no match.
+    assert _relocate_path("other/x", source="pkg", destination="dst") == "other/x"
+    assert _reverse_relocation("other/x", source="pkg", destination="dst") is None
+
+
+def test_reverse_moves_leaves_unmoved_path_untouched():
+    """A path no move places round-trips unchanged and reports `moved=False`.
+
+    Mirrors Copybara's unmatched ``core.move``: an out-of-prefix repo-root path
+    (a ``typings/brotli`` class file) is not relocated, so its reverse is the
+    identity and the caller keeps it at its shared source/public path.
+    """
+    moves = (FileMove(path="", destination="demo"),)
+    # The whole-tree move places every path, so use a config where only a subtree
+    # is captured: a bare back-move with no whole-tree move leaves siblings alone.
+    partial = (FileMove(path="docs", destination="public_docs"),)
+    recovered, moved = _reverse_file_moves("typings/brotli/__init__.pyi", partial)
+    assert recovered == "typings/brotli/__init__.pyi"
+    assert not moved
+    # The whole-tree move, by contrast, captures everything.
+    _, moved_all = _reverse_file_moves("demo/x.py", moves)
+    assert moved_all
+
+
+def test_reverse_moves_exactly_inverts_forward_placement(tmp_path: Path):
+    """Reverse import inverts the ordered `[[files.moves]]` placement exactly.
+
+    Forward export nests the tree under a prefix then lifts back-moved subtrees
+    to the root; the importer must undo that same sequence in reverse order so a
+    public path maps to precisely the source it came from. A back-moved subtree
+    (``docs/``), a package file that keeps the prefix (``pkg/module.py``), and a
+    root-level back-moved file (``README.md``) each round-trip to their source
+    location, and the whole-tree move applied to a package path reverses to the
+    source-root-relative path -- never the buried prefix-space path.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/README.md"
+        destination = "README.md"
+
+        [[files.moves]]
+        path = "demo/docs"
+        destination = "docs"
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    # Whole-tree move reverses a prefix-space package path to source root.
+    assert mapper.source_path("demo/pkg/module.py") == ("internal/demo/pkg/module.py")
+    # Root-level back-move reverses to the source root, not `demo/README.md`.
+    assert mapper.source_path("README.md") == "internal/demo/README.md"
+    # Subtree back-move reverses each nested child to the source root.
+    assert mapper.source_path("docs/guide.md") == "internal/demo/docs/guide.md"
 
 
 def test_import_rejects_generated_file_destination(tmp_path: Path):
@@ -2531,6 +2661,19 @@ def _fixture(
         end = "# copybarista:internal:end"
         required = false
         """
+    moves = (
+        f"""
+        [[files.moves]]
+        path = ""
+        destination = "{destination_prefix}"
+
+        [[files.moves]]
+        path = "{destination_prefix}/README.md"
+        destination = "README.md"
+        """
+        if destination_prefix
+        else ""
+    )
     config.write_text(
         f"""
         [workflow]
@@ -2541,9 +2684,7 @@ def _fixture(
         [files]
         include = ["**"]
         exclude = ["private.txt"]
-        destination_prefix = "{destination_prefix}"
-        destination_prefix_exclude = ["README.md"]
-
+        {moves}
         {replace_transform}
         {strip_block}
         """,
@@ -2637,9 +2778,9 @@ def _copy_tree(source: Path, destination: Path) -> Path:
 def _unmapped_fixture(tmp_path: Path) -> _FixturePaths:
     """Build a fixture with a path that maps to no config rule.
 
-    The package ships under ``destination_prefix = "pub"``; an out-of-prefix
-    repo-root path (``typings/brotli/...``) exists in the public tree but has no
-    ``[[files.copy]]`` and is not in ``destination_prefix_exclude`` -- i.e. it is
+    The package ships under a whole-tree ``[[files.moves]]`` to ``pub``; an
+    out-of-prefix repo-root path (``typings/brotli/...``) exists in the public
+    tree but has no ``[[files.copy]]`` and matches no move -- i.e. it is
     UNMAPPED, the ``typings/brotli`` class left behind when an export mapping is
     dropped from config. Mirrors Copybara, where such a path matches no
     ``core.move`` rule and keeps its identical path on both sides.
@@ -2666,7 +2807,10 @@ def _unmapped_fixture(tmp_path: Path) -> _FixturePaths:
 
         [files]
         include = ["**"]
-        destination_prefix = "pub"
+
+        [[files.moves]]
+        path = ""
+        destination = "pub"
         """,
         encoding="utf-8",
     )
@@ -2734,8 +2878,8 @@ def test_source_path_rejects_excluded_path_outside_prefix(tmp_path: Path):
     A path matching an `exclude` glob is deliberately kept out of the export, so
     it can never appear in a faithful public tree. If the public repo adds such a
     path, importing it must raise rather than silently write it at its identity
-    source path. Regression: with a `destination_prefix` set, an out-of-prefix
-    path that is neither prefixed nor in `destination_prefix_exclude` returned its
+    source path. Regression: with a whole-tree move set, an out-of-prefix
+    path that no move relocates returned its
     identity path WITHOUT consulting `self.matcher`, so an `exclude` glob matching
     an out-of-prefix path was dropped. The genuinely-unmapped case (no matching
     exclude, e.g. `typings/brotli`) must still resolve to identity -- only a path
@@ -2752,7 +2896,10 @@ def test_source_path_rejects_excluded_path_outside_prefix(tmp_path: Path):
         [files]
         include = ["**"]
         exclude = ["typings/secret/**"]
-        destination_prefix = "pub"
+
+        [[files.moves]]
+        path = ""
+        destination = "pub"
         """,
         encoding="utf-8",
     )
@@ -2795,7 +2942,10 @@ def test_merge_import_propagates_delete_of_excluded_path(tmp_path: Path):
         [files]
         include = ["**"]
         exclude = ["htmlcov/**"]
-        destination_prefix = "pub"
+
+        [[files.moves]]
+        path = ""
+        destination = "pub"
         """,
         encoding="utf-8",
     )

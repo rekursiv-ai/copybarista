@@ -96,11 +96,35 @@ exclude = [
 ]
 ```
 
-`destination_prefix`:
+`[[files.moves]]`:
 
-Optional destination directory added to selected `source_root` files. Use
-`destination_prefix_exclude` for root-owned files such as `README.md` or
-`.github/**` that should stay at the public repository root.
+Ordered placement moves applied to selected `source_root` files, mirroring a
+`copy.bara.sky` `core.move` sequence 1:1. Each entry relocates one
+source-root-relative subtree to a public destination; moves apply top to bottom.
+
+```toml
+# Nest the whole package under `pkg/`...
+[[files.moves]]
+path = ""
+destination = "pkg"
+
+# ...then move repo metadata back out to the public root.
+[[files.moves]]
+path = "pkg/README.md"
+destination = "README.md"
+
+[[files.moves]]
+path = "pkg/.github"
+destination = ".github"
+```
+
+`path = ""` matches the whole selected tree; a non-empty `path` matches that
+exact path or any path beneath it. `destination = ""` places the subtree at the
+export root. Because moves apply in order, a whole-tree move followed by
+per-subtree back-moves reproduces a blanket destination prefix with root-kept
+exceptions. Import workflows reverse the same sequence, so a public path maps
+back to exactly the source it came from. Directory moves like `pkg/.github`
+cover the entire subtree.
 
 `[[files.copy]]`:
 
