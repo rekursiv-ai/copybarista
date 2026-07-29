@@ -13,6 +13,7 @@ import tomllib
 
 from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import Globstar, validate_pattern
+from copybarista.template import compile_replace
 
 
 TransformType = Literal[
@@ -331,6 +332,11 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         },
         "files",
     )
+    moves = tuple(
+        _parse_file_move(idx=idx, raw_move=entry)
+        for idx, entry in enumerate(_list(files, "moves"), start=1)
+    )
+    _validate_moves_injective(moves)
     selection = FileSelection(
         include=tuple(
             _glob_list(_string_list(files, "include", default=("**",)), "files.include")
@@ -338,10 +344,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         exclude=tuple(
             _glob_list(_string_list(files, "exclude", default=()), "files.exclude")
         ),
-        moves=tuple(
-            _parse_file_move(idx=idx, raw_move=entry)
-            for idx, entry in enumerate(_list(files, "moves"), start=1)
-        ),
+        moves=moves,
         copy=tuple(
             _parse_file_copy(idx=idx, raw_copy=entry)
             for idx, entry in enumerate(_list(files, "copy"), start=1)
@@ -643,10 +646,40 @@ def _parse_file_move(idx: int, raw_move: object) -> FileMove:
         # ``move`` transform's non-empty destination requirement. The whole-tree
         # package move uses ``path = ""`` but always a non-empty destination.
         raise ConfigError("files.moves destination must be non-empty")
-    return FileMove(
-        path=_relative_path(_string(raw_move, "path", default=""), "files.moves.path"),
-        destination=_relative_path(destination, "files.moves.destination"),
-    )
+    path = _relative_path(_string(raw_move, "path", default=""), "files.moves.path")
+    destination = _relative_path(destination, "files.moves.destination")
+    if path == destination:
+        # A move whose path equals its destination relocates nothing: forward is
+        # a no-op, but the reverse reports moved=True for it, mis-routing root
+        # ownership on import. Reject rather than admit a no-op the reverse lies
+        # about.
+        raise ConfigError(
+            f"files.moves[{idx}] path and destination are equal ({path!r});"
+            " a move that relocates nothing is not allowed"
+        )
+    return FileMove(path=path, destination=destination)
+
+
+def _validate_moves_injective(moves: tuple[FileMove, ...]) -> None:
+    """Reject a move sequence two entries of which share a destination.
+
+    ``_reverse_file_moves`` inverts the sequence by reverse-order first match,
+    so it is an exact inverse only when the forward map is injective. Two moves
+    to one destination merge distinct source subtrees whose disjoint filenames
+    slip past the export-time collision guard (which checks per-file staging
+    paths, not merged trees), then reverse-map ambiguously. Enforce injectivity
+    at the trust boundary so the reverse is total by construction.
+    """
+    seen: dict[str, str] = {}
+    for move in moves:
+        prior = seen.get(move.destination)
+        if prior is not None:
+            raise ConfigError(
+                f"files.moves destination {move.destination!r} is claimed by two"
+                f" moves ({prior!r} and {move.path!r}); a non-injective move"
+                " sequence cannot be reversed on import"
+            )
+        seen[move.destination] = move.path
 
 
 def _parse_file_write(idx: int, raw_write: object) -> FileWrite:
@@ -761,12 +794,19 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
                 "replace regex_groups and reverse_before/reverse_after are "
                 "mutually exclusive"
             )
+        after = _string(raw_transform, "after")
+        # Run the interpolation cross-checks (undefined names, unused groups,
+        # ``after`` referencing a group absent from ``before``) at parse, not
+        # deferred to export/import. Every other replace field is validated here;
+        # without this, ``validate`` reports success on a config that hard-fails
+        # mid-export. ``compile_replace`` is the single source of those checks.
+        compile_replace(before=before, after=after, regex_groups=regex_groups)
         return Transform(
             id=transform_id,
             type="replace",
             path=path,
             before=before,
-            after=_string(raw_transform, "after"),
+            after=after,
             reverse_before=reverse_before,
             reverse_after=reverse_after,
             required=required,

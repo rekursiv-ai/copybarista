@@ -153,6 +153,94 @@ def test_rejects_move_with_empty_path_and_empty_destination():
         parse_config(raw)
 
 
+def test_rejects_identity_move():
+    """A move whose ``path`` equals its ``destination`` relocates nothing.
+
+    Forward placement is a no-op, but the reverse reports ``moved=True`` for it,
+    which can mis-route root-file ownership on import. Reject it at parse.
+    """
+    raw = tomllib.loads(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = "docs"
+        destination = "docs"
+        """
+    )
+    with pytest.raises(ConfigError, match="relocate"):
+        parse_config(raw)
+
+
+def test_rejects_non_injective_move_sequence():
+    """Two moves mapping distinct subtrees to one destination are not invertible.
+
+    Disjoint-filename subtrees merge without an export-time collision, so the
+    guard never fires, and the import reverse first-match-wins mis-routes. The
+    move sequence must be injective (no two entries share a destination) so
+    ``_reverse_file_moves`` is an exact inverse.
+    """
+    raw = tomllib.loads(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "pub"
+
+        [[files.moves]]
+        path = "pub/a"
+        destination = "z"
+
+        [[files.moves]]
+        path = "pub/b"
+        destination = "z"
+        """
+    )
+    with pytest.raises(ConfigError, match="destination"):
+        parse_config(raw)
+
+
+def test_rejects_replace_after_interpolating_group_absent_from_before():
+    """`compile_replace` cross-checks run at parse, not deferred to export.
+
+    A replace whose ``after`` interpolates a group its ``before`` never captures
+    hard-fails at export; surfacing it at load makes ``validate`` honest.
+    """
+    raw = tomllib.loads(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "**/*.py"
+        before = "loop.${s}"
+        after = "pkg.${t}"
+        regex_groups = { s = "[a-z]+", t = "[a-z]+" }
+        """
+    )
+    with pytest.raises(ConfigError, match="before"):
+        parse_config(raw)
+
+
 def test_loads_file_copy_config(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(

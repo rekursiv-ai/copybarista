@@ -1029,8 +1029,9 @@ def _reverse_file_moves(
     whether any move matched, so the caller can distinguish a path the selection
     placed (return the reversed source-relative path) from an identity path no
     move touched (leave it alone). Exact inverse of
-    ``workflow.MoveSequence.destination_path`` for the injective move sequences
-    the config parser and export-time collision guard admit.
+    ``workflow.MoveSequence.destination_path``: the config parser enforces
+    injectivity at load (``config._validate_moves_injective``), so the
+    reverse-order first match is unambiguous for every admitted sequence.
 
     Returns:
       source_relative: The path reversed back through the move sequence.

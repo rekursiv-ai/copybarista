@@ -176,6 +176,44 @@ def test_cli_check_leaks_reports_policy_violations(
     assert "loop-imports: module.py:1" in capsys.readouterr().err
 
 
+def test_cli_check_leaks_honors_config_globstar(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """`check-leaks` must apply the config's ``globstar``, like the export path.
+
+    Under ``zero_or_more`` a ``**/`` rule matches a root-level file; the export
+    threads ``config.globstar`` so it flags it. The standalone CLI must too --
+    otherwise it silently passes a tree the export gate would fail.
+    """
+    root = tmp_path / "out"
+    root.mkdir()
+    (root / "secret.txt").write_text("token\n", encoding="utf-8")
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+
+        [[leak_check.forbidden_path]]
+        id = "no-secrets"
+        paths = ["**/secret.txt"]
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main(["check-leaks", str(config), str(root)])
+
+    assert exc.value.code == 2
+    assert "no-secrets" in capsys.readouterr().err
+
+
 def test_cli_release_gate_exit_code_mapping():
     assert _exit_code(ConfigError("bad config")) == 1
     assert _exit_code(TransformError("no-op")) == 2
