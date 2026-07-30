@@ -73,6 +73,7 @@ def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> 
                 "uv",
                 "--quiet",
                 "export",
+                "--frozen",
                 "--only-group",
                 "copybarista",
                 "--no-hashes",
