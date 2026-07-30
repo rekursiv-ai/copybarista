@@ -104,6 +104,36 @@ def test_main_accepts_generic_project_validation_args(
     assert not captured[0].refresh_public_lockfile
 
 
+def test_export_copybarista_requirements_uses_frozen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The copybarista-group export must not re-resolve the monorepo lock.
+
+    Run in the monorepo root without ``--frozen``, ``uv export`` is free to
+    re-resolve the whole ``loop`` project whenever the runner's checked-out
+    ``uv.lock`` looks stale, dragging in monorepo-only ``loop:dev`` deps (e.g.
+    the linux-only ``pycairo``, which needs a system cairo the import runner
+    lacks). ``--frozen`` pins it to the committed lock so the bootstrap only
+    reads the ``copybarista`` group and never builds monorepo dev deps.
+    """
+    captured: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    sync_import_change._export_copybarista_requirements(
+        target_dir=tmp_path, runner_temp=tmp_path
+    )
+
+    assert captured, "expected an uv export invocation"
+    argv = captured[0]
+    assert "export" in argv
+    assert "--frozen" in argv, f"uv export must be frozen; got {argv}"
+
+
 def test_main_resolves_filesystem_inputs_to_absolute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -608,6 +638,7 @@ def test_export_copybarista_requirements_exports_group_from_lock(
         "uv",
         "--quiet",
         "export",
+        "--frozen",
         "--only-group",
         "copybarista",
         "--no-hashes",
