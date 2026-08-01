@@ -489,7 +489,10 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
         cwd=request.target_dir,
     )
 
-    title = f"Import {request.sync_label} public changes {request.public_sha[:12]}"
+    # Full SHA, not abbreviated: this subject IS the ledger. The export reads
+    # the imported commit back out of it to decide whether a force-write would
+    # revert public work, and an abbreviated SHA parses as no marker at all.
+    title = f"Import {request.sync_label} public changes {_pr_title_sha(request.public_sha)}"
     if _gh_pr_exists(branch=branch, repo=request.target_repo, cwd=request.target_dir):
         _run_gh(
             [
@@ -533,6 +536,11 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             sync_label=request.sync_label,
             cwd=request.target_dir,
         )
+
+
+def _pr_title_sha(public_sha: str) -> str:
+    """The SHA form the import PR title carries, which the ledger parses back."""
+    return public_sha
 
 
 def _merge_import_pr(
