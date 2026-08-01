@@ -1,19 +1,17 @@
 # Copybarista☕
 
+[![PyPI version](https://img.shields.io/pypi/v/copybarista.svg)](https://pypi.org/project/copybarista/)
+[![CI](https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml/badge.svg?branch=main)](https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Discord](https://img.shields.io/discord/1530237005311639592?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/2GZFPPvCqn)
+
 <p align="center">
   Publish and sync clean standalone repositories from private or monorepo source trees.
 </p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/rekursiv-ai/copybarista/main/assets/copybarista-splash.webp" alt="Copybarista mascot" width="520">
-</p>
-
-<p align="center">
-  <a href="https://pypi.org/project/copybarista/"><img alt="PyPI" src="https://img.shields.io/pypi/v/copybarista.svg"></a>
-  <a href="https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml"><img alt="CI" src="https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml/badge.svg?branch=main"></a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue.svg">
-  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href="https://discord.gg/2GZFPPvCqn"><img alt="Discord" src="https://img.shields.io/discord/1530237005311639592?logo=discord&logoColor=white&label=Discord&color=5865F2"></a>
 </p>
 
 <p align="center">
