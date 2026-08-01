@@ -689,6 +689,54 @@ def test_last_synced_public_sha_returns_newest_imported_sha(tmp_path: Path) -> N
     )
 
 
+def test_last_synced_public_sha_reads_a_squash_merged_subject(
+    tmp_path: Path,
+) -> None:
+    """A squash-merged import still records the baseline.
+
+    GitHub appends ``(#N)`` to the subject when a PR is squash-merged, which
+    is how these imports land. An end-anchored match skips those commits and
+    silently returns an OLDER baseline -- the export's data-loss guard then
+    compares against stale state, and the import's three-way merge gets a
+    wrong common ancestor, manufacturing conflicts that are not real.
+    """
+    older = "a" * 40
+    newer = "b" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[
+            f"Import Sagent public changes {older}",
+            f"Import Sagent public changes {newer} (#77)",
+        ],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == newer
+    )
+
+
+def test_last_synced_public_sha_ignores_trailing_prose(tmp_path: Path) -> None:
+    """Only the PR-number suffix is tolerated, not arbitrary trailing text."""
+    good = "a" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[
+            f"Import Sagent public changes {good}",
+            f"Import Sagent public changes {'b' * 40} but reverted later",
+        ],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == good
+    )
+
+
 def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
     # A different label's imports must not be mistaken for this label's baseline.
     sagent = "c" * 40

@@ -629,7 +629,10 @@ def last_synced_public_sha(
         cwd=target_dir,
         capture=True,
     ).stdout.splitlines()
-    pattern = re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})$")
+    # ``(#N)`` is GitHub's squash-merge suffix, which is how these imports
+    # land. Anchoring on the SHA alone skipped every squash-merged commit and
+    # silently returned an older baseline.
+    pattern = re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})(?: \(#\d+\))?$")
     for subject in subjects:
         match = pattern.match(subject)
         if match is not None:
