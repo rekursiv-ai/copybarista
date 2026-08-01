@@ -2633,70 +2633,6 @@ def test_run_export_sync_proceeds_with_no_pending_import(
     assert ran == ["ran"]
 
 
-def test_public_head_unimported_detects_a_conflicted_import(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A public commit the source never absorbed blocks the export.
-
-    An import that dies on a merge conflict opens no PR, so a PR-only guard
-    sees nothing and the export force-writes the public change away. The
-    source's own last-synced marker is the fact that cannot be fooled: it
-    only advances when an import actually lands.
-    """
-
-    def synced(**_: object) -> str:
-        return "aaaa111"
-
-    def head(**_: object) -> str:
-        return "bbbb222"
-
-    def not_ancestor(**_: object) -> bool:
-        return False
-
-    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
-    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(sync_export_pr, "_is_ancestor", not_ancestor)
-
-    assert (
-        _public_head_unimported(
-            public_dir=Path("/public"),
-            source_dir=Path("/src"),
-            sync_label="Sagent",
-            base_branch="main",
-        )
-        == "bbbb222"
-    )
-
-
-def test_public_head_unimported_is_empty_when_source_is_current(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An already-absorbed public head must not block the export."""
-
-    def synced(**_: object) -> str:
-        return "bbbb222"
-
-    def head(**_: object) -> str:
-        return "bbbb222"
-
-    def is_ancestor(**_: object) -> bool:
-        return True
-
-    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
-    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(sync_export_pr, "_is_ancestor", is_ancestor)
-
-    assert (
-        _public_head_unimported(
-            public_dir=Path("/public"),
-            source_dir=Path("/src"),
-            sync_label="Sagent",
-            base_branch="main",
-        )
-        == ""
-    )
-
-
 def test_run_export_sync_skips_when_public_head_is_unimported(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2755,6 +2691,7 @@ def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(
             source_dir=Path("/src"),
             sync_label="Sagent",
             base_branch="main",
+            sync_user_email="rekursiv-bot@rekursiv.ai",
         )
 
 
@@ -2778,6 +2715,73 @@ def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
             source_dir=Path("/src"),
             sync_label="Sagent",
             base_branch="main",
+            sync_user_email="rekursiv-bot@rekursiv.ai",
         )
         == ""
+    )
+
+
+def test_public_head_unimported_ignores_export_bot_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Commits the export itself authored are not work to preserve.
+
+    The public head is always AHEAD of the last import (the export's own
+    commit lands after it), so an ancestry test reports every project as
+    diverged forever. What matters is whether the unimported span contains
+    anything the export did not write.
+    """
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    def synced(**_: object) -> str:
+        return "aaaa111"
+
+    def only_bot(**_: object) -> tuple[str, ...]:
+        return ()
+
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", only_bot)
+
+    assert (
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+            sync_user_email="rekursiv-bot@rekursiv.ai",
+        )
+        == ""
+    )
+
+
+def test_public_head_unimported_blocks_on_a_human_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A human commit in the unimported span must stop the force-write."""
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    def synced(**_: object) -> str:
+        return "aaaa111"
+
+    def has_human(**_: object) -> tuple[str, ...]:
+        return ("2c5fefb Release sagent 0.1.13",)
+
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", has_human)
+
+    assert (
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+            sync_user_email="rekursiv-bot@rekursiv.ai",
+        )
+        == "bbbb222"
     )
