@@ -27,6 +27,7 @@ from copybarista.scripts.sync_export_pr import (
     _gh_pr_exists,
     _open_or_update_export_pr,
     _parse_pr_metadata_log,
+    _pending_import_prs,
     _postleakcheck_validation,
     _preleakcheck_validation,
     _public_pr_text,
@@ -2524,3 +2525,108 @@ def test_validate_public_runs_nothing_without_commands(
     _validate_public(public_dir=Path("/public"), validation_commands=())
 
     assert calls == []
+
+
+def test_pending_import_branches_lists_open_import_prs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard asks GitHub for open import PRs on the source repo."""
+    calls: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"number": 68, "headRefName": "trackinizer/import/sha-abc"}]',
+        )
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    pending = _pending_import_prs(
+        prefix="trackinizer/import/", repo="rekursiv-ai/loop", cwd=Path("/src")
+    )
+
+    assert pending == ("#68 trackinizer/import/sha-abc",)
+    assert calls
+    assert calls[0][:3] == ["gh", "pr", "list"]
+
+
+def test_pending_import_branches_ignores_other_projects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sibling project's import must not block this project's export."""
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"number": 70, "headRefName": "madcatter/import/sha-def"}]',
+        )
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    assert (
+        _pending_import_prs(
+            prefix="trackinizer/import/", repo="rekursiv-ai/loop", cwd=Path("/src")
+        )
+        == ()
+    )
+
+
+def test_run_export_sync_skips_while_an_import_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A pending import means the source is stale; exporting would revert it.
+
+    The export force-writes the public checkout, so running it while the
+    source has not yet absorbed a public change silently reverts that change.
+    Skipping leaves the public repo stale instead, which is recoverable.
+    """
+    request = replace(
+        _export_request(tmp_path),
+        import_branch_prefix="trackinizer/import/",
+        source_repo="rekursiv-ai/loop",
+    )
+    ran: list[str] = []
+
+    def fake_pending(**_: object) -> tuple[str, ...]:
+        return ("#68 trackinizer/import/sha-abc",)
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        del request
+        ran.append("ran")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", fake_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.run_export_sync(request)
+
+    assert ran == [], "export must not run while an import PR is open"
+
+
+def test_run_export_sync_proceeds_with_no_pending_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = replace(
+        _export_request(tmp_path),
+        import_branch_prefix="trackinizer/import/",
+        source_repo="rekursiv-ai/loop",
+    )
+    ran: list[str] = []
+
+    def fake_pending(**_: object) -> tuple[str, ...]:
+        return ()
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        del request
+        ran.append("ran")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", fake_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.run_export_sync(request)
+
+    assert ran == ["ran"]

@@ -238,7 +238,7 @@ Validate the scaffolding before wiring GitHub Actions:
 ```bash
 copybarista check-sync-config .
 copybarista write-export-workflow copybarista.sync.toml \
-  --output configgle-export.yml
+  --output export-configgle.yml
 ```
 
 Generated export PRs can use public-safe commit metadata for their title and

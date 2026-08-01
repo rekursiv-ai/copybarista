@@ -96,6 +96,8 @@ def run(argv: list[str] | None = None) -> int:
             prefix=args.branch_prefix,
         ),
         sync_label=args.sync_label,
+        import_branch_prefix=args.import_branch_prefix,
+        source_repo=args.source_repo,
         sync_user_name=args.sync_user_name,
         sync_user_email=args.sync_user_email,
         pr_title=pr_text.title,
@@ -160,6 +162,8 @@ class ExportRequest:
     smoke_import: str
     validation_commands: tuple[str, ...]
     dry_run: bool
+    import_branch_prefix: str = ""
+    source_repo: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -262,7 +266,27 @@ class PrReplayError(RuntimeError):
 
 
 def run_export_sync(request: ExportRequest) -> None:
-    """Validate, export, replace the public checkout, and open/update a PR."""
+    """Validate, export, replace the public checkout, and open/update a PR.
+
+    Skips entirely while an import PR for this project is still open. The
+    export force-writes the public checkout from the source tree, so running
+    it before the source has absorbed a public change silently reverts that
+    change -- the public commit stays in history but its content is gone.
+    Skipping leaves the public repo stale instead, which the next export
+    fixes on its own.
+    """
+    if request.import_branch_prefix and request.source_repo:
+        pending = _pending_import_prs(
+            prefix=request.import_branch_prefix,
+            repo=request.source_repo,
+            cwd=request.source_dir,
+        )
+        if pending:
+            _log(
+                "Skipping export: import PR(s) still open, so the source tree "
+                f"does not yet contain the public changes: {', '.join(pending)}."
+            )
+            return
     dry_public_dir = None
     if request.dry_run:
         dry_public_dir = _clone_public_checkout_for_dry_run(
@@ -399,6 +423,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sync-label",
         default=os.environ.get("COPYBARISTA_SYNC_LABEL", DEFAULT_SYNC_LABEL),
+    )
+    parser.add_argument(
+        # Empty disables the pending-import guard, which is the right default
+        # for a project whose public repo cannot open import PRs.
+        "--import-branch-prefix",
+        default=os.environ.get("COPYBARISTA_IMPORT_BRANCH_PREFIX", ""),
+    )
+    parser.add_argument(
+        "--source-repo",
+        default=os.environ.get("COPYBARISTA_SOURCE_REPO", ""),
     )
     parser.add_argument(
         "--pr-title",
@@ -878,6 +912,49 @@ def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
     if fallback.strip():
         return fallback.strip()
     raise PrReplayError("Cannot resolve current source revision from source checkout.")
+
+
+def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]:
+    """Open import PRs for this project, as ``#<n> <branch>`` strings.
+
+    Args:
+      prefix: This project's import-branch prefix (``<project>/import/``).
+      repo: The source repository the import PRs are opened against.
+      cwd: Directory to run the GitHub CLI from.
+
+    Returns:
+      pending: One entry per open import PR; empty when the source is current.
+
+    """
+    result = _run_gh(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            "number,headRefName",
+        ],
+        cwd=cwd,
+        capture=True,
+    )
+    parsed = _json_from_gh(result.stdout, context=f"open PR list for {repo}")
+    if not isinstance(parsed, list):
+        raise PrReplayError(f"Open PR list for {repo} is not a list.")
+    out: list[str] = []
+    for item in cast("list[object]", parsed):
+        if not isinstance(item, dict):
+            continue
+        row = cast("dict[str, object]", item)
+        branch = str(row.get("headRefName", ""))
+        if branch.startswith(prefix):
+            out.append(f"#{row.get('number', 0)} {branch}")
+    return tuple(out)
 
 
 def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
