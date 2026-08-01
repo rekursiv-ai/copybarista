@@ -202,6 +202,7 @@ jobs:
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
             --open-pr true \
+            --auto-merge "${{ vars.COPYBARISTA_IMPORT_AUTO_MERGE || 'true' }}" \
             --open-pr-only
 
       - name: Upload import report

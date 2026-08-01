@@ -663,7 +663,14 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
 
 
 def _render_template(name: str, values: dict[str, str]) -> str:
-    """Render one package-data template with explicit token replacement."""
+    """Render one package-data template with explicit token replacement.
+
+    Every rendered file is prefixed with a DO-NOT-EDIT banner. Six of the
+    seven export workflows were hand-edited for months precisely because
+    nothing on the file said not to, so the banner is emitted here rather
+    than written into each template, where the next new template would
+    silently omit it.
+    """
     text = (
         resources.files(f"{__package__}.templates")
         .joinpath(name)
@@ -673,7 +680,21 @@ def _render_template(name: str, values: dict[str, str]) -> str:
         text = text.replace(f"@@{key}@@", value)
     if "@@" in text:
         raise AssertionError(f"Unrendered token in template {name}.")
-    return text
+    return _generated_banner(name) + text
+
+
+def _generated_banner(template_name: str) -> str:
+    """Return the DO-NOT-EDIT header for a file rendered from ``template_name``."""
+    # Names carry a ``.tmpl`` suffix, so test the type BEFORE it: every
+    # template rendered today is YAML or TOML, both ``#``-commented.
+    comment = "#"
+    # Public-safe wording: these files ship to the public repositories, whose
+    # leak check rejects both monorepo paths and the generator's own name.
+    return (
+        f"{comment} DO NOT EDIT -- generated from {template_name} and this\n"
+        f"{comment} package's sync config. Hand edits are overwritten; change\n"
+        f"{comment} the template, the generator, or the sync config instead.\n"
+    )
 
 
 def _required_paths(root: Path) -> tuple[Path, ...]:

@@ -146,6 +146,7 @@ def run(argv: list[str] | None = None) -> int:
         sync_user_email=args.sync_user_email,
         report=Path(args.report).resolve(),
         open_pr=_string_bool(args.open_pr),
+        auto_merge=_string_bool(args.auto_merge),
         open_pr_only=args.open_pr_only,
         runner_temp=Path(args.runner_temp).resolve(),
         validation_commands=tuple(args.validation_command),
@@ -176,6 +177,7 @@ class ImportRequest:
     report: Path
     open_pr: bool
     open_pr_only: bool
+    auto_merge: bool = True
     runner_temp: Path
     validation_commands: tuple[str, ...]
     refresh_public_lockfile: bool
@@ -256,6 +258,13 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("IMPORT_REPORT", "import-report.json"),
     )
     parser.add_argument("--open-pr", default="false")
+    parser.add_argument(
+        # Defaults ON: a clean import carries no decision a human can improve,
+        # and an unmerged one blocks the export in the other direction. A
+        # conflicting import never reaches the merge -- it raises first.
+        "--auto-merge",
+        default=os.environ.get("COPYBARISTA_AUTO_MERGE", "true"),
+    )
     parser.add_argument(
         "--open-pr-only",
         action="store_true",
@@ -497,25 +506,90 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             ],
             cwd=request.target_dir,
         )
+    else:
+        _run_gh(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                request.target_repo,
+                "--base",
+                request.base_branch,
+                "--head",
+                branch,
+                "--title",
+                title,
+                "--body-file",
+                str(body_file),
+            ],
+            cwd=request.target_dir,
+        )
+    if request.auto_merge:
+        _merge_import_pr(
+            branch=branch,
+            target_repo=request.target_repo,
+            title=title,
+            sync_label=request.sync_label,
+            cwd=request.target_dir,
+        )
+
+
+def _merge_import_pr(
+    *, branch: str, target_repo: str, title: str, sync_label: str, cwd: Path
+) -> None:
+    """Merge the import PR, preferring auto-merge.
+
+    A clean import needs no human decision. The public change is already
+    reviewed and already published; the source is the authority on how it
+    RENDERS, not a second approval gate. Waiting for a click is also what
+    stalls the other direction, since the export refuses to run while an
+    import is outstanding.
+
+    A conflicting or failing import never reaches here -- it raises before
+    the PR is opened -- so this path only ever merges an import that applied
+    cleanly and passed the same checks the source requires of any change.
+
+    Mirrors the export's merge policy: ``--auto`` needs a deferrable merge
+    (branch protection or pending checks), so a repo with neither rejects it
+    and the merge is issued directly instead.
+
+    Args:
+      branch: The import branch to merge.
+      target_repo: The source repository holding the PR.
+      title: Squash-commit subject; the ledger reads the imported SHA from it.
+      sync_label: Import label, used in the squash body.
+      cwd: Directory to run the GitHub CLI from.
+
+    """
+    merge_argv = [
+        "gh",
+        "pr",
+        "merge",
+        branch,
+        "--repo",
+        target_repo,
+        "--squash",
+        "--subject",
+        title,
+        "--body",
+        f"{sync_label} import branch: {branch}",
+    ]
+    result = _run_gh([*merge_argv, "--auto"], cwd=cwd, capture=True, check=False)
+    if result.returncode == 0:
         return
-    _run_gh(
-        [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            request.target_repo,
-            "--base",
-            request.base_branch,
-            "--head",
-            branch,
-            "--title",
-            title,
-            "--body-file",
-            str(body_file),
-        ],
-        cwd=request.target_dir,
-    )
+    output = f"{result.stdout}\n{result.stderr}".casefold()
+    if (
+        "protected branch rules not configured" in output
+        or "enablepullrequestautomerge" in output
+    ):
+        _log(
+            "Auto-merge unavailable (no branch protection / pending checks); "
+            "merging the import PR directly."
+        )
+        _run_gh(merge_argv, cwd=cwd)
+        return
+    raise SystemExit(result.returncode)
 
 
 def import_change_pr_body(
@@ -759,8 +833,14 @@ def _run_gh(
     *,
     cwd: Path,
     capture: bool = False,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a GitHub CLI command with retries for transient API failures."""
+    """Run a GitHub CLI command with retries for transient API failures.
+
+    With ``check=False`` a non-retryable failure is returned to the caller
+    instead of raising, so the caller can inspect stderr and recover (the
+    auto-merge fallback reads it to detect a repo that cannot defer merges).
+    """
     for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
         result = _run(argv, cwd=cwd, check=False, capture=True)
         if result.returncode == 0:
@@ -768,6 +848,8 @@ def _run_gh(
                 _write_process_output(result)
             return result
         if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
+            if not check:
+                return result
             _write_process_output(result)
             raise SystemExit(result.returncode)
         _log(

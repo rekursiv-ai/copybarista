@@ -886,3 +886,62 @@ def test_main_print_synced_base_emits_fallback_without_history(
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_import_pr_auto_merges_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A clean import merges itself; a human adds nothing to that decision.
+
+    The public change is already reviewed and already live -- the source is
+    the render authority, not a second approval gate. Waiting on a human is
+    also what stalls the export, since an unmerged import blocks it.
+    """
+    merged: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if "merge" in argv:
+            merged.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
+
+    sync_import_change._merge_import_pr(
+        branch="pkg/import/sha-abc",
+        target_repo="rekursiv-ai/source",
+        title="Import Package public changes abc",
+        sync_label="Package",
+        cwd=tmp_path,
+    )
+
+    assert merged, "a clean import must merge without waiting for a human"
+    assert "--squash" in merged[0]
+    assert "--auto" in merged[0]
+
+
+def test_import_pr_merges_directly_when_auto_merge_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without branch protection, ``--auto`` fails; merge immediately instead."""
+    calls: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if "--auto" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="Protected branch rules not configured."
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
+
+    sync_import_change._merge_import_pr(
+        branch="pkg/import/sha-abc",
+        target_repo="rekursiv-ai/source",
+        title="Import Package public changes abc",
+        sync_label="Package",
+        cwd=tmp_path,
+    )
+
+    assert len(calls) == 2, "must retry without --auto"
+    assert "--auto" not in calls[1]
