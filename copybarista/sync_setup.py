@@ -77,6 +77,8 @@ class SyncSettings:
       require_pr_metadata: Whether exports fail when no metadata is replayed.
       pr_metadata_source: Source of PR metadata. Currently commit_messages only.
       replay_bootstrap_base: Optional source revision for one-time migrations.
+      replay_bootstrap_base_comment: Lines explaining WHY that revision was
+        chosen, rendered above the env var in the generated workflow.
       publish_source_rev: Whether public markers may include raw source SHAs.
       refresh_public_lockfile: Whether export runs generate a public uv.lock.
       skip_source_validation: Whether export runs skip source-side validation.
@@ -107,6 +109,7 @@ class SyncSettings:
     require_pr_metadata: bool = False
     pr_metadata_source: str = "commit_messages"
     replay_bootstrap_base: str = ""
+    replay_bootstrap_base_comment: tuple[str, ...] = ()
     publish_source_rev: bool = False
     refresh_public_lockfile: bool = False
     skip_source_validation: bool = False
@@ -253,6 +256,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
             pull_request,
             "replay_bootstrap_base",
             default="",
+        ),
+        replay_bootstrap_base_comment=_optional_str_tuple(
+            pull_request,
+            "replay_bootstrap_base_comment",
+            default=(),
         ),
         publish_source_rev=_optional_pr_bool(
             pull_request,
@@ -520,8 +528,20 @@ def export_workflow(settings: SyncSettings) -> str:
         else ""
     )
     forbidden = ",".join(settings.forbidden_pr_text)
+    # A ``#``-prefixed entry renders as a YAML comment rather than a path, so
+    # a project can explain WHY it watches a block without the explanation
+    # living as a hand edit in the generated workflow.
     export_watch_paths = "".join(
-        f"      - {_yaml_str(path)}\n" for path in settings.export_watch_paths
+        f"      {path}\n" if path.startswith("#") else f"      - {_yaml_str(path)}\n"
+        for path in settings.export_watch_paths
+    )
+    replay_bootstrap_base_default = (
+        f" || {_github_expr_str(settings.replay_bootstrap_base)}"
+        if settings.replay_bootstrap_base
+        else ""
+    )
+    replay_bootstrap_base_comment = "".join(
+        f"      # {line}\n" for line in settings.replay_bootstrap_base_comment
     )
     project_path = f"source/{settings.copybarista_project_path}"
     script_path = f"{project_path}/scripts/sync_export_pr.py"
@@ -548,6 +568,10 @@ def export_workflow(settings: SyncSettings) -> str:
             "SYNC_EXPORT_SCRIPT": _sh(script_path),
             "SOURCE_ROOT": _sh(settings.source_root),
             "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
+            "IMPORT_BRANCH_PREFIX": _sh(settings.import_prefix),
+            "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
+            "REPLAY_BOOTSTRAP_BASE_DEFAULT": replay_bootstrap_base_default,
+            "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_bootstrap_base_comment,
             "PR_DEFAULT_TITLE": _sh(settings.pr_default_title),
             "PR_DEFAULT_BODY": _sh(settings.pr_default_body),
             "PR_REPLAY_FLAGS": pr_replay_flags,
@@ -975,6 +999,9 @@ def _validate_settings(settings: SyncSettings) -> None:
     if not settings.type_check_targets:
         raise ConfigError("sync.type_check_targets cannot be empty.")
     for path in settings.export_watch_paths:
+        # A ``#`` entry is a rendered YAML comment, not a path to validate.
+        if path.startswith("#"):
+            continue
         _validate_relative_path(path, name="export_watch_paths")
     _validate_python_module_name(settings.smoke_import, name="smoke_import")
     _validate_relative_path(settings.release_check_script, name="release_check_script")
@@ -1092,8 +1119,6 @@ def _pr_replay_args(settings: SyncSettings) -> list[str]:
     ]
     if settings.require_pr_metadata:
         args.append("--require-pr-metadata")
-    if settings.replay_bootstrap_base:
-        args.extend(("--replay-bootstrap-base", settings.replay_bootstrap_base))
     if settings.publish_source_rev:
         args.append("--publish-source-rev")
     if settings.refresh_public_lockfile:
