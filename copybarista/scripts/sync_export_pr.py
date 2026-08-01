@@ -31,7 +31,10 @@ import tempfile
 import time
 
 from copybarista.config import Transform, load_config
-from copybarista.scripts.sync_import_change import last_synced_public_sha
+from copybarista.scripts.sync_import_change import (
+    ImportBaseError,
+    last_synced_public_sha,
+)
 from copybarista.sync_setup import (
     SyncSettings,
     load_sync_settings,
@@ -264,6 +267,10 @@ class PrMetadataError(ValueError):
 
 class PrReplayError(RuntimeError):
     """PR replay state cannot be resolved safely."""
+
+
+class ExportGuardError(RuntimeError):
+    """The data-loss guard could not determine whether the export is safe."""
 
 
 def run_export_sync(request: ExportRequest) -> None:
@@ -987,8 +994,18 @@ def _last_synced_public_sha(
             base_branch=base_branch,
             fallback="",
         )
-    except Exception:  # noqa: BLE001 -- a guard that cannot answer must not block the export.
+    except ImportBaseError:
+        # No landed import at all: a bootstrap, where there is nothing to
+        # revert. Distinct from "cannot read the ledger" below.
         return ""
+    except Exception as err:
+        # Fail CLOSED. This is the only check standing between a force-write
+        # and a public commit the source never absorbed, so an unanswerable
+        # guard must stop the export rather than wave it through.
+        raise ExportGuardError(
+            f"Cannot read the {sync_label} import ledger, so whether this "
+            f"export would revert public work is unknown: {err}"
+        ) from err
 
 
 def _is_ancestor(*, ancestor: str, descendant: str, cwd: Path) -> bool:

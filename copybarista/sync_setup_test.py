@@ -474,9 +474,15 @@ def test_export_workflow_passes_pr_replay_flags():
     )
 
     assert "--require-pr-metadata" in workflow
-    assert "--replay-bootstrap-base" in workflow
-    assert "main~10" in workflow
     assert "--publish-source-rev" in workflow
+    # The replay base rides the env var, not a CLI flag: the flag's argparse
+    # default IS that env var, so emitting both made the flag always win and
+    # the workflow_dispatch input silently do nothing.
+    assert "--replay-bootstrap-base" not in workflow
+    assert (
+        "COPYBARISTA_REPLAY_BOOTSTRAP_BASE: "
+        "${{ inputs.replay_bootstrap_base || 'main~10' }}" in workflow
+    )
 
 
 def test_export_workflow_can_refresh_public_lockfile():

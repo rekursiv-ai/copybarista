@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from copybarista.config import Transform
-from copybarista.scripts import sync_export_pr
+from copybarista.scripts import sync_export_pr, sync_import_change
 from copybarista.scripts.sync_export_pr import (
     ExportRequest,
     PrBodyEntry,
@@ -2727,3 +2727,57 @@ def test_run_export_sync_skips_when_public_head_is_unimported(
     sync_export_pr.run_export_sync(request)
 
     assert ran == [], "a failed import must still block the export"
+
+
+def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unanswerable guard must block, not wave the export through.
+
+    Returning "" on error made any transient git failure re-enable the
+    force-write -- availability over data safety on the one check whose
+    entire job is data safety. A bootstrap (no landed import at all) is
+    distinguishable: it raises ImportBaseError, which is not an error.
+    """
+
+    def boom(**_: object) -> str:
+        raise OSError("git unavailable")
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", boom)
+
+    with pytest.raises(sync_export_pr.ExportGuardError, match="ledger"):
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+        )
+
+
+def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first export has nothing to revert, so it must not be blocked."""
+
+    def no_import(**_: object) -> str:
+        raise sync_import_change.ImportBaseError("no landed import")
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", no_import)
+
+    assert (
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+        )
+        == ""
+    )
