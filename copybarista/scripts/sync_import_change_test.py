@@ -945,3 +945,23 @@ def test_import_pr_merges_directly_when_auto_merge_unavailable(
 
     assert len(calls) == 2, "must retry without --auto"
     assert "--auto" not in calls[1]
+
+
+def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
+    """The title an import writes must parse as the marker it later reads.
+
+    ``_open_or_update_target_pr`` wrote an abbreviated SHA while
+    ``last_synced_public_sha`` required the full 40 characters, so a landed
+    import recorded nothing the ledger could see -- the export's guard then
+    reported the just-imported commit as unimported and skipped forever.
+    """
+    full = "0e8b8406cdd2" + "0" * 28
+    title = f"Import Sagent public changes {sync_import_change._pr_title_sha(full)}"
+    _git_repo_with_commits(root=tmp_path, subjects=[title])
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == full
+    )
