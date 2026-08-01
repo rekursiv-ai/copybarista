@@ -71,6 +71,11 @@ jobs:
           token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
           ref: ${{ env.BASE_BRANCH }}
           path: public
+          # Full history: the data-loss guard walks `<last-import>..HEAD` to see
+          # whether anything unimported was written by someone other than the
+          # export. A shallow clone cannot resolve that range, so the guard
+          # fails closed and every export skips forever.
+          fetch-depth: 0
 @@SYSTEM_DEPS@@      - name: Open export PR
         env:
           PYTHONPATH: source

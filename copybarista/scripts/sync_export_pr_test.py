@@ -2785,3 +2785,77 @@ def test_public_head_unimported_blocks_on_a_human_commit(
         )
         == "bbbb222"
     )
+
+
+def test_foreign_commits_since_reports_an_unreadable_range(tmp_path: Path) -> None:
+    """A range git cannot resolve counts as foreign, and says why.
+
+    The public checkout was cloned at depth 1, so `<last-import>..HEAD` was
+    unresolvable and this returned "foreign" for every project -- the export
+    skipped forever with a message blaming an unimported commit rather than
+    the shallow clone. Failing closed is right; failing closed SILENTLY is
+    what made it take three rounds to find.
+    """
+    repo = _git_repo(tmp_path / "repo", [])
+
+    foreign = sync_export_pr._foreign_commits_since(
+        base="0" * 40,
+        head="HEAD",
+        author_email="bot@example.com",
+        cwd=repo,
+    )
+
+    assert foreign, "an unresolvable range must block the export"
+    assert "unreadable" in foreign[0]
+
+
+def test_foreign_commits_since_separates_bot_from_human(tmp_path: Path) -> None:
+    """Only commits the export did not author count as work to preserve."""
+    repo = _git_repo(
+        tmp_path / "repo",
+        [
+            ("base", "bot@example.com"),
+            ("generated export", "bot@example.com"),
+            ("human release", "dev@example.com"),
+        ],
+    )
+    base = subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+        ["git", "-C", str(repo), "rev-parse", "HEAD~2"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    foreign = sync_export_pr._foreign_commits_since(
+        base=base,
+        head="HEAD",
+        author_email="bot@example.com",
+        cwd=repo,
+    )
+
+    assert [line.split(" ", 1)[1] for line in foreign] == ["human release"]
+
+
+def _git_repo(root: Path, commits: list[tuple[str, str]]) -> Path:
+    """Create a Git repo with one commit per ``(subject, author_email)``."""
+    root.mkdir(parents=True, exist_ok=True)
+
+    def run(*args: str) -> None:
+        subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+            ["git", "-C", str(root), *args],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+
+    subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+        ["git", "init", "-q", "-b", "main", str(root)],  # noqa: S607
+        check=True,
+    )
+    run("config", "commit.gpgsign", "false")
+    run("config", "user.name", "Test")
+    run("config", "user.email", "test@example.com")
+    for i, (subject, email) in enumerate(commits):
+        (root / "f.txt").write_text(f"{i}\n", encoding="utf-8")
+        run("add", "f.txt")
+        run("-c", f"user.email={email}", "commit", "-q", "-m", subject)
+    return root
