@@ -30,6 +30,7 @@ from copybarista.scripts.sync_export_pr import (
     _pending_import_prs,
     _postleakcheck_validation,
     _preleakcheck_validation,
+    _public_head_unimported,
     _public_pr_text,
     _render_pr_body,
     _replace_pr_state,
@@ -2630,3 +2631,99 @@ def test_run_export_sync_proceeds_with_no_pending_import(
     sync_export_pr.run_export_sync(request)
 
     assert ran == ["ran"]
+
+
+def test_public_head_unimported_detects_a_conflicted_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public commit the source never absorbed blocks the export.
+
+    An import that dies on a merge conflict opens no PR, so a PR-only guard
+    sees nothing and the export force-writes the public change away. The
+    source's own last-synced marker is the fact that cannot be fooled: it
+    only advances when an import actually lands.
+    """
+
+    def synced(**_: object) -> str:
+        return "aaaa111"
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    def not_ancestor(**_: object) -> bool:
+        return False
+
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_is_ancestor", not_ancestor)
+
+    assert (
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+        )
+        == "bbbb222"
+    )
+
+
+def test_public_head_unimported_is_empty_when_source_is_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-absorbed public head must not block the export."""
+
+    def synced(**_: object) -> str:
+        return "bbbb222"
+
+    def head(**_: object) -> str:
+        return "bbbb222"
+
+    def is_ancestor(**_: object) -> bool:
+        return True
+
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_is_ancestor", is_ancestor)
+
+    assert (
+        _public_head_unimported(
+            public_dir=Path("/public"),
+            source_dir=Path("/src"),
+            sync_label="Sagent",
+            base_branch="main",
+        )
+        == ""
+    )
+
+
+def test_run_export_sync_skips_when_public_head_is_unimported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The content check gates the export even with no import PR open."""
+    request = replace(
+        _export_request(tmp_path),
+        import_branch_prefix="sagent/import/",
+        source_repo="rekursiv-ai/loop",
+        sync_label="Sagent",
+    )
+    ran: list[str] = []
+
+    def no_pending(**_: object) -> tuple[str, ...]:
+        return ()
+
+    def unimported(**_: object) -> str:
+        return "bbbb222"
+
+    def fake_run_export_sync(request: ExportRequest) -> None:
+        del request
+        ran.append("ran")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", no_pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
+
+    sync_export_pr.run_export_sync(request)
+
+    assert ran == [], "a failed import must still block the export"

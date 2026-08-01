@@ -6,9 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1530237005311639592?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/2GZFPPvCqn)
 
-<p align="center">
-  Publish and sync clean standalone repositories from private or monorepo source trees.
-</p>
+Bidirectional source sync for publishing OSS-ready trees from a monorepo.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/rekursiv-ai/copybarista/main/assets/copybarista-splash.webp" alt="Copybarista mascot" width="520">

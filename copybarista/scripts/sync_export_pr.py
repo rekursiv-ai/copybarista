@@ -31,6 +31,7 @@ import tempfile
 import time
 
 from copybarista.config import Transform, load_config
+from copybarista.scripts.sync_import_change import last_synced_public_sha
 from copybarista.sync_setup import (
     SyncSettings,
     load_sync_settings,
@@ -285,6 +286,23 @@ def run_export_sync(request: ExportRequest) -> None:
             _log(
                 "Skipping export: import PR(s) still open, so the source tree "
                 f"does not yet contain the public changes: {', '.join(pending)}."
+            )
+            return
+        # An import that failed (merge conflict, validation error) opens no PR
+        # at all, so the check above sees nothing while the source is stale --
+        # exactly when a force-write does the most damage. Ask the content
+        # question too: has the source actually absorbed the public head?
+        unimported = _public_head_unimported(
+            public_dir=request.public_dir,
+            source_dir=request.source_dir,
+            sync_label=request.sync_label,
+            base_branch=request.base_branch,
+        )
+        if unimported:
+            _log(
+                "Skipping export: public commit "
+                f"{unimported[:12]} has not been imported into the source "
+                "(no landed import records it), so exporting would revert it."
             )
             return
     dry_public_dir = None
@@ -912,6 +930,76 @@ def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
     if fallback.strip():
         return fallback.strip()
     raise PrReplayError("Cannot resolve current source revision from source checkout.")
+
+
+def _public_head_unimported(
+    *, public_dir: Path, source_dir: Path, sync_label: str, base_branch: str
+) -> str:
+    """The public head SHA when the source has not imported it, else ``""``.
+
+    The source records each landed import's public SHA in that commit's
+    subject, so its history is the source of truth for what it has absorbed.
+    A public head that is neither that SHA nor an ancestor of it is a change
+    the source never received -- force-writing the export over it would
+    destroy it.
+
+    Args:
+      public_dir: The public checkout.
+      source_dir: The source checkout.
+      sync_label: Import label scoping the commit search, e.g. ``Sagent``.
+      base_branch: Source branch carrying the landed imports.
+
+    Returns:
+      sha: The unimported public head, or ``""`` when the source is current.
+
+    """
+    head = _public_head_sha(cwd=public_dir)
+    if not head:
+        return ""
+    synced = _last_synced_public_sha(
+        target_dir=source_dir, sync_label=sync_label, base_branch=base_branch
+    )
+    if not synced:
+        # No landed import at all: a first export, where there is nothing to
+        # revert. Treating this as blocked would deadlock bootstrap.
+        return ""
+    if synced == head:
+        return ""
+    return (
+        "" if _is_ancestor(ancestor=head, descendant=synced, cwd=public_dir) else head
+    )
+
+
+def _public_head_sha(*, cwd: Path) -> str:
+    """HEAD of the public checkout, or ``""`` when it cannot be read."""
+    result = _run(["git", "rev-parse", "HEAD"], cwd=cwd, capture=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _last_synced_public_sha(
+    *, target_dir: Path, sync_label: str, base_branch: str
+) -> str:
+    """The newest public SHA the source has imported, or ``""`` when none."""
+    try:
+        return last_synced_public_sha(
+            target_dir=target_dir,
+            sync_label=sync_label,
+            base_branch=base_branch,
+            fallback="",
+        )
+    except Exception:  # noqa: BLE001 -- a guard that cannot answer must not block the export.
+        return ""
+
+
+def _is_ancestor(*, ancestor: str, descendant: str, cwd: Path) -> bool:
+    """Whether ``ancestor`` is reachable from ``descendant``."""
+    result = _run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=cwd,
+        capture=True,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]:
