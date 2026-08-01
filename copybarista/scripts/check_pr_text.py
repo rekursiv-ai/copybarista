@@ -14,7 +14,7 @@ unrewritable. This hook runs the same check at ``commit-msg`` time, so a leak is
 caught locally before it can reach ``main`` and wedge the export replay.
 
 The forbidden terms mirror the ``FORBIDDEN_PR_TEXT`` env in the export
-workflows (``.github/workflows/{sagent,configgle}-export.yml``); keep them in
+workflows (``.github/workflows/export-{sagent,configgle}.yml``); keep them in
 step. A match is a substring test, exactly as the export performs it.
 
 Only the ``Copybarista-PR-Title`` and ``Copybarista-PR-Body`` values are scanned
@@ -60,7 +60,7 @@ def main() -> int:
 def _scan(
     message: str,
     # Mirror FORBIDDEN_PR_TEXT in the export workflows
-    # (.github/workflows/{sagent,configgle}-export.yml); keep in step. A public
+    # (.github/workflows/export-{sagent,configgle}.yml); keep in step. A public
     # PR field must contain none of these monorepo references.
     forbidden: Sequence[str] = (
         "loop.",

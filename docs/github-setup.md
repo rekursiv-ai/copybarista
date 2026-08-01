@@ -83,7 +83,7 @@ Generate the source-repository export workflow from the same metadata:
 
 ```bash
 copybarista write-export-workflow copybarista.sync.toml \
-  --output .github/workflows/configgle-export.yml
+  --output .github/workflows/export-configgle.yml
 ```
 
 Review the generated workflow before committing it; it is intentionally plain
