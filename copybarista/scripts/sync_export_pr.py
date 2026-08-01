@@ -304,6 +304,7 @@ def run_export_sync(request: ExportRequest) -> None:
             source_dir=request.source_dir,
             sync_label=request.sync_label,
             base_branch=request.base_branch,
+            sync_user_email=request.sync_user_email,
         )
         if unimported:
             _log(
@@ -940,7 +941,12 @@ def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
 
 
 def _public_head_unimported(
-    *, public_dir: Path, source_dir: Path, sync_label: str, base_branch: str
+    *,
+    public_dir: Path,
+    source_dir: Path,
+    sync_label: str,
+    base_branch: str,
+    sync_user_email: str,
 ) -> str:
     """The public head SHA when the source has not imported it, else ``""``.
 
@@ -955,6 +961,8 @@ def _public_head_unimported(
       source_dir: The source checkout.
       sync_label: Import label scoping the commit search, e.g. ``Sagent``.
       base_branch: Source branch carrying the landed imports.
+      sync_user_email: The export bot's author email. Commits it wrote are
+        renders of this source, so they carry nothing to preserve.
 
     Returns:
       sha: The unimported public head, or ``""`` when the source is current.
@@ -972,9 +980,15 @@ def _public_head_unimported(
         return ""
     if synced == head:
         return ""
-    return (
-        "" if _is_ancestor(ancestor=head, descendant=synced, cwd=public_dir) else head
+    # The public head is normally AHEAD of the last import, because the export's
+    # own commit lands after it. So the question is not whether head is an
+    # ancestor -- it never is -- but whether anything in the unimported span was
+    # written by someone other than the export. A commit the export authored is
+    # already a render of this source; overwriting it loses nothing.
+    foreign = _foreign_commits_since(
+        base=synced, head=head, author_email=sync_user_email, cwd=public_dir
     )
+    return head if foreign else ""
 
 
 def _public_head_sha(*, cwd: Path) -> str:
@@ -1008,15 +1022,45 @@ def _last_synced_public_sha(
         ) from err
 
 
-def _is_ancestor(*, ancestor: str, descendant: str, cwd: Path) -> bool:
-    """Whether ``ancestor`` is reachable from ``descendant``."""
+def _foreign_commits_since(
+    *, base: str, head: str, author_email: str, cwd: Path
+) -> tuple[str, ...]:
+    """Commits in ``base..head`` not authored by the export bot.
+
+    Args:
+      base: The last public SHA the source imported.
+      head: The public head.
+      author_email: The export bot's author email; its own commits are
+        renders of this source and carry nothing to preserve.
+      cwd: The public checkout.
+
+    Returns:
+      commits: ``<sha> <subject>`` per foreign commit; empty when the span is
+        entirely export-authored.
+
+    """
+    # Filter by author in Python rather than with ``--author``: git has no
+    # negated-author flag (``--invert-grep`` inverts ``--grep``, not
+    # ``--author``, and silently returns the bot's own commits instead).
     result = _run(
-        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        ["git", "log", f"{base}..{head}", "--format=%h%x00%ae%x00%s"],
         cwd=cwd,
         capture=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        # Cannot answer (shallow clone, unknown ref): fail CLOSED by reporting
+        # the span as foreign, so the export blocks rather than overwrites.
+        return (f"{base}..{head} unreadable",)
+    out: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        sha, _, rest = line.partition("\x00")
+        email, _, subject = rest.partition("\x00")
+        if email != author_email:
+            out.append(f"{sha} {subject}")
+    return tuple(out)
 
 
 def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]:
