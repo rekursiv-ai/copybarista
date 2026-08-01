@@ -1,4 +1,4 @@
-# Copybarista☕
+# copybarista☕
 
 [![PyPI version](https://img.shields.io/pypi/v/copybarista.svg)](https://pypi.org/project/copybarista/)
 [![CI](https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml/badge.svg?branch=main)](https://github.com/rekursiv-ai/copybarista/actions/workflows/package-validation.yml)
