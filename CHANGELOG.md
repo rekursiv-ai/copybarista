@@ -4,6 +4,29 @@ All notable Copybarista changes are documented here.
 
 ## Unreleased
 
+## 0.1.3 - 2026-08-01
+
+### Fixed
+
+- The export no longer force-writes a public repository holding commits the
+  source has not absorbed. It walks the span since the last landed import
+  and refuses when anything there was written by someone other than the
+  export itself, so a released version bump can no longer be silently
+  reverted.
+- The import ledger reads commit subjects past GitHub's `(#N)` squash-merge
+  suffix. Missing it returned a baseline days stale, which both misinformed
+  that guard and handed the three-way merge a wrong common ancestor,
+  manufacturing conflicts that were not real.
+- Package rewrite rules are anchored so their reverse cannot match a bare
+  package name inside a URL. Unanchored, importing a public README rewrote
+  badge and repository links into dead monorepo paths.
+- A guard that cannot determine whether an export is safe now fails closed.
+
+### Added
+
+- Export workflows are generated for every package from one template, and a
+  test asserts all of them are byte-identical to their generated form.
+
 - Added source commit metadata replay for generated export PR title and body,
   with source authors represented in generated commit author/co-author metadata.
 - Kept ordinary source commit subjects and bodies out of generated PR text
