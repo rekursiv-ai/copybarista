@@ -1689,17 +1689,17 @@ def _patch_from_metadata_block(
     # the leak check. The leak check below still guards anything transforms miss.
     title = _rewrite_public_text(values.get("Title", ""), text_transforms)
     body = _rewrite_public_text(body, text_transforms)
-    _validate_metadata_text(
-        commit_sha=commit_sha,
-        field="Title",
-        value=title,
-        forbidden_text=forbidden_text,
+    # DROP rather than raise. These fields are a human description replayed
+    # into the public PR; nothing downstream reads them, and the caller falls
+    # back to the configured default text when they are empty. Failing instead
+    # wedged every export until someone hand-advanced replay_bootstrap_base --
+    # a commit message is immutable once pushed, so there was no other remedy,
+    # and the "fix" was always just discarding the same description this drops.
+    title = _scrubbed_or_dropped(
+        commit_sha=commit_sha, field="Title", value=title, forbidden_text=forbidden_text
     )
-    _validate_metadata_text(
-        commit_sha=commit_sha,
-        field="Body",
-        value=body,
-        forbidden_text=forbidden_text,
+    body = _scrubbed_or_dropped(
+        commit_sha=commit_sha, field="Body", value=body, forbidden_text=forbidden_text
     )
     return PrMetadataPatch(
         commit_sha=commit_sha,
@@ -2201,6 +2201,32 @@ def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
         else:
             value = value.replace(transform.before, transform.after)
     return value
+
+
+def _scrubbed_or_dropped(
+    *, commit_sha: str, field: str, value: str, forbidden_text: tuple[str, ...]
+) -> str:
+    """Return ``value``, or ``""`` when it still carries a forbidden term.
+
+    Runs AFTER the export's replace-transforms, so a dotted source reference is
+    already rewritten to its public form. What reaches here is text no
+    transform covers -- typically a slash path -- which cannot be published and
+    cannot be edited (the commit is pushed). Dropping it loses a description;
+    raising loses every subsequent export.
+    """
+    if not value:
+        return value
+    lowered = value.casefold()
+    if not any(
+        _forbidden_term_present(term.casefold(), lowered) for term in forbidden_text
+    ):
+        return value
+    _log(
+        f"::warning::Commit {commit_sha} Copybarista-PR-{field} names a private "
+        f"path no export transform rewrites; dropping it and using the default "
+        f"text. Describe changes with bare module names to keep the field."
+    )
+    return ""
 
 
 def _validate_metadata_text(

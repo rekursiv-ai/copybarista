@@ -574,12 +574,21 @@ def test_parse_pr_metadata_rejects_body_mode_without_body():
         )
 
 
-def test_parse_pr_metadata_rejects_forbidden_text():
-    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
-        _parse_pr_metadata_log(
-            _metadata_log("Copybarista-PR-Body:\nMentions private-source.\n"),
-            forbidden_text=("private-source",),
-        )
+def test_parse_pr_metadata_drops_unscrubbable_text_instead_of_failing():
+    """An unscrubbable description is DROPPED; the export still runs.
+
+    Halting was the wrong trade. The body is a human description replayed into
+    the public PR: nothing downstream depends on it, and a pushed commit
+    message cannot be edited, so a single bad word used to wedge every
+    subsequent export until someone hand-advanced the replay base. Dropping
+    the field prevents the leak just as completely and costs only prose.
+    """
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nMentions private-source.\n"),
+        forbidden_text=("private-source",),
+    )
+
+    assert tuple(p.body for p in patches) == ("",)
 
 
 def test_parse_pr_metadata_rewrites_source_path_via_literal_transform():
@@ -639,12 +648,13 @@ def test_parse_pr_metadata_leak_check_still_guards_untransformed_text():
             id="lib", type="replace", path="**", before="priv.mod", after="pub.mod"
         ),
     )
-    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
-        _parse_pr_metadata_log(
-            _metadata_log("Copybarista-PR-Body:\nMentions private-org/secret repo.\n"),
-            forbidden_text=("private-org/secret",),
-            text_transforms=transforms,
-        )
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nMentions private-org/secret repo.\n"),
+        forbidden_text=("private-org/secret",),
+        text_transforms=transforms,
+    )
+
+    assert tuple(p.body for p in patches) == ("",)
 
 
 def test_prefix_term_ignores_prose_word():
@@ -663,29 +673,32 @@ def test_prefix_term_ignores_prose_word():
 
 
 def test_prefix_term_rejects_dotted_import():
-    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
-        _parse_pr_metadata_log(
-            _metadata_log("Copybarista-PR-Body:\nImport package.module.agent.\n"),
-            forbidden_text=("package.",),
-        )
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nImport package.module.agent.\n"),
+        forbidden_text=("package.",),
+    )
+
+    assert tuple(p.body for p in patches) == ("",)
 
 
 def test_prefix_term_rejects_path():
-    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
-        _parse_pr_metadata_log(
-            _metadata_log("Copybarista-PR-Body:\nSee package/lib/web for details.\n"),
-            forbidden_text=("package/",),
-        )
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nSee package/lib/web for details.\n"),
+        forbidden_text=("package/",),
+    )
+
+    assert tuple(p.body for p in patches) == ("",)
 
 
 def test_non_prefix_term_still_substring_matches():
     # A term without a trailing separator keeps plain substring matching, so a
     # trailing period does not shield it.
-    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body"):
-        _parse_pr_metadata_log(
-            _metadata_log("Copybarista-PR-Body:\nMentions company/source.\n"),
-            forbidden_text=("company/source",),
-        )
+    patches = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nMentions company/source.\n"),
+        forbidden_text=("company/source",),
+    )
+
+    assert tuple(p.body for p in patches) == ("",)
 
 
 # Package references the prefix matcher must still catch (false-negative guard).
