@@ -193,16 +193,30 @@ def run_import_sync(request: ImportRequest) -> None:
     requirements = _export_copybarista_requirements(
         target_dir=request.target_dir, runner_temp=request.runner_temp
     )
-    _log("Importing public changes into target source.")
-    _run_import_change(request=request, project=project, requirements=requirements)
-    _log("Validating target checkout.")
-    _validate_target(
-        request=request,
-        project=project,
-        validation_commands=request.validation_commands,
-        runner_temp=request.runner_temp,
-        requirements=requirements,
-    )
+    # A failure anywhere below lands no ledger marker, and the export guard
+    # reads that ledger -- so this failing does not merely lose one import, it
+    # stops the project exporting until a marker lands. Say so where the
+    # failure is read, since a bare traceback hides the consequence.
+    try:
+        _log("Importing public changes into target source.")
+        _run_import_change(request=request, project=project, requirements=requirements)
+        _log("Validating target checkout.")
+        _validate_target(
+            request=request,
+            project=project,
+            validation_commands=request.validation_commands,
+            runner_temp=request.runner_temp,
+            requirements=requirements,
+        )
+    except BaseException:
+        _log(
+            f"::error::The {request.sync_label} import of public commit "
+            f"{request.public_sha[:12]} failed, so no import is recorded for "
+            "it. Until one lands, the export guard blocks every "
+            f"{request.sync_label} export and the public repository stops "
+            "receiving updates."
+        )
+        raise
     if request.open_pr:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)

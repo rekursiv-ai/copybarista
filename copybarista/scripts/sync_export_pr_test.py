@@ -2665,6 +2665,75 @@ def test_run_export_sync_skips_when_public_head_is_unimported(
     assert ran == [], "a failed import must still block the export"
 
 
+def test_skipped_export_annotates_the_workflow_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A skip must raise a workflow annotation, not pass silently.
+
+    Skipping is correct -- exporting would revert the public commit -- but a
+    silent skip exits green, so a repository can stall indefinitely with every
+    run reporting success. That is exactly how six projects sat un-exported
+    while CI stayed green. The skip is the alert.
+    """
+    request = replace(
+        _export_request(tmp_path),
+        import_branch_prefix="sagent/import/",
+        source_repo="rekursiv-ai/loop",
+        sync_label="Sagent",
+    )
+
+    def no_pending(**_: object) -> tuple[str, ...]:
+        return ()
+
+    def unimported(**_: object) -> str:
+        return "bbbb222"
+
+    def unreached(request: ExportRequest) -> None:
+        raise AssertionError(f"the export must not run: {request.sync_label}")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", no_pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
+
+    sync_export_pr.run_export_sync(request)
+
+    out = capsys.readouterr().out
+    assert "::warning::" in out, "a skipped export must annotate the run"
+    assert "bbbb222" in out, "the annotation must name the blocking commit"
+    assert "Sagent" in out, "the annotation must name the project"
+
+
+def test_pending_import_skip_annotates_the_workflow_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The open-import-PR skip is the same stall, so it annotates too."""
+    request = replace(
+        _export_request(tmp_path),
+        import_branch_prefix="sagent/import/",
+        source_repo="rekursiv-ai/loop",
+        sync_label="Sagent",
+    )
+
+    def unreached(request: ExportRequest) -> None:
+        raise AssertionError(f"the export must not run: {request.sync_label}")
+
+    def one_pending(**_: object) -> tuple[str, ...]:
+        return ("sagent/import/x",)
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", one_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
+
+    sync_export_pr.run_export_sync(request)
+
+    out = capsys.readouterr().out
+    assert "::warning::" in out, "a skipped export must annotate the run"
+    assert "sagent/import/x" in out, "the annotation must name the open PR"
+
+
 def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2698,7 +2767,12 @@ def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(
 def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A first export has nothing to revert, so it must not be blocked."""
+    """A first export over an export-authored repo has nothing to revert.
+
+    "No landed import" alone is not a licence to overwrite: a public repo can
+    hold human commits before the first import ever runs. Bootstrap requires
+    BOTH no import history and no foreign commits.
+    """
 
     def no_import(**_: object) -> str:
         raise sync_import_change.ImportBaseError("no landed import")
@@ -2706,8 +2780,16 @@ def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
     def head(**_: object) -> str:
         return "bbbb222"
 
+    def nothing_foreign(**_: object) -> tuple[str, ...]:
+        return ()
+
+    def empty_tree(**_: object) -> str:
+        return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
     monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
     monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", no_import)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", nothing_foreign)
+    monkeypatch.setattr(sync_export_pr, "_git_empty_tree", empty_tree)
 
     assert (
         _public_head_unimported(
@@ -2859,3 +2941,65 @@ def _git_repo(root: Path, commits: list[tuple[str, str]]) -> Path:
         run("add", "f.txt")
         run("-c", f"user.email={email}", "commit", "-q", "-m", subject)
     return root
+
+
+def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
+    """A landed import must unblock the export of the commit it imported.
+
+    This is the seam every component test missed. The import wrote a marker,
+    the ledger parsed markers, and the guard consulted the ledger -- each
+    correct alone, while the loop stayed broken for a day because the SHA the
+    writer emitted was not the SHA the reader accepted. Every export skipped
+    and reported success.
+
+    Drive the real title through the real ledger into the real guard, over
+    throwaway repositories, and require the guard to permit the export.
+    """
+    public = _git_repo(
+        tmp_path / "public",
+        [
+            ("generated export", "bot@example.com"),
+            ("human change", "dev@example.com"),
+        ],
+    )
+    public_head = subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+        ["git", "-C", str(public), "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    # Before the import lands, the human commit is unabsorbed: the guard must
+    # block, because force-writing would destroy it.
+    source = _git_repo(
+        tmp_path / "source", [("unrelated source work", "dev@example.com")]
+    )
+    assert (
+        sync_export_pr._public_head_unimported(
+            public_dir=public,
+            source_dir=source,
+            sync_label="Pkg",
+            base_branch="main",
+            sync_user_email="bot@example.com",
+        )
+        == public_head
+    ), "an unimported human commit must block the export"
+
+    # The import lands, recording the marker exactly as the import path writes it.
+    title = f"Import Pkg public changes {sync_import_change._pr_title_sha(public_head)}"
+    subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+        ["git", "-C", str(source), "commit", "-q", "--allow-empty", "-m", title],  # noqa: S607
+        check=True,
+    )
+
+    # Now the guard must permit the export; otherwise the loop deadlocks.
+    assert (
+        sync_export_pr._public_head_unimported(
+            public_dir=public,
+            source_dir=source,
+            sync_label="Pkg",
+            base_branch="main",
+            sync_user_email="bot@example.com",
+        )
+        == ""
+    ), "a landed import must unblock the export it imported"

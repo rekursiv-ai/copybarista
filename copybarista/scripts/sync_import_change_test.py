@@ -356,6 +356,44 @@ def test_run_import_sync_imports_then_validates(
     ]
 
 
+def test_failed_import_annotates_the_stalled_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failing import must say that it just stalled the export.
+
+    The import exiting nonzero is visible, but nothing connected that failure
+    to its consequence: no ledger marker lands, so the export guard blocks
+    every subsequent run. Six projects sat un-exported for days because the
+    two halves were never linked in the logs.
+    """
+
+    def fake_export_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
+        del target_dir
+        return runner_temp / "copybarista-requirements.txt"
+
+    def boom(**_: object) -> None:
+        raise SystemExit(1)
+
+    def unused_run(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(sync_import_change, "_run", unused_run)
+    monkeypatch.setattr(
+        sync_import_change, "_export_copybarista_requirements", fake_export_requirements
+    )
+    monkeypatch.setattr(sync_import_change, "_run_import_change", boom)
+
+    with pytest.raises(SystemExit):
+        sync_import_change.run_import_sync(_import_request(target_dir=tmp_path))
+
+    # _log writes to stderr; stdout is the machine channel (--print-synced-base).
+    err = capsys.readouterr().err
+    assert "::error::" in err, "a failed import must annotate the run"
+    assert "export" in err.casefold(), "the annotation must name the consequence"
+
+
 def test_import_change_pr_body_contains_review_context():
     body = import_change_pr_body(
         public_repo="rekursiv-ai/copybarista",
@@ -964,4 +1002,50 @@ def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
             target_dir=tmp_path, sync_label="Sagent", base_branch="main"
         )
         == full
+    )
+
+
+def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
+    """The import's own title must satisfy the export's data-loss guard.
+
+    Every component here passed its own test while the loop stayed broken:
+    the import wrote a subject, the ledger parsed a subject, and the guard
+    read the ledger -- but nobody drove the writer's real output into the
+    reader, so a 12-vs-40-character mismatch survived and every export
+    skipped while reporting success.
+
+    Drive the actual title the import writes into the actual ledger the
+    guard consults, and require the guard to see the commit as imported.
+    """
+    public_sha = "0e8b8406cdd2cd79218a711687228111298afcaa"
+    title = (
+        f"Import Sagent public changes {sync_import_change._pr_title_sha(public_sha)}"
+    )
+    source = tmp_path / "source"
+    _git_repo_with_commits(root=source, subjects=[title])
+
+    # The ledger the guard reads.
+    assert (
+        last_synced_public_sha(
+            target_dir=source, sync_label="Sagent", base_branch="main"
+        )
+        == public_sha
+    ), "the import's title must parse as the marker the guard reads"
+
+
+def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
+    """The same holds once GitHub appends its squash-merge suffix."""
+    public_sha = "1" * 40
+    title = (
+        f"Import Sagent public changes "
+        f"{sync_import_change._pr_title_sha(public_sha)} (#123)"
+    )
+    source = tmp_path / "source"
+    _git_repo_with_commits(root=source, subjects=[title])
+
+    assert (
+        last_synced_public_sha(
+            target_dir=source, sync_label="Sagent", base_branch="main"
+        )
+        == public_sha
     )
