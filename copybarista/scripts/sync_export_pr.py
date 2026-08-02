@@ -290,9 +290,10 @@ def run_export_sync(request: ExportRequest) -> None:
             cwd=request.source_dir,
         )
         if pending:
-            _log(
-                "Skipping export: import PR(s) still open, so the source tree "
-                f"does not yet contain the public changes: {', '.join(pending)}."
+            _warn(
+                f"Skipping {request.sync_label} export: import PR(s) still open, "
+                "so the source tree does not yet contain the public changes: "
+                f"{', '.join(pending)}."
             )
             return
         # An import that failed (merge conflict, validation error) opens no PR
@@ -307,10 +308,11 @@ def run_export_sync(request: ExportRequest) -> None:
             sync_user_email=request.sync_user_email,
         )
         if unimported:
-            _log(
-                "Skipping export: public commit "
+            _warn(
+                f"Skipping {request.sync_label} export: public commit "
                 f"{unimported[:12]} has not been imported into the source "
-                "(no landed import records it), so exporting would revert it."
+                "(no landed import records it), so exporting would revert it. "
+                "Land that import; until then this project stops syncing."
             )
             return
     dry_public_dir = None
@@ -975,9 +977,16 @@ def _public_head_unimported(
         target_dir=source_dir, sync_label=sync_label, base_branch=base_branch
     )
     if not synced:
-        # No landed import at all: a first export, where there is nothing to
-        # revert. Treating this as blocked would deadlock bootstrap.
-        return ""
+        # No landed import at all. That is a genuine bootstrap only when the
+        # public repo holds nothing but export-authored commits; if a human
+        # has written there, "first export" is not a licence to overwrite it.
+        foreign = _foreign_commits_since(
+            base=_git_empty_tree(cwd=public_dir),
+            head=head,
+            author_email=sync_user_email,
+            cwd=public_dir,
+        )
+        return head if foreign else ""
     if synced == head:
         return ""
     # The public head is normally AHEAD of the last import, because the export's
@@ -989,6 +998,17 @@ def _public_head_unimported(
         base=synced, head=head, author_email=sync_user_email, cwd=public_dir
     )
     return head if foreign else ""
+
+
+def _git_empty_tree(*, cwd: Path) -> str:
+    """The empty-tree object, usable as a base to walk a repo's whole history."""
+    result = _run(
+        ["git", "hash-object", "-t", "tree", "/dev/null"],
+        cwd=cwd,
+        capture=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _public_head_sha(*, cwd: Path) -> str:
@@ -2673,6 +2693,17 @@ def _log(message: str) -> None:
     """Write one flushed workflow log line."""
     sys.stdout.write(f"{message}\n")
     sys.stdout.flush()
+
+
+def _warn(message: str) -> None:
+    """Log a message and raise a GitHub workflow annotation for it.
+
+    A skipped export exits green, so without an annotation a project can stall
+    indefinitely with every run reporting success. ``::warning::`` surfaces the
+    skip on the run summary and in the Actions UI without failing the job --
+    the skip itself is correct, its invisibility was not.
+    """
+    _log(f"::warning::{message}")
 
 
 if __name__ == "__main__":
