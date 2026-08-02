@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import yaml
 
 from copybarista.config import DEFAULT_PYTHON_EXCLUDES
 from copybarista.errors import ConfigError
@@ -240,6 +242,48 @@ def test_check_sync_config_reports_malformed_package_validation_yaml(
     )
 
     with pytest.raises(ConfigError, match="Cannot read package validation workflow"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_parent_based_import_baseline(tmp_path: Path):
+    """A template that drops the ledger lookup must fail the config check."""
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    text = workflow.read_text(encoding="utf-8")
+    start = text.index('base_ref="$(uv')
+    end = text.index('github.event.before }}")', start) + len(
+        'github.event.before }}")'
+    )
+    workflow.write_text(
+        text[:start] + 'base_ref="${{ github.event.before }}"' + text[end:],
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="--print-synced-base"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path: Path):
+    """Ordering regressions fail too: flags present but the ledger unreadable.
+
+    Moving the ref resolution back above the target checkout leaves every flag
+    in place while making the ledger unreadable where the baseline is chosen --
+    exactly the shape a substring check misses.
+    """
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    text = workflow.read_text(encoding="utf-8")
+    start = text.index("      - id: refs\n")
+    end = text.index("      - uses: actions/checkout@v5\n", start)
+    block = text[start:end]
+    workflow.write_text(
+        (text[:start] + text[end:]).replace(
+            "      - id: settings\n", block + "      - id: settings\n", 1
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="before the step that resolves"):
         check_sync_config(root=tmp_path)
 
 
@@ -549,6 +593,72 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     assert "GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" in workflow
 
 
+def test_import_workflow_resolves_push_baseline_from_the_ledger():
+    """A push import must merge against the last LANDED import, not the parent.
+
+    ``github.event.before`` is the pushed commit's parent, which equals the
+    tree the source last absorbed only while every import lands. The moment one
+    fails or goes unmerged the parent marches on while the source stays pinned,
+    so a parent baseline feeds the three-way merge a wrong common ancestor and
+    manufactures conflicts. The baseline therefore comes from the target's own
+    import ledger (``--print-synced-base``), with the parent kept only as the
+    ``--fallback-sha`` bootstrap for a project that has never imported.
+    """
+    steps = _import_steps(import_workflow(_settings()))
+    refs = _step_index(steps, lambda step: step.get("id") == "refs")
+    helper = _step_index(
+        steps, lambda step: step.get("name") == "Capture trusted import helper"
+    )
+    ledger = _step_index(steps, lambda step: _checkout_path(step) == "target")
+    public_base = _step_index(steps, lambda step: _checkout_path(step) == "public-base")
+    public_head = _step_index(steps, lambda step: _checkout_path(step) == "public-head")
+    run = str(steps[refs]["run"])
+
+    assert "--print-synced-base" in run
+    assert '--fallback-sha "${{ github.event.before }}"' in run
+    # Ordering is the whole defect: the ledger checkout and the helper that
+    # reads it must both precede the step that chooses the baseline, and the
+    # public checkouts that consume it must follow.
+    assert ledger < refs, "target checkout (the ledger) must precede ref resolution"
+    assert helper < refs, "import helper must be installed before ref resolution"
+    assert refs < public_base, "public-base checkout must consume the resolved baseline"
+    assert refs < public_head
+
+
+def test_import_workflow_keeps_explicit_base_semantics_off_the_ledger():
+    """Only push events infer a baseline; explicit bases stay verbatim."""
+    steps = _import_steps(import_workflow(_settings()))
+    run = str(steps[_step_index(steps, lambda step: step.get("id") == "refs")]["run"])
+
+    assert 'base_ref="${{ github.event.pull_request.base.sha }}"' in run
+    assert 'base_ref="$DISPATCH_PUBLIC_BASE_REF"' in run
+    # The all-zeros/empty rejection and the ref-format check apply to the
+    # RESOLVED baseline, so both must survive the reordering.
+    assert 'if [ -z "$base_ref" ] || [ "$base_ref" = "00000000' in run
+    assert 'git check-ref-format --allow-onelevel "$ref"' in run
+
+
+def test_import_workflow_keeps_import_token_off_public_code_steps():
+    """The import token stays on the credential-free checkout and the PR step."""
+    steps = _import_steps(import_workflow(_settings()))
+    ledger = steps[_step_index(steps, lambda step: _checkout_path(step) == "target")]
+    with_config = cast("dict[str, Any]", ledger["with"])
+
+    assert with_config.get("persist-credentials") is False
+    assert with_config.get("token") == "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}"
+    # No step that runs imported public code may see the token. The only other
+    # readers are the settings probe and the PR step, which pushes the branch.
+    assert [
+        str(step.get("name", step.get("uses", "")))
+        for step in steps
+        if "COPYBARISTA_IMPORT_TOKEN" in str(step)
+    ] == [
+        "Check settings",
+        "actions/checkout@v5",
+        "Open or update target import PR",
+    ]
+
+
 def test_import_workflow_escapes_github_expression_strings():
     workflow = import_workflow(_settings(sync_label="Configgle's Core"))
 
@@ -597,3 +707,27 @@ def test_generated_toml_escapes_strings(tmp_path: Path):
     loaded = load_sync_settings(tmp_path / "copybarista.sync.toml")
 
     assert loaded.sync_label == 'Configgle "Core"'
+
+
+def _import_steps(workflow: str) -> list[dict[str, Any]]:
+    """Return the parsed steps of the generated import job, in file order."""
+    parsed: Any = yaml.safe_load(workflow)
+    steps: Any = parsed["jobs"]["import-change"]["steps"]
+    return [cast("dict[str, Any]", step) for step in cast("list[Any]", steps)]
+
+
+def _step_index(
+    steps: list[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]
+) -> int:
+    """Return the position of the one step matching `predicate`."""
+    matches = [index for index, step in enumerate(steps) if predicate(step)]
+    assert len(matches) == 1, f"expected exactly one matching step, got {matches}"
+    return matches[0]
+
+
+def _checkout_path(step: dict[str, Any]) -> str:
+    """Return the `path` a checkout step writes to, or empty for other steps."""
+    if step.get("uses") != "actions/checkout@v5":
+        return ""
+    with_config: Any = step.get("with", {})
+    return str(cast("dict[str, Any]", with_config).get("path", ""))
