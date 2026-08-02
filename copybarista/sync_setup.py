@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -795,9 +796,87 @@ def _validate_import_workflow_yaml(
     for text in ("sync_import_change.py", "GH_TOKEN"):
         if text not in step_text:
             raise ConfigError(f"sync-to-source.yml must reference {text}.")
+    _assert_resolves_baseline_from_ledger(steps)
     _assert_installs_system_packages(
         steps=steps, packages=settings.system_packages, workflow="sync-to-source.yml"
     )
+
+
+def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
+    """Assert a push import merges against the ledger, not the pushed parent.
+
+    ``github.event.before`` is the pushed commit's parent, which equals the
+    commit the source last absorbed only while every import lands. Once one
+    fails or goes unmerged the parent marches on while the source stays pinned,
+    so a parent baseline hands the three-way merge a wrong common ancestor and
+    manufactures conflicts. Resolving it needs the ledger (the target checkout)
+    and the helper that reads it to exist first, and the public checkout that
+    consumes it to come after -- so the ORDER is checked here, not just the
+    flags: a reordering silently reintroduces the parent baseline.
+
+    Raises:
+      ConfigError: If the baseline flags are absent or the steps are ordered so
+        the ledger is unreadable where the baseline is chosen.
+
+    """
+    refs_run = _workflow_step_run(steps, "Resolve public refs")
+    for text in ("--print-synced-base", '--fallback-sha "${{ github.event.before }}"'):
+        if text not in refs_run:
+            raise ConfigError(
+                "sync-to-source.yml step 'Resolve public refs' must resolve the "
+                f"push baseline from the import ledger; {text} is missing."
+            )
+    refs = _workflow_step_index(steps, lambda step: step.get("id") == "refs")
+    for name, index in (
+        (
+            "the target checkout holding the import ledger",
+            _checkout_index(steps, "target"),
+        ),
+        (
+            "the trusted import helper installed from it",
+            _workflow_step_index(
+                steps, lambda step: step.get("name") == "Capture trusted import helper"
+            ),
+        ),
+    ):
+        if index > refs:
+            raise ConfigError(
+                f"sync-to-source.yml must place {name} before the step that "
+                "resolves the merge baseline."
+            )
+    if _checkout_index(steps, "public-base") < refs:
+        raise ConfigError(
+            "sync-to-source.yml must check out public-base after the step that "
+            "resolves the merge baseline."
+        )
+
+
+def _checkout_index(steps: list[object], path: str) -> int:
+    """Return the position of the checkout writing to `path`."""
+    return _workflow_step_index(
+        steps,
+        lambda step: (
+            step.get("uses") == "actions/checkout@v5"
+            and _yaml_mapping(step.get("with"), "checkout.with").get("path") == path
+        ),
+    )
+
+
+def _workflow_step_index(
+    steps: list[object], predicate: Callable[[dict[str, object]], bool]
+) -> int:
+    """Return the position of the one step matching `predicate`."""
+    matches = [
+        index
+        for index, step in enumerate(steps)
+        if predicate(_yaml_mapping(step, f"jobs.import-change.steps[{index}]"))
+    ]
+    if len(matches) != 1:
+        raise ConfigError(
+            "sync-to-source.yml must define exactly one step matching each "
+            f"import ordering role; found {len(matches)}."
+        )
+    return matches[0]
 
 
 def _validate_package_validation_workflow_yaml(
