@@ -96,7 +96,7 @@ jobs:
       # persist-credentials: false, so the import token is used for this fetch
       # and never written into target/.git/config where the later step that
       # executes imported public code could read it.
-      - uses: actions/checkout@v5
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
@@ -109,11 +109,11 @@ jobs:
           # import would silently fall back to the pushed commit's parent -- the
           # exact wrong baseline this resolution exists to avoid.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: @@USES_SETUP_PYTHON@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           python-version: @@PYTHON_VERSION@@
-      - uses: astral-sh/setup-uv@v6
+      - uses: @@USES_SETUP_UV@@
         if: steps.settings.outputs.enabled == 'true'
 
       - name: Capture trusted import helper
@@ -167,12 +167,12 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.base_ref }}
           path: public-base
-      - uses: actions/checkout@v5
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.head_ref }}
@@ -233,7 +233,7 @@ jobs:
 
       - name: Upload import report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: @@USES_UPLOAD_ARTIFACT@@
         with:
           name: copybarista-import-report
           path: ${{ env.IMPORT_REPORT }}

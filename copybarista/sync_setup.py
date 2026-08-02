@@ -37,6 +37,56 @@ CONTROL_CHAR_BOUND: Final = 32
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_VALIDATION_PYTHON_VERSIONS: Final = ("3.12",)
+"""The interpreter every PUBLISHED package is validated against.
+
+Deliberately NOT the monorepo's own version. The two are chosen for opposite
+reasons and must not be unified:
+
+- **Public packages target 3.12** -- the oldest interpreter they support -- so
+  validation fails here rather than in a user's environment. Every package's
+  ``requires-python`` says ``>=3.12``, so anything newer would leave the floor
+  untested and let 3.13+-only syntax ship.
+- **The monorepo runs 3.14**, because it is a private worktree with no
+  downstream installers and takes new language features immediately.
+
+A generated workflow that pins anything else has drifted; ``check_sync_config``
+rejects the mismatch rather than letting the two silently diverge.
+"""
+
+GITHUB_ACTION_PINS: Final = {
+    "actions/checkout": "v5",
+    "actions/setup-python": "v6",
+    "astral-sh/setup-uv": "v7",
+    "actions/upload-artifact": "v6",
+}
+"""Action versions the generated workflows pin, and the reason for each floor.
+
+Every entry is at or above its first ``node24`` major. GitHub is removing the
+Node 20 runtime from runners, and an action still declaring ``using: node20``
+first warns and then stops running. The first node24 majors are
+``setup-python@v6``, ``setup-uv@v7``, and ``upload-artifact@v6``; ``checkout@v5``
+was already node24.
+
+Pinned by major so security patches arrive without a commit here. This map is
+the SINGLE source: templates carry ``@@USES_<NAME>@@`` placeholders rendered
+from it, and :func:`check_sync_config` reads it too, so a bump is one edit here
+rather than three that can disagree.
+"""
+
+
+def _uses_placeholders() -> dict[str, str]:
+    """Render keys for each pinned action, e.g. ``USES_SETUP_PYTHON``."""
+    return {
+        f"USES_{action.split('/')[1].replace('-', '_').upper()}": f"{action}@{pin}"
+        for action, pin in GITHUB_ACTION_PINS.items()
+    }
+
+
+def action_ref(action: str) -> str:
+    """The pinned ``owner/name@vN`` reference for one action."""
+    return f"{action}@{GITHUB_ACTION_PINS[action]}"
+
+
 # System (apt) packages installed before both public package validation and
 # public-to-source import validation. Both workflows run the same test suite, so
 # they MUST provision the same system tools; rendering this single setting into
@@ -333,7 +383,7 @@ def check_sync_config(*, root: Path) -> None:
         raise ConfigError("Missing sync files: " + ", ".join(missing))
     settings = load_sync_settings(root / "copybarista.sync.toml")
     config = load_config(root / "copy.barista.toml")
-    workflow_text = (root / ".github" / "workflows" / "sync-to-source.yml").read_text(
+    workflow_text = (workflow_dir(root) / "sync-to-source.yml").read_text(
         encoding="utf-8"
     )
     # Managed configs opt into the shared Python-artifact default rather than
@@ -351,9 +401,9 @@ def check_sync_config(*, root: Path) -> None:
         raise ConfigError("copy.barista.toml must define forbidden path leak checks.")
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
     _validate_package_validation_workflow_yaml(
-        workflow_text=(
-            root / ".github" / "workflows" / "package-validation.yml"
-        ).read_text(encoding="utf-8"),
+        workflow_text=(workflow_dir(root) / "package-validation.yml").read_text(
+            encoding="utf-8"
+        ),
         settings=settings,
     )
 
@@ -677,7 +727,11 @@ def _render_template(name: str, values: dict[str, str]) -> str:
         .joinpath(name)
         .read_text(encoding="utf-8")
     )
-    for key, value in values.items():
+    # Action pins are injected for every template rather than passed by each
+    # caller: they are the same everywhere, and a caller that forgot one would
+    # trip the unrendered-token check below instead of silently shipping a
+    # stale version.
+    for key, value in (_uses_placeholders() | values).items():
         text = text.replace(f"@@{key}@@", value)
     if "@@" in text:
         raise AssertionError(f"Unrendered token in template {name}.")
@@ -698,13 +752,36 @@ def _generated_banner(template_name: str) -> str:
     )
 
 
+def workflow_dir(root: Path) -> Path:
+    """Where ``root``'s generated public workflows live.
+
+    Packages stage their public tree in ``.export/``, which ships verbatim to
+    the public repository root, so the workflows sit at
+    ``<root>/.export/.github/workflows``. A bare ``<root>/.github/workflows``
+    is the shape a fresh scaffold writes before any ``.export/`` exists.
+
+    Resolved rather than assumed: this validator looked only at the bare path
+    and so rejected every one of the eight real packages, while its own tests
+    passed because they only ever scaffolded a synthetic tree.
+
+    A package may hold BOTH -- one package keeps a source-only
+    ``.github/workflows/pages.yml`` beside its staged export. ``.export/`` wins
+    because that is the tree that reaches the public repository; a bare
+    ``.github/`` sitting alongside holds monorepo-only workflows the export
+    excludes, so validating those would check files that never ship.
+    """
+    staged = root / ".export" / ".github" / "workflows"
+    return staged if staged.is_dir() else root / ".github" / "workflows"
+
+
 def _required_paths(root: Path) -> tuple[Path, ...]:
     """Return generated public sync files that must stay present."""
+    workflows = workflow_dir(root)
     return (
         root / "copy.barista.toml",
         root / "copybarista.sync.toml",
-        root / ".github" / "workflows" / "sync-to-source.yml",
-        root / ".github" / "workflows" / "package-validation.yml",
+        workflows / "sync-to-source.yml",
+        workflows / "package-validation.yml",
     )
 
 
@@ -751,7 +828,7 @@ def _validate_import_workflow_yaml(
                 f"sync-to-source.yml jobs.import-change.if must contain {text}."
             )
     steps = _yaml_list(job.get("steps"), "jobs.import-change.steps")
-    setup_step = _workflow_uses_step(steps, "actions/setup-python@v5")
+    setup_step = _workflow_uses_step(steps, action_ref("actions/setup-python"))
     with_config = _yaml_mapping(
         setup_step.get("with"), "jobs.import-change.steps.setup-python.with"
     )
@@ -856,7 +933,7 @@ def _checkout_index(steps: list[object], path: str) -> int:
     return _workflow_step_index(
         steps,
         lambda step: (
-            step.get("uses") == "actions/checkout@v5"
+            step.get("uses") == action_ref("actions/checkout")
             and _yaml_mapping(step.get("with"), "checkout.with").get("path") == path
         ),
     )
@@ -899,7 +976,7 @@ def _validate_package_validation_workflow_yaml(
         )
     if len(settings.validation_python_versions) == 1:
         steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
-        setup_step = _workflow_uses_step(steps, "actions/setup-python@v5")
+        setup_step = _workflow_uses_step(steps, action_ref("actions/setup-python"))
         with_config = _yaml_mapping(
             setup_step.get("with"), "jobs.validate.steps.setup-python.with"
         )

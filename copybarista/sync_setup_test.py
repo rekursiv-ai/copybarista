@@ -19,6 +19,7 @@ from copybarista.sync_setup import (
     import_workflow,
     load_sync_settings,
     package_validation_workflow,
+    workflow_dir,
     write_sync_scaffold,
 )
 
@@ -731,3 +732,25 @@ def _checkout_path(step: dict[str, Any]) -> str:
         return ""
     with_config: Any = step.get("with", {})
     return str(cast("dict[str, Any]", with_config).get("path", ""))
+
+
+def test_workflow_dir_prefers_the_staged_export_over_a_source_only_github(
+    tmp_path: Path,
+):
+    """When both layouts exist, the shipped one wins.
+
+    A package can keep a source-only ``.github/workflows/pages.yml`` beside
+    its staged export. Validating the bare directory there would check
+    a file the export excludes, and miss the workflows that actually ship.
+    """
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".export/.github/workflows").mkdir(parents=True)
+
+    assert workflow_dir(tmp_path) == tmp_path / ".export/.github/workflows"
+
+
+def test_workflow_dir_falls_back_for_a_fresh_scaffold(tmp_path: Path):
+    """A scaffold has no ``.export/`` yet, so the bare path is correct."""
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+
+    assert workflow_dir(tmp_path) == tmp_path / ".github/workflows"

@@ -22,11 +22,11 @@ jobs:
     name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
 @@STRATEGY@@    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: @@USES_CHECKOUT@@
+      - uses: @@USES_SETUP_PYTHON@@
         with:
 @@PYTHON_SETUP@@
-      - uses: astral-sh/setup-uv@v6
+      - uses: @@USES_SETUP_UV@@
 @@SYSTEM_DEPS@@      - name: Validate package
         run: |
 @@COMMANDS@@
