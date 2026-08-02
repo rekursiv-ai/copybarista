@@ -339,9 +339,13 @@ ruleset requires one review by default; set
 `require_last_push_approval` to `false` before installing it if generated
 export PRs should merge without human approval.
 
-Keep public-to-source imports manual by default. Public changes are proposals
-that can carry semantic decisions, so source maintainers should review the
-generated import PR before accepting it.
+Public-to-source imports auto-merge by default. A clean import carries no
+decision a maintainer can improve: the public change is already reviewed and
+published, and an unmerged import blocks the export in the other direction
+until it lands. A conflicting or failing import never reaches the merge, so
+only a clean import merges unattended. Set the public repository variable
+`COPYBARISTA_IMPORT_AUTO_MERGE` to `false` to require a maintainer to merge
+the generated import PR instead.
 
 ## Sync Identity
 
