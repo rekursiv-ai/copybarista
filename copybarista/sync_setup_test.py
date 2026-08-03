@@ -9,16 +9,15 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from copybarista.config import DEFAULT_PYTHON_EXCLUDES
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
-    DEFAULT_EXCLUDES,
     SyncSettings,
     check_sync_config,
     export_workflow,
     import_workflow,
     load_sync_settings,
     package_validation_workflow,
+    sync_toml,
     workflow_dir,
     write_sync_scaffold,
 )
@@ -40,6 +39,30 @@ def _settings(**kwargs: Any) -> SyncSettings:
     return SyncSettings(**values)
 
 
+def test_sync_toml_round_trips_every_setting(tmp_path: Path):
+    """Writing settings then loading them back must reproduce them exactly.
+
+    A field the loader reads but the template has no slot for is written away
+    silently: ``skip_source_validation`` (set by all eight live packages) came
+    back ``False``, so re-scaffolding would have dropped
+    ``--skip-source-validation`` from every export workflow.
+
+    This asserts over ALL fields rather than a list of them. A per-field
+    assertion only covers what its author enumerated, which is the same
+    incompleteness that let the gap open; quantifying over the dataclass
+    means a field added later cannot escape.
+    """
+    original = _settings(
+        skip_source_validation=True,
+        system_packages=("git",),
+        replay_bootstrap_base_comment=("why this base",),
+    )
+    path = tmp_path / "copybarista.sync.toml"
+    path.write_text(sync_toml(original), encoding="utf-8")
+
+    assert load_sync_settings(path) == original
+
+
 def test_write_sync_scaffold_uses_stable_public_file_names(tmp_path: Path):
     written = write_sync_scaffold(root=tmp_path, settings=_settings())
 
@@ -58,10 +81,23 @@ def test_sync_metadata_stores_package_name_as_data(tmp_path: Path):
 
     assert 'package_name = "configgle"' in text
     assert 'sync_label = "Configgle"' in text
-    assert 'export_branch_prefix = "configgle/export/"' in text
-    assert 'import_branch_prefix = "configgle/import/"' in text
+    # The RAW prefix fields, left empty so they keep deriving from the package
+    # name. Writing the RESOLVED "configgle/export/" would freeze today's name
+    # into the config, and a later rename would silently keep the old prefix.
+    assert 'export_branch_prefix = ""' in text
+    assert 'import_branch_prefix = ""' in text
     assert "[pull_request]" in text
     assert 'metadata_source = "commit_messages"' in text
+
+
+def test_scaffolded_prefixes_still_derive_from_the_package_name(tmp_path: Path):
+    """An empty raw prefix must still resolve to the derived branch names."""
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+
+    settings = load_sync_settings(tmp_path / "copybarista.sync.toml")
+
+    assert settings.export_prefix == "configgle/export/"
+    assert settings.import_prefix == "configgle/import/"
 
 
 def test_generated_export_config_blocks_source_sync_files(tmp_path: Path):
@@ -78,19 +114,6 @@ def test_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
     check_sync_config(root=tmp_path)
-
-
-def test_sync_setup_python_excludes_derive_from_config_defaults():
-    # The single source of truth for Python artifacts is config.DEFAULT_PYTHON_
-    # EXCLUDES. sync_setup adds only the copybarista control files on top, so the
-    # two lists never diverge.
-    assert set(DEFAULT_PYTHON_EXCLUDES) <= set(DEFAULT_EXCLUDES)
-    control_only = set(DEFAULT_EXCLUDES) - set(DEFAULT_PYTHON_EXCLUDES)
-    assert control_only == {
-        "copy.bara.sky",
-        "copy.barista.toml",
-        "copybarista.sync.toml",
-    }
 
 
 def test_check_sync_config_accepts_config_relying_on_default_excludes(
@@ -242,7 +265,7 @@ def test_check_sync_config_reports_malformed_package_validation_yaml(
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="Cannot read package validation workflow"):
+    with pytest.raises(ConfigError, match=r"package-validation\.yml is not what"):
         check_sync_config(root=tmp_path)
 
 
@@ -338,14 +361,14 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.export_prefix == "configgle/export/"
     assert settings.import_prefix == "configgle/import/"
     assert settings.validation_python_versions == ("3.12",)
+    # Lint/type/test checks are delegated to the package's own
+    # .pre-commit-config.yaml; only the steps pre-commit does not own stay
+    # here. Restating each tool would mean a newly added hook silently goes
+    # unrun in the public repo.
     assert settings.validation_commands == (
         "uv sync --all-groups",
-        "uv run ruff check --no-fix --no-cache .",
-        "uv run ruff format --check --no-cache .",
-        "uv run codespell .",
-        "uv run ty check",
-        "uv run basedpyright configgle",
-        "uv run pytest",
+        "uv run pre-commit run --all-files --hook-stage pre-commit",
+        "uv run pre-commit run --all-files --hook-stage pre-push",
         'uv run python -c "import configgle"',
         "uv build",
     )
@@ -440,7 +463,9 @@ def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
 
 
 def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
-    write_sync_scaffold(root=tmp_path, settings=_settings())
+    write_sync_scaffold(
+        root=tmp_path, settings=_settings(import_branch_prefix="configgle/import/")
+    )
     config = tmp_path / "copybarista.sync.toml"
     config.write_text(
         config.read_text(encoding="utf-8").replace("configgle/import/", "main"),
@@ -477,13 +502,33 @@ def test_check_sync_config_rejects_package_validation_drift(tmp_path: Path):
     workflow = tmp_path / ".github/workflows/package-validation.yml"
     workflow.write_text(
         workflow.read_text(encoding="utf-8").replace(
-            "uv run pytest",
-            "uv run pytest tests/test_one.py",
+            "--hook-stage pre-push",
+            "--hook-stage pre-push --hook pytest",
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="validation_commands"):
+    with pytest.raises(ConfigError, match=r"package-validation\.yml is not what"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
+    """Byte-parity covers fields a hand-listed check never looked at.
+
+    The previous validator inspected the job name, python-version, command
+    lines, and apt packages -- so widening ``permissions`` to ``contents:
+    write`` in a workflow that ships to a public repository passed.
+    """
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/package-validation.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "contents: read", "contents: write"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"package-validation\.yml is not what"):
         check_sync_config(root=tmp_path)
 
 

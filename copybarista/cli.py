@@ -31,10 +31,15 @@ from copybarista.import_request import (
 )
 from copybarista.leak_check import enforce_leak_check
 from copybarista.sync_setup import (
+    DEFAULT_SYNC_USER_EMAIL,
+    DEFAULT_SYNC_USER_NAME,
+    DEFAULT_VALIDATION_PYTHON_VERSIONS,
     SyncSettings,
     check_sync_config,
     export_workflow,
+    import_workflow,
     load_sync_settings,
+    package_validation_workflow,
     write_sync_scaffold,
 )
 
@@ -126,8 +131,8 @@ def _parser() -> argparse.ArgumentParser:
     init_sync.add_argument("--validation-python-version", action="append", default=[])
     init_sync.add_argument("--validation-command", action="append", default=[])
     init_sync.add_argument("--refresh-public-lockfile", action="store_true")
-    init_sync.add_argument("--sync-user-name", default="copybarista")
-    init_sync.add_argument("--sync-user-email", default="copybarista@example.com")
+    init_sync.add_argument("--sync-user-name", default=DEFAULT_SYNC_USER_NAME)
+    init_sync.add_argument("--sync-user-email", default=DEFAULT_SYNC_USER_EMAIL)
     init_sync.add_argument("--overwrite", action="store_true")
 
     check_sync = sub.add_parser(
@@ -142,6 +147,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     export_sync.add_argument("sync_config")
     export_sync.add_argument("--output", default="")
+
+    public_sync = sub.add_parser(
+        "write-public-workflows",
+        help="Rewrite a package's generated .export/ workflows in place",
+    )
+    public_sync.add_argument("sync_config")
 
     return parser
 
@@ -158,6 +169,7 @@ def _command_handlers() -> dict[str, Callable[[argparse.Namespace], None]]:
         "init-sync": _run_init_sync,
         "check-sync-config": _run_check_sync_config,
         "write-export-workflow": _run_write_export_workflow,
+        "write-public-workflows": _run_write_public_workflows,
     }
 
 
@@ -252,7 +264,8 @@ def _run_init_sync(args: argparse.Namespace) -> None:
         type_check_targets=tuple(args.type_check_target)
         or (args.smoke_import, "tests"),
         forbidden_pr_text=tuple(args.forbidden_pr_text),
-        validation_python_versions=tuple(args.validation_python_version) or ("3.12",),
+        validation_python_versions=tuple(args.validation_python_version)
+        or DEFAULT_VALIDATION_PYTHON_VERSIONS,
         validation_commands=tuple(args.validation_command),
         refresh_public_lockfile=args.refresh_public_lockfile,
         sync_user_name=args.sync_user_name,
@@ -279,6 +292,25 @@ def _run_write_export_workflow(args: argparse.Namespace) -> None:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
+
+
+def _run_write_public_workflows(args: argparse.Namespace) -> None:
+    """Rewrite the generated workflows under a package's ``.export/``.
+
+    Both files bake in ``sync.validation_commands``, so changing that list
+    must rewrite both or the byte-parity test fails on whichever was
+    missed. ``write_sync_scaffold`` would also overwrite the hand-tuned
+    ``copy.barista.toml``, which is why this writes only the two.
+    """
+    config = Path(args.sync_config)
+    settings = load_sync_settings(config)
+    workflows = config.parent / ".export/.github/workflows"
+    for name, text in (
+        ("package-validation.yml", package_validation_workflow(settings)),
+        ("sync-to-source.yml", import_workflow(settings)),
+    ):
+        (workflows / name).write_text(text, encoding="utf-8")
+        sys.stdout.write(f"wrote {workflows / name}\n")
 
 
 def _exit_code(err: CopybaristaError) -> int:

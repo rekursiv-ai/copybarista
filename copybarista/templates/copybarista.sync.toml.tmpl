@@ -27,7 +27,14 @@ validation_python_versions = [
 validation_commands = [
 @@VALIDATION_COMMANDS@@
 ]
+validation_commands_comment = [
+@@VALIDATION_COMMANDS_COMMENT@@
+]
+system_packages = [
+@@SYSTEM_PACKAGES@@
+]
 refresh_public_lockfile = @@REFRESH_PUBLIC_LOCKFILE@@
+skip_source_validation = @@SKIP_SOURCE_VALIDATION@@
 
 [pull_request]
 default_title = @@PR_DEFAULT_TITLE@@
@@ -35,4 +42,7 @@ default_body = @@PR_DEFAULT_BODY@@
 require_pr_metadata = @@REQUIRE_PR_METADATA@@
 metadata_source = @@PR_METADATA_SOURCE@@
 replay_bootstrap_base = @@REPLAY_BOOTSTRAP_BASE@@
+replay_bootstrap_base_comment = [
+@@REPLAY_BOOTSTRAP_BASE_COMMENT@@
+]
 publish_source_rev = @@PUBLISH_SOURCE_REV@@

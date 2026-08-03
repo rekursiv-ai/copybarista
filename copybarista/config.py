@@ -32,8 +32,8 @@ DEFAULT_GIT_BRANCH: Final = "main"
 # holds symlinks pointing outside the source root, which the export symlink guard
 # rejects outright. An export selection or `[[files.copy]]` prepends these only
 # when it opts in with `use_default_python_excludes = true`. This is the
-# single source of truth for Python artifacts; `sync_setup.DEFAULT_EXCLUDES`
-# extends it with copybarista control files. Each `dir/**` entry matches the
+# single source of truth for Python artifacts; `sync_setup.CONTROL_EXCLUDES`
+# separately covers the copybarista control files. Each `dir/**` entry matches the
 # directory's contents at the selection root and, via its `**/dir/**` sibling, at
 # any depth; a bare directory node with no contents (or a same-named file) is not
 # matched, which is harmless because the export walker never stages empty dirs.
