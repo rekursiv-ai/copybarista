@@ -85,6 +85,11 @@ addopts = [
     "not ci_smoke and not cuda and not integration and not performance",
     "--cov=copybarista",
     "--cov-report=term-missing",
+    # Only the default marker selection above can reach this bar. The
+    # pre-push hooks re-run pytest with `-m slow` / `-m ci_smoke` /
+    # `-m integration`, each a small slice of the suite, so a package-wide
+    # threshold applied to them fails at ~24% no matter how healthy the
+    # suite is. Those hooks pass `--no-cov`, which overrides this.
     "--cov-fail-under=90",
 ]
 python_files = "*_test.py"
