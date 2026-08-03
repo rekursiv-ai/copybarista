@@ -290,6 +290,12 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
             "tools/copybarista",
             "--smoke-import",
             "configgle",
+            # The published floor must always be present; a package may add
+            # NEWER versions on top of it, never replace it. Validating on
+            # 3.13 alone would leave the >=3.12 floor every package declares
+            # completely untested.
+            "--validation-python-version",
+            "3.12",
             "--validation-python-version",
             "3.13",
             "--validation-command",
@@ -302,7 +308,7 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
     workflow = (tmp_path / ".github/workflows/package-validation.yml").read_text(
         encoding="utf-8"
     )
-    assert 'python-version: "3.13"' in workflow
+    assert 'python-version: ["3.12", "3.13"]' in workflow
     assert "uv sync --all-groups" in workflow
     assert "uv run pytest" in workflow
 
@@ -425,3 +431,46 @@ def test_cli_write_export_workflow_uses_sync_metadata(
     output = capsys.readouterr().out
     assert "configgle/export/main" in output
     assert "CONFIGGLE" not in output
+
+
+def test_cli_write_public_workflows_rewrites_both_generated_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Both ``.export/`` workflows embed ``validation_commands``.
+
+    Rewriting only one leaves the other asserting a stale command list, so
+    the subcommand must cover the pair.
+    """
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "packages/configgle",
+            "--public-repo",
+            "example/configgle",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+            "--smoke-import",
+            "configgle",
+        ]
+    )
+    workflows = tmp_path / ".export/.github/workflows"
+    workflows.mkdir(parents=True, exist_ok=True)
+    for name in ("package-validation.yml", "sync-to-source.yml"):
+        (workflows / name).write_text("stale\n", encoding="utf-8")
+
+    capsys.readouterr()
+    main(["write-public-workflows", str(tmp_path / "copybarista.sync.toml")])
+
+    assert "stale" not in (workflows / "package-validation.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "stale" not in (workflows / "sync-to-source.yml").read_text(encoding="utf-8")
+    assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(
+        encoding="utf-8"
+    )

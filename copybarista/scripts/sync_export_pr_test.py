@@ -2519,7 +2519,12 @@ def test_validate_public_runs_each_validation_command_via_bash(
     commands = ("uv sync --all-groups", "uv run pytest")
     _validate_public(public_dir=public_dir, validation_commands=commands)
 
+    # The validation tree is copied WITHOUT .git, but the command set now runs
+    # pre-commit, which refuses to work outside a repository -- and only sees
+    # tracked files, so the `git add` matters as much as the `git init`.
     assert calls == [
+        (["git", "init", "--quiet", "--initial-branch=main"], public_dir),
+        (["git", "add", "--all"], public_dir),
         (["bash", "-c", "uv sync --all-groups"], public_dir),
         (["bash", "-c", "uv run pytest"], public_dir),
     ]
@@ -2538,7 +2543,12 @@ def test_validate_public_runs_nothing_without_commands(
 
     _validate_public(public_dir=Path("/public"), validation_commands=())
 
-    assert calls == []
+    # The tree is still made a repository: an empty command set is a config
+    # that validates nothing, not a signal to skip setup.
+    assert calls == [
+        ["git", "init", "--quiet", "--initial-branch=main"],
+        ["git", "add", "--all"],
+    ]
 
 
 def test_pending_import_branches_lists_open_import_prs(

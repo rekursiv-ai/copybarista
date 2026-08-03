@@ -821,9 +821,22 @@ def _validate_public(
     behind. Each command runs through ``bash -c`` in the public checkout, so it
     self-contains its ``uv sync`` and may use shell features (pipes, ``||``,
     subshells) the same way the workflow does.
+
+    The tree is initialized as a git repository first. ``_copy_validation_tree``
+    deliberately omits ``.git``, but the validation set now runs ``pre-commit``,
+    which refuses to operate outside a repository ("git failed. Is it installed,
+    and are you in a Git repository directory?") -- and pre-commit only sees
+    TRACKED files, so an uncommitted tree would validate nothing at all.
     """
+    _init_validation_repo(public_dir)
     for command in validation_commands:
         _run(["bash", "-c", command], cwd=public_dir)
+
+
+def _init_validation_repo(public_dir: Path) -> None:
+    """Make a disposable git repository so pre-commit can see every file."""
+    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=public_dir)
+    _run(["git", "add", "--all"], cwd=public_dir)
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
