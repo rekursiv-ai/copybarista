@@ -24,27 +24,7 @@
 # "files were modified" and the commit is aborted. Run `git add -u`
 # then re-commit -- the second attempt always passes.
 fail_fast: false
-files: |
-  (?x)^(
-    (
-      \.github/
-      |assets/
-      |copybarista/
-      |docs/
-      |examples/
-      |scripts/
-      |tests/
-      |\.gitignore
-      |\.pre-commit-config\.yaml
-      |CODE_OF_CONDUCT\.md
-      |CONTRIBUTING\.md
-      |LICENSE
-      |README\.md
-      |SECURITY\.md
-      |pyproject\.toml
-      |uv\.lock
-    )
-  )
+default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -70,8 +50,8 @@ repos:
         args: [--maxkb=500, --enforce-all]
         exclude: |
           (?x)^(
-            uv\.lock
-            |(.*/)?third_party/
+            |typings/
+            |uv\.lock
           )
 
       - id: check-merge-conflict
@@ -117,7 +97,8 @@ repos:
         args: [-w]
         exclude: |
           (?x)^(
-            (.*/)?third_party/
+            typings/
+            |(.*/)?third_party/
           )
 
   # No official ty pre-commit hook yet (https://github.com/astral-sh/ty/issues/269).

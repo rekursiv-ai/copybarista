@@ -1,29 +1,25 @@
-# Code of Conduct :coffee:
+# Code of Conduct
 
-Copybarista uses a simple contributor standard: be respectful, constructive,
-and focused on improving the project.
+We want copybarista to be a respectful, productive project for contributors and users.
 
-## Expected Behavior
+This file gives maintainers a public moderation policy before the repository accepts outside issues and pull requests.
 
-- Use welcoming and inclusive language.
-- Assume good intent, and ask clarifying questions when something is unclear.
-- Keep technical disagreement specific to the work.
-- Respect maintainers' time by opening focused issues and pull requests.
-- Disclose security issues privately through the process in `SECURITY.md`.
+## Expected behavior
 
-## Unacceptable Behavior
+- Be respectful and constructive.
+- Assume good intent.
+- Focus criticism on ideas and code, not people.
+- Help keep discussions clear and actionable.
 
-- Harassment, insults, threats, or personal attacks.
-- Sexualized language or imagery.
-- Trolling, sustained disruption, or off-topic argument.
-- Publishing private information without explicit permission.
-- Using project spaces for spam or unrelated promotion.
+## Unacceptable behavior
+
+- Harassment, threats, or discriminatory language.
+- Personal attacks or sustained disruption.
+- Publishing private information without consent.
+
+Disclose security issues privately through the process in `SECURITY.md`, not in
+a public issue.
 
 ## Enforcement
 
-Maintainers may edit, hide, or remove comments, issues, pull requests, and
-other contributions that violate this code. Maintainers may also temporarily or
-permanently restrict participation for repeated or serious violations.
-
-Report conduct concerns privately to the maintainers. Include links, context,
-and any relevant screenshots when possible.
+Project maintainers may moderate discussions, close issues, or restrict participation when necessary to keep the project safe and productive. Report concerns privately to hello@rekursiv.ai.
