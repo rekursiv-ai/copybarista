@@ -629,7 +629,7 @@ or endorsed by Google or the Copybara project.
 If you find our work useful, please consider citing:
 
 ```bibtex
-@misc{rekursiv2026copybarista,
+@misc{rekursivai2026copybarista,
       title={Copybarista - Bidirectional source sync for publishing OSS-ready trees from a monorepo.},
       author={Dan Kondratyuk and Joshua V. Dillon},
       year={2026},
