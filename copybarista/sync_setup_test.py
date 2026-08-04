@@ -11,7 +11,9 @@ import yaml
 
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
+    GITHUB_ACTION_PINS,
     SyncSettings,
+    action_ref,
     check_sync_config,
     export_workflow,
     import_workflow,
@@ -298,7 +300,8 @@ def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path:
     workflow = tmp_path / ".github/workflows/sync-to-source.yml"
     text = workflow.read_text(encoding="utf-8")
     start = text.index("      - id: refs\n")
-    end = text.index("      - uses: actions/checkout@v5\n", start)
+    checkout = GITHUB_ACTION_PINS["actions/checkout"]
+    end = text.index(f"      - uses: actions/checkout@{checkout}\n", start)
     block = text[start:end]
     workflow.write_text(
         (text[:start] + text[end:]).replace(
@@ -700,7 +703,7 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
         if "COPYBARISTA_IMPORT_TOKEN" in str(step)
     ] == [
         "Check settings",
-        "actions/checkout@v5",
+        action_ref("actions/checkout"),
         "Open or update target import PR",
     ]
 
@@ -773,7 +776,7 @@ def _step_index(
 
 def _checkout_path(step: dict[str, Any]) -> str:
     """Return the `path` a checkout step writes to, or empty for other steps."""
-    if step.get("uses") != "actions/checkout@v5":
+    if step.get("uses") != action_ref("actions/checkout"):
         return ""
     with_config: Any = step.get("with", {})
     return str(cast("dict[str, Any]", with_config).get("path", ""))
