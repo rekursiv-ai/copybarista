@@ -301,7 +301,7 @@ def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path:
     text = workflow.read_text(encoding="utf-8")
     start = text.index("      - id: refs\n")
     checkout = GITHUB_ACTION_PINS["actions/checkout"]
-    end = text.index(f"      - uses: actions/checkout@{checkout}\n", start)
+    end = text.index(f"      - uses: {checkout.uses}\n", start)
     block = text[start:end]
     workflow.write_text(
         (text[:start] + text[end:]).replace(
