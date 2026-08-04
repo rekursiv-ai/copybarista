@@ -769,12 +769,29 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
         return ""
     guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
     names = " ".join(packages)
-    return (
-        "      - name: Install system packages\n"
-        f"{guard}"
-        "        run: sudo apt-get update && sudo apt-get install -y "
-        f"--no-install-recommends {names}\n"
-    )
+    lines = [
+        "      - name: Install system packages\n",
+        guard,
+        "        run: |\n",
+        "          sudo apt-get update\n",
+        f"          sudo apt-get install -y --no-install-recommends {names}\n",
+    ]
+    if "postgresql" in packages:
+        # pgvector ships as `postgresql-<major>-pgvector`, so the name depends
+        # on which server apt resolved and cannot sit in the flat list. Without
+        # it a runner that HAS Postgres (ubuntu-latest preinstalls 16) fails
+        # every integration test with `extension "vector" is not available`
+        # rather than skipping -- the capability gate in the shared pre-commit
+        # config deliberately runs when `pg_config` is present.
+        lines.append(
+            '          PG_MAJOR="$(apt-cache depends postgresql '
+            "| grep -m1 -oP 'postgresql-\\K\\d+' || true)\"\n"
+        )
+        lines.append(
+            '          if [ -n "$PG_MAJOR" ]; then sudo apt-get install -y '
+            '--no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi\n'
+        )
+    return "".join(lines)
 
 
 def _render_template(name: str, values: dict[str, str]) -> str:
