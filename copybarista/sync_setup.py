@@ -50,10 +50,13 @@ rejects the mismatch rather than letting the two silently diverge.
 """
 
 GITHUB_ACTION_PINS: Final = {
-    "actions/checkout": "v5",
-    "actions/setup-python": "v6",
-    "astral-sh/setup-uv": "v7",
-    "actions/upload-artifact": "v6",
+    # SHA, not tag: a tag is mutable, so `@v5` can be moved to arbitrary code
+    # without any workflow changing. The trailing comment carries the version
+    # for humans and for the Node-24 floor check in ops/github.
+    "actions/checkout": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5",
+    "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1 # v6",
+    "astral-sh/setup-uv": "37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7",
+    "actions/upload-artifact": "b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6",
 }
 """Action versions the generated workflows pin, and the reason for each floor.
 
@@ -79,8 +82,13 @@ def _uses_placeholders() -> dict[str, str]:
 
 
 def action_ref(action: str) -> str:
-    """The pinned ``owner/name@vN`` reference for one action."""
-    return f"{action}@{GITHUB_ACTION_PINS[action]}"
+    """The pinned ``owner/name@sha`` reference for one action.
+
+    The pin table carries a trailing ``# vN`` so the rendered YAML says which
+    version a SHA is; YAML parses that as a comment, so it is stripped here to
+    get the value a parsed ``uses:`` actually holds.
+    """
+    return f"{action}@{GITHUB_ACTION_PINS[action].split('#')[0].strip()}"
 
 
 # System (apt) packages installed before both public package validation and
