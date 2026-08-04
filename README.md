@@ -623,3 +623,17 @@ Copybarista is an independent Python implementation focused on
 package-oriented GitHub PR workflows. It does not vendor or copy Copybara
 source code, documentation, logos, or test data, and it is not affiliated with
 or endorsed by Google or the Copybara project.
+
+## Citing
+
+If you find our work useful, please consider citing:
+
+```bibtex
+@misc{rekursiv2026copybarista,
+      title={Copybarista - Bidirectional source sync for publishing OSS-ready trees from a monorepo.},
+      author={Dan Kondratyuk and Joshua V. Dillon},
+      year={2026},
+      howpublished={Github},
+      url={https://github.com/rekursiv-ai/copybarista},
+}
+```
