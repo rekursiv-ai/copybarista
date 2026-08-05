@@ -214,7 +214,7 @@ jobs:
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
             --validation-command 'uv build --out-dir dist' \
-            --validation-command 'wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
+            --validation-command 'wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
             --open-pr false
 
       - name: Open or update target import PR
