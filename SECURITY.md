@@ -1,25 +1,43 @@
 # Security Policy
 
-## Supported Versions
+## Why this file exists
 
-Copybarista is pre-1.0. Security fixes apply to the current `main` branch.
+copybarista can delete and rewrite destination trees, and it is the boundary
+that keeps private source out of a public repository. A config or transform bug
+can publish text meant to stay private, or overwrite a tree not meant to be
+touched. Security reports need a private path so exploit details are not
+published before review.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Report security issues privately through GitHub Security Advisories for this
-repository. If advisories are unavailable, contact the maintainers directly
-instead of opening a public issue.
+Please report suspected security vulnerabilities privately by emailing hello@rekursiv.ai.
 
-Please include:
+Include:
 
-- A description of the issue.
+- Affected version or commit.
 - Steps to reproduce.
-- Affected operating system and Python version.
-- Any relevant config file or command invocation.
+- Expected impact.
+- Any suggested mitigation.
 
-## Security Notes
+Please do not open public issues for vulnerabilities until we have investigated and coordinated disclosure.
 
-Copybarista can delete and rewrite destination trees. It includes safety
+## Scope
+
+Security reports are especially useful for:
+
+- Private-to-public export leaks: source paths, transforms, or leak checks that
+  let private text reach the public tree.
+- Destination handling that deletes or rewrites a tree outside the configured
+  destination.
+- Credential exposure in public-to-source imports, especially write tokens
+  reachable from validation steps that execute imported public changes.
+- Argument or command injection in the `git` and `gh` invocations.
+- Dependency or packaging issues that affect installed users.
+- Supply-chain concerns in the published wheel or its dependency set.
+
+## Security notes
+
+copybarista can delete and rewrite destination trees. It includes safety
 checks for dangerous destination paths, but users should review export
 configs before running them.
 
@@ -36,5 +54,5 @@ Interrupted folder exports can leave the destination tree partially rewritten.
 If that happens, inspect or clean the destination and rerun the export with
 `--force`.
 
-Copybarista shells out to `git` for Git destination exports. Commands are
+copybarista shells out to `git` for Git destination exports. Commands are
 executed without a shell, and arguments are passed as argv lists.

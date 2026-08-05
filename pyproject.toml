@@ -92,25 +92,27 @@ addopts = [
     # suite is. Those hooks pass `--no-cov`, which overrides this.
     "--cov-fail-under=90",
 ]
-python_files = "*_test.py"
+python_files = ["*_test.py", "test_*.py"]
 pythonpath = ["."]
 timeout = 60
 markers = [
     "ci_smoke: slower package/CLI smoke tests run explicitly in CI",
-    "cuda: tests that require a real CUDA device (deselected by default)",
-    "integration: tests that require Git remotes or external CLIs",
-    "performance: timing-sensitive tests",
+    "cuda: tests that require a real CUDA device (skipped in hosted CI)",
+    "integration: tests that require networking or external CLIs (deselected by default)",
+    "performance: timing-sensitive tests (deselected by default)",
 ]
 filterwarnings = [
     "error",
 ]
 norecursedirs = [
+    "*.egg-info",
+    ".agents",
+    ".claude",
+    ".hypothesis",
     ".venv",
     "__pycache__",
-    "*.egg-info",
-    "build",
-    "dist",
-    ".hypothesis",
+    "third_party",
+    "typings",
 ]
 
 [tool.coverage.run]
@@ -212,9 +214,9 @@ ignore = [
     "TRY300",  # Try consider else.
 
     # Additional style relaxations.
-    # "DJ",      # Django.
-    # "EXE",     # Flake8 executable.
-    # "TID",     # Flake8 tidy imports.
+    # "DJ",    # Django.
+    # "EXE",   # Flake8 executable.
+    # "TID",   # Flake8 tidy imports.
     "A001",    # Builtin variable shadowing.
     "DTZ006",  # Call datetime fromtimestamp.
     "EXE001",  # Shebang is present but file is not executable.
@@ -223,18 +225,23 @@ ignore = [
     "PLR2004", # Magic value comparison.
     "S101",    # Use of `assert` detected.
     "SIM108",  # If-else block instead of if-exp.
-    # "B008",    # Function call in default argument.
-    # "FIX001",  # Line contains FIXME.
-    # "ICN001",  # Unconventional import alias.
-    # "N801",    # Invalid class name.
-    # "N802",    # Invalid function name.
-    # "N803",    # Invalid argument name.
-    # "N813",    # Camelcase imported as lowercase.
-    # "N815",    # Mixed case variable in class scope.
-    # "PGH004",  # Blanket noqa.
-    # "PT027",   # Pytest unittest raises assertion.
-    # "TD004",   # Missing TODO colon.
-    # "TD005",   # Missing TODO description.
+    # "B008",  # Function call in default argument.
+    "FIX001",  # Line contains FIXME.
+    # "ICN001",# Unconventional import alias.
+    # "N801",  # Invalid class name.
+    # "N802",  # Invalid function name.
+    # "N803",  # Invalid argument name.
+    # "N813",  # Camelcase imported as lowercase.
+    # "N815",  # Mixed case variable in class scope.
+    # "PGH004",# Blanket noqa.
+    # "PT027", # Pytest unittest raises assertion.
+    "TD001",   # Invalid TODO tag: `FIXME`
+    "TD002",   # Missing author in TODO; try: `# TODO(<author_name>): ...` or `# TODO @<author_name>: ...`
+    "TD004",   # Missing colon in TODO
+    "TD005",   # Missing issue description after `TODO`
+]
+exclude = [
+    "**/typings/**",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -299,6 +306,8 @@ section-order = [
 
 [tool.basedpyright]
 typeCheckingMode = "recommended"
+failOnWarnings = true  # Warnings fail the check (basedpyright default; pinned explicitly).
+useLibraryCodeForTypes = false
 extraPaths = ["."]
 exclude = [
     "**/.venv/",
@@ -353,13 +362,16 @@ exclude = [
     ".pytest_cache/",
     "build/",
     "dist/",
-    "docs/",
+    "**/docs/",
     "typings/",
     "**/third_party/",
 ]
 
 [tool.ty.environment]
 python-version = "3.12"
+# No `extra-paths = ["typings"]` here (every sibling export has it): copybarista
+# ships no stub tree, and ty hard-errors on an extra-path that is not a
+# directory rather than skipping it.
 
 [tool.ty.terminal]
 error-on-warning = true
