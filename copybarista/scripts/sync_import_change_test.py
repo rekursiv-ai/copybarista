@@ -1049,3 +1049,42 @@ def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> No
         )
         == public_sha
     )
+
+
+def test_export_public_tree_initializes_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exported tree must be a git repo before validation runs in it.
+
+    ``sync.validation_commands`` is shared with the public repo's
+    ``package-validation.yml`` and the export gate, and every package's list
+    runs ``pre-commit run --all-files``. pre-commit resolves ``--all-files``
+    through git and aborts with "git failed. Is it installed, and are you in a
+    Git repository directory?" outside a repo. The other two consumers run in a
+    real checkout; only this path exports to a bare directory, so it must
+    supply the repo itself.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    target = tmp_path / "target"
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+
+    sync_import_change._export_public_tree(
+        request=_import_request(target_dir=target),
+        project=target / "package",
+        runner_temp=runner_temp,
+        requirements=tmp_path / "copybarista-requirements.txt",
+    )
+
+    git_calls = [c for c in calls if c[:1] == ["git"]]
+    assert [c[1] for c in git_calls] == ["init", "add"], calls
+    # Ordering matters: the repo must exist before any validation command runs,
+    # and `_validate_target` runs them immediately after this returns.
+    assert calls.index(git_calls[0]) > 0, "export must precede git init"

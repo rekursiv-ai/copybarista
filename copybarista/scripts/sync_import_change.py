@@ -455,6 +455,17 @@ def _export_public_tree(
         ],
         cwd=request.target_dir,
     )
+    # `copybarista export` writes a plain directory, but the caller then runs
+    # `sync.validation_commands` here -- and since those became
+    # `pre-commit run --all-files` (previously ruff/ty/pytest invoked directly),
+    # they need a git repo: pre-commit resolves `--all-files` through git and
+    # otherwise aborts with "git failed. Is it installed, and are you in a Git
+    # repository directory?". The list's other two consumers (the public repo's
+    # package-validation.yml and the export gate) run inside a real checkout, so
+    # only this path has to supply one. Staging is what makes the files visible
+    # to `--all-files`; no commit is needed, and the tree is discarded after.
+    _run(["git", "init", "--quiet"], cwd=tree)
+    _run(["git", "add", "--all"], cwd=tree)
     return tree
 
 
