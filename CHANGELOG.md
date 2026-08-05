@@ -1,6 +1,7 @@
 # Changelog
 
-All notable Copybarista changes are documented here.
+All notable copybarista changes are documented here. This project follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 

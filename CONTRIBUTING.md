@@ -1,35 +1,45 @@
-# Contributing :coffee:
+# Contributing to copybarista
 
-Copybarista is a small Python project for publishing clean standalone
-repositories from source trees. Keep the implementation Pythonic and scoped to
-specific sync problems rather than broad migration-engine compatibility.
+Thanks for helping improve copybarista.
 
-## Development Setup
+## Why this file exists
 
-Use `uv` from the repository root:
+copybarista accepts public changes through a generated public repository while the source tree stays canonical. Contributors need to know how to validate changes locally and which branches are safe to edit.
+
+## Development setup
+
+Requires Python 3.12 and uv.
 
 ```bash
 uv sync --all-groups
-uv run --all-groups pre-commit install
+uv run pytest
 ```
 
-## Validation
-
-Run these before submitting changes:
+Before opening a pull request, run:
 
 ```bash
-uv run --all-groups pre-commit run --all-files
-uv run --all-groups ruff check --no-fix --no-cache .
-uv run --all-groups ruff format --check --no-cache .
-uv run --all-groups codespell .
-uv run --all-groups ty check
-uv run --all-groups basedpyright copybarista scripts tests
-uv run --all-groups pytest
-uv build --out-dir /tmp/copybarista-dist-check
+uv sync --all-groups
+uv run ruff check --no-fix --no-cache .
+uv run ruff format --check --no-cache .
+uv run codespell .
+uv run ty check
+uv run basedpyright copybarista
+uv run pytest
+uv run python -c "import copybarista"
+uv build
 ```
 
-`pytest` enforces at least 90% line coverage. `basedpyright` and `ty` must pass
-with zero errors and zero warnings.
+## Public contribution flow
 
-Unit tests live adjacent to source modules as `*_test.py`. Keep only
-non-unit integration tests under `tests/`.
+The public repository is synchronized with the canonical source tree. Public
+changes should be made on normal contributor branches. After validation, the
+sync workflow imports accepted changes back to the source repository for review.
+
+Do not edit generated `copybarista/export/*` branches directly.
+
+## Pull request expectations
+
+- Keep changes focused.
+- Include tests for behavior changes.
+- Update README or docs when public behavior changes.
+- Do not include secrets, private credentials, generated caches, or local environment files.

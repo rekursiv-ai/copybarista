@@ -41,8 +41,10 @@ jobs:
           # Lint/type/test checks come from this package's own .pre-commit-config.yaml.
           # Restating each tool here means a newly added hook silently goes unrun.
           python copybarista/scripts/check_release_tree.py . --allow-root-git
-          uv sync --all-groups
+          uv sync --frozen --all-groups
           uv run pre-commit run --all-files --hook-stage pre-commit
           uv run pre-commit run --all-files --hook-stage pre-push
+          uv run python -c "import copybarista"
+          rm -rf dist
           uv build --out-dir dist
           wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('ok')"

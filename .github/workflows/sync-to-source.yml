@@ -210,9 +210,11 @@ jobs:
             --report "$IMPORT_REPORT" \
             --refresh-public-lockfile \
             --validation-command 'python copybarista/scripts/check_release_tree.py . --allow-root-git' \
-            --validation-command 'uv sync --all-groups' \
+            --validation-command 'uv sync --frozen --all-groups' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
+            --validation-command 'uv run python -c "import copybarista"' \
+            --validation-command 'rm -rf dist' \
             --validation-command 'uv build --out-dir dist' \
             --validation-command 'wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
             --open-pr false
