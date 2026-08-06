@@ -66,6 +66,11 @@ typecheck = [
     "basedpyright>=1.10",
     "ty>=0.0.56",
 ]
+"pre-commit" = [
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typecheck"},
+]
 
 [project.scripts]
 copybarista = "copybarista.cli:main"
