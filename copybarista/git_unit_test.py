@@ -33,11 +33,12 @@ from copybarista.git import (
     _verify_user_info_configured,
     write_git_destination,
 )
+from copybarista.lib.userdirs import cache_dir
 from copybarista.workflow import StagedTree
 
 
 def test_git_runtime_default_cache_uses_xdg_cache() -> None:
-    assert GitRuntime().cache_root == Path.home() / ".cache" / "copybarista" / "git"
+    assert GitRuntime().cache_root == cache_dir("rekursiv-ai") / "copybarista" / "git"
 
 
 def test_local_remote_path_rejects_scp_style_url():
