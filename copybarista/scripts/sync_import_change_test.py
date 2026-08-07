@@ -1088,3 +1088,67 @@ def test_export_public_tree_initializes_git_repo(
     # Ordering matters: the repo must exist before any validation command runs,
     # and `_validate_target` runs them immediately after this returns.
     assert calls.index(git_calls[0]) > 0, "export must precede git init"
+
+
+def test_no_op_import_still_writes_the_ledger_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge that changes nothing must still record the public SHA.
+
+    The export guard answers "has the source absorbed this public commit?" by
+    searching target history for the import commit's subject. A clean merge
+    that produced no diff means the source ALREADY holds that content -- the
+    strongest possible yes -- yet writing no commit made it read as no. That
+    left the export blocked on a SHA it had, clearable only by hand-forging
+    the commit this function should have written.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    def fake_gh_pr_exists(**_: object) -> bool:
+        return False
+
+    def fake_git_has_changes(**_: object) -> bool:
+        # No porcelain output => no file changes: the no-op import path.
+        return False
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run)
+    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", fake_gh_pr_exists)
+    monkeypatch.setattr(sync_import_change, "_git_has_changes", fake_git_has_changes)
+
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    request = _import_request(target_dir=tmp_path)
+
+    sync_import_change._open_or_update_target_pr(request=request)
+
+    commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert commits, "no-op import wrote no commit, so the ledger has no record"
+    subject = commits[0][commits[0].index("-m") + 1]
+    expected = import_commit_subject_prefix(request.sync_label) + request.public_sha
+    assert subject == expected, subject
+    assert "--allow-empty" in commits[0], commits[0]
+
+
+def test_ledger_subject_satisfies_the_export_guard(tmp_path: Path) -> None:
+    """The subject this module writes is the one the export guard parses.
+
+    Two modules agree on a string format by convention alone; an abbreviated
+    SHA or a reworded prefix parses as no marker at all and silently reblocks
+    every export. Assert the round trip rather than the format.
+    """
+    sha = "7e241ac9b43e60bd69f93251814a5dd6a1355097"
+    subject = import_commit_subject_prefix("Priml") + sha
+    root = tmp_path / "source"
+    root.mkdir()
+    _git_repo_with_commits(root=root, subjects=["init", subject, "later work"])
+
+    assert (
+        last_synced_public_sha(target_dir=root, sync_label="Priml", base_branch="main")
+        == sha
+    )

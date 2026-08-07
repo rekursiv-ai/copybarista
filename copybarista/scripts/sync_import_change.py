@@ -470,10 +470,22 @@ def _export_public_tree(
 
 
 def _open_or_update_target_pr(*, request: ImportRequest) -> None:
-    """Commit imported source changes and create or update the target PR."""
+    """Commit the import and create or update the target PR.
+
+    Commits even when the merge produced no file changes. Two different
+    questions share this path: "is there a diff to review?" and "has the
+    source absorbed this public SHA?". Only the first is answered by an empty
+    tree. The export guard asks the second, and answers it by searching target
+    history for this commit's subject -- so returning early here left the guard
+    reading "not imported" for content the source demonstrably already had.
+
+    An empty diff at this point is the strongest possible yes: the three-way
+    merge applied without conflict and ``_validate_target`` passed the full
+    gate suite on the exported result. A transform that dropped content, or a
+    wrong ``--public-base``, raises before reaching this function.
+    """
     if not _git_has_changes(path=request.target_dir, rel=request.project_path):
-        _log("Import produced no target changes.")
-        return
+        _log("Import produced no target changes; recording the SHA anyway.")
 
     branch = request.branch
     source_base_ref = _git_head(cwd=request.target_dir)
@@ -502,6 +514,8 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
         [
             "git",
             "commit",
+            # The commit IS the ledger, so it must exist even with no diff.
+            "--allow-empty",
             "--author",
             _commit_author(request.sync_user_name, request.sync_user_email),
             "-m",
