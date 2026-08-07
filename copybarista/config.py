@@ -801,6 +801,20 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         # without this, ``validate`` reports success on a config that hard-fails
         # mid-export. ``compile_replace`` is the single source of those checks.
         compile_replace(before=before, after=after, regex_groups=regex_groups)
+        reversible = _bool(raw_transform, "reversible", default=True)
+        # Import replays a replace with before/after swapped
+        # (``import_request._ReverseMatcher``), so a reversible transform must
+        # compile in BOTH directions. Checking only the forward one let an
+        # ``after`` that drops an interpolated group parse clean and raise a raw
+        # ConfigError mid-import, outside the importer's error contract.
+        if reversible and regex_groups:
+            try:
+                compile_replace(before=after, after=before, regex_groups=regex_groups)
+            except ConfigError as err:
+                raise ConfigError(
+                    f"replace is not reversible: {err}. Set reversible = false "
+                    "to declare it forward-only."
+                ) from err
         return Transform(
             id=transform_id,
             type="replace",
@@ -810,7 +824,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             reverse_before=reverse_before,
             reverse_after=reverse_after,
             required=required,
-            reversible=_bool(raw_transform, "reversible", default=True),
+            reversible=reversible,
             regex_groups=regex_groups,
         )
     if ttype == "move":

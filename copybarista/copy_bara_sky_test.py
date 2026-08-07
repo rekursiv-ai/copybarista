@@ -7,12 +7,20 @@ from pathlib import Path
 import pytest
 
 from copybarista.cli import main
-from copybarista.config import FileCopy, load_config, parse_config
+from copybarista.config import (
+    FileCopy,
+    Transform,
+    _parse_transform,
+    load_config,
+    parse_config,
+)
 from copybarista.copy_bara_sky import (
     TranslatedWorkflow,
+    _transform_to_raw,
     translate_copy_bara_sky_to_toml,
 )
 from copybarista.errors import ConfigError
+from copybarista.transforms import apply_transform
 
 
 def _write_sky(tmp_path: Path, source: str) -> Path:
@@ -716,6 +724,247 @@ def test_to_raw_config_round_trips_copy_default_python_excludes_opt_in():
     assert parsed.files.copy[0].use_default_python_excludes is True
 
 
+def test_regex_groups_survive_sky_translation_and_apply(tmp_path: Path):
+    """A ``regex_groups`` replace must keep its groups through the TOML round trip.
+
+    ``regex_groups`` is how a .sky config expresses a marker-delimited strip that
+    is not a fixed literal. It travels sky -> raw dict -> parsed config, and any
+    link that drops the field degrades the transform into a literal replace that
+    silently matches nothing -- so assert both the parsed shape and the applied
+    text.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "# x:start${block}# x:end\\n",
+                            after = "",
+                            regex_groups = { "block" : "[\\\\s\\\\S]*?" },
+                            paths = glob(["conf.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                ),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+    transform = config.transforms[0]
+
+    assert transform.regex_groups == (("block", "[\\s\\S]*?"),)
+    # Re-parse the emitted TOML rather than probing it for a substring: only a
+    # round trip proves the serializer wrote a form the parser reads back.
+    round_tripped = tmp_path / "round-trip.toml"
+    round_tripped.write_text(
+        translate_copy_bara_sky_to_toml(config_path), encoding="utf-8"
+    )
+    assert load_config(round_tripped).transforms[0].regex_groups == (
+        ("block", "[\\s\\S]*?"),
+    )
+
+    root = tmp_path / "staged"
+    root.mkdir()
+    (root / "conf.yaml").write_text(
+        "keep: 1\n# x:start\ndrop: 2\n# x:end\nkeep: 3\n", encoding="utf-8"
+    )
+    apply_transform(root=root, transform=transform, sources_by_destination={})
+
+    assert (root / "conf.yaml").read_text() == "keep: 1\nkeep: 3\n"
+
+
+@pytest.mark.parametrize(
+    "wrapper_args",
+    [
+        pytest.param("reversal = [],", id="empty-reversal"),
+        pytest.param(
+            """reversal = [
+                        core.replace(
+                            before = "demo",
+                            after = "@@PKG@@",
+                            paths = glob(["README.md"]),
+                        ),
+                    ],""",
+            id="explicit-reversal",
+        ),
+        pytest.param("", id="no-reversal"),
+    ],
+)
+def test_ignore_noop_reaches_every_transform_group_exit(
+    tmp_path: Path, wrapper_args: str
+):
+    """``ignore_noop`` must take effect on every path out of ``core.transform``.
+
+    The wrapper has three exits (no ``reversal``, empty ``reversal``, explicit
+    ``reversal``) and only one consumed the kwarg, so the other two accepted it
+    and discarded it -- a config that reads as tolerating a no-op still failed
+    the export. Parametrized over all three so a new exit cannot reintroduce the
+    gap.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        f"""
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "@@PKG@@",
+                            after = "demo",
+                            paths = glob(["README.md"]),
+                        ),
+                    ],
+                    {wrapper_args}
+                    ignore_noop = True,
+                ),
+            ],
+        )
+        """,
+    )
+
+    assert load_config(config_path).transforms[0].required is False
+
+
+def test_sky_replace_carries_required_and_reversible(tmp_path: Path):
+    """``core.transform(reversal = [])`` and ``ignore_noop`` must reach Transform.
+
+    The translator built ``Transform`` without either field, so every sky
+    transform silently took the ``True`` defaults. A forward-only rewrite
+    (Copybara's declared no-op reversal) then reversed on import -- for the
+    ``@@PKG@@`` substitution that rewrites every legitimate mention of the
+    package name back to the placeholder.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "@@PKG@@",
+                            after = "demo",
+                            paths = glob(["README.md"]),
+                        ),
+                    ],
+                    reversal = [],
+                    ignore_noop = True,
+                ),
+            ],
+        )
+        """,
+    )
+
+    transform = load_config(config_path).transforms[0]
+
+    assert transform.reversible is False
+    assert transform.required is False
+
+
+def test_rejects_multiline_with_regex_groups(tmp_path: Path):
+    """``multiline`` must not be accepted and then discarded.
+
+    The ``regex_groups`` branch returned before the ``multiline`` handling, so
+    the kwarg was dropped: newline spanning came from the group patterns
+    instead, and the "before containing newlines requires multiline" guard was
+    bypassed. A config that reads correct behaved differently.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.replace(
+                    before = "a${g}b",
+                    after = "c",
+                    regex_groups = { "g" : "[a-z]*" },
+                    multiline = True,
+                    paths = glob(["conf.yaml"]),
+                ),
+            ],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="multiline"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        pytest.param(
+            Transform(
+                id="t",
+                type="strip_block",
+                path="a.md",
+                start="S",
+                end="E",
+                else_marker="X",
+            ),
+            id="strip_block-else",
+        ),
+        pytest.param(
+            Transform(id="t", type="internal_lines", path="a.yaml", start="M"),
+            id="internal_lines",
+        ),
+        pytest.param(
+            Transform(id="t", type="uncomment", path="a.yaml", start="M", end="E"),
+            id="uncomment",
+        ),
+        pytest.param(Transform(id="t", type="ruff_format", path="."), id="ruff_format"),
+        pytest.param(
+            Transform(id="t", type="move", path="a.md", destination="b.md"), id="move"
+        ),
+    ],
+)
+def test_transform_survives_the_raw_config_round_trip(transform: Transform):
+    """Every transform type must survive Transform -> raw -> Transform intact.
+
+    ``.sky`` configs reach ``parse_config`` through this serialization, so a
+    field it drops is silently lost and a key it invents is rejected by
+    ``_check_keys``. Both had happened: ``else_marker`` vanished, and every
+    non-replace/non-move type was written with ``start``/``end``/``inclusive``
+    regardless of whether its parser accepts them.
+    """
+    round_tripped = _parse_transform(0, _transform_to_raw(transform))
+
+    assert round_tripped == transform
+
+
 def test_translate_outputs_copybarista_toml(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -971,7 +1220,14 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
         ("A = B = 'value'\n", "Only simple NAME"),
         ("ROOT = MISSING\n", "Unknown name"),
         ("ROOT = 1 + 2\n", "Only string concatenation"),
-        ("ROOT = {'bad': 'shape'}\n", "Unsupported copy.bara.sky expression"),
+        ("ROOT = {'bad': 1}\n", "dict keys and values must be strings"),
+        (
+            (
+                "transform = core.replace(before='a', after='b', "
+                "paths=glob(['a.txt']), regex_groups=['not', 'a', 'dict'])\n"
+            ),
+            "regex_groups must be a dict",
+        ),
         ("FILES = glob()\n", r"glob\(\.\.\.\) requires one include list"),
         ("FILES = glob('**')\n", "glob include must be a list"),
         ("origin = folder.origin(path = 'repo')\n", "folder.origin"),

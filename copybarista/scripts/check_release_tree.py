@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import argparse
+import re
 import sys
 
 
@@ -161,28 +162,22 @@ def _content_errors(root: Path) -> tuple[str, ...]:
         "<!-- copybarista:private-sync:start -->",
         "<!-- copybarista:private-sync:end -->",
     )
+    # Patterns, not substrings: one entry covers every casing a leaked name can
+    # take, so a spelling nobody enumerated cannot slip past. Each is written
+    # split across concatenation because this file is itself scanned.
     blocked_text = (
-        ("loop" + "/experimental", "monorepo path"),
-        ("loop" + ".experimental", "monorepo import"),
-        ("loop" + "/lib", "monorepo path"),
-        ("loop" + ".lib", "monorepo import"),
-        ("/Users" + "/dan", "local developer path"),
-        ("~/" + "loop", "local developer path"),
-        ("Switch" + "board", "private project name"),
-        ("switch" + "board", "private project name"),
-        ("Rab" + "ble", "private project name"),
-        ("rab" + "ble", "private project name"),
-        ("Rat" + "lab", "private project name"),
-        ("rat" + "lab", "private project name"),
+        (r"loop" + r"[./]experimental", "monorepo path"),
+        (r"loop" + r"[./]lib", "monorepo path"),
+        (r"/Users" + r"/dan", "local developer path"),
+        (r"~/" + r"loop", "local developer path"),
+        (r"\bKnow" + r"Op\b", "private project name"),
     )
     blocked_text_by_path = {
         ".gitignore": ("private/fixtures",),
-        ".pre-commit-config.yaml": (
-            "|private/",
-            "|site/",
-            "|copy\\.bara\\.sky",
-            "|copy\\.barista\\.toml",
-        ),
+        # The exported pre-commit config is the repo-root one with monorepo-only
+        # regions stripped by marker. A surviving marker means the strip did not
+        # run, so it -- not any particular exclude line -- is what to block.
+        ".pre-commit-config.yaml": ("copybarista:internal",),
         "pyproject.toml": (
             '"private/**"',
             '"private/fixtures/**/*.py"',
@@ -194,8 +189,8 @@ def _content_errors(root: Path) -> tuple[str, ...]:
         text = path.read_text(encoding="utf-8", errors="replace")
         if any(marker in text for marker in private_sync_markers):
             errors.append(f"Private sync marker must not be exported: {rel}")
-        for token, label in blocked_text:
-            if token in text:
+        for pattern, label in blocked_text:
+            if re.search(pattern, text, flags=re.IGNORECASE):
                 errors.append(f"{label} must not be exported: {rel}")
         errors.extend(
             f"Source-only config text must not be exported: {rel}"

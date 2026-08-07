@@ -835,6 +835,48 @@ def test_parses_and_round_trips_regex_groups(tmp_path: Path):
     assert 'regex_groups = { s = "[A-Za-z_]" }' in workflow_to_toml(config)
 
 
+def test_rejects_reversible_regex_groups_whose_reverse_cannot_compile(
+    tmp_path: Path,
+):
+    """A reversible replace must compile in the direction import replays it.
+
+    Import swaps ``before``/``after`` (``import_request._ReverseMatcher``), and
+    ``compile_replace`` rejects an ``after`` interpolating groups absent from
+    ``before``. An empty ``after`` therefore cannot reverse -- but only the
+    forward direction was compiled at parse, so such a config validated clean
+    and raised a raw ``ConfigError`` mid-import, escaping the importer's error
+    contract.
+    """
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "start${block}end"\n'
+            'after = ""\n'
+            'regex_groups = { block = "[a-z]*" }\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="not reversible"):
+        load_config(config_path)
+
+
+def test_accepts_forward_only_regex_groups_replace(tmp_path: Path):
+    """``reversible = false`` opts a one-way replace out of the reverse check."""
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "start${block}end"\n'
+            'after = ""\n'
+            'regex_groups = { block = "[a-z]*" }\n'
+            "reversible = false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path).transforms[0].reversible is False
+
+
 def test_rejects_invalid_regex_groups_pattern(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
