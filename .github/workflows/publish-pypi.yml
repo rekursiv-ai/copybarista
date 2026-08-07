@@ -30,7 +30,7 @@ jobs:
 
       - name: Smoke test built wheel
         run: |
-          wheel="$(ls dist/copybarista-*.whl | head -n 1)"
+          wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"
           uv run --isolated --with "$wheel" python -c \
             "import copybarista; from copybarista.cli import main; print('ok')"
 
