@@ -35,6 +35,7 @@ from copybarista.destinations import (
     validate_staged_symlinks,
 )
 from copybarista.errors import ExportError
+from copybarista.lib.userdirs import cache_dir
 from copybarista.manifest import ExportManifest
 from copybarista.workflow import (
     StagedTree,
@@ -72,7 +73,7 @@ class GitRuntime:
     git: str = field(default_factory=lambda: resolve_executable("git"))
     commands: GitCommands = field(default_factory=CommandRunner)
     cache_root: Path = field(
-        default_factory=lambda: Path.home() / ".cache" / "copybarista" / "git"
+        default_factory=lambda: cache_dir("rekursiv-ai") / "copybarista" / "git"
     )
     source_rev_label: str = "Copybarista-Source-Rev"
 
