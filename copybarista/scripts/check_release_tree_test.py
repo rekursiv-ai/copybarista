@@ -86,12 +86,30 @@ def test_check_tree_rejects_private_sync_readme_markers(tmp_path: Path):
     assert any("Private sync marker" in error for error in errors)
 
 
-def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
+def test_check_tree_rejects_unstripped_internal_marker(tmp_path: Path):
+    """A surviving marker means the monorepo-only strip did not run.
+
+    Asserted on its own file: the shared source-only-text test also writes a
+    bad ``.gitignore`` and ``pyproject.toml``, so its single
+    ``any("Source-only config text")`` passes even when the pre-commit rule
+    matches nothing.
+    """
     _write_required_tree(tmp_path)
     (tmp_path / ".pre-commit-config.yaml").write_text(
-        "files: |\n  |private/\n",
+        "repos: []\n# copybarista:internal:start\n",
         encoding="utf-8",
     )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any(
+        "Source-only config text" in error and ".pre-commit-config.yaml" in error
+        for error in errors
+    )
+
+
+def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
+    _write_required_tree(tmp_path)
     (tmp_path / ".gitignore").write_text(
         "!private/fixtures/**/.venv/\n",
         encoding="utf-8",
@@ -113,9 +131,34 @@ def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
 
 
 def test_check_tree_rejects_private_project_names_in_root_docs(tmp_path: Path):
+    """Any casing of a private name is blocked, not the two that were listed.
+
+    The rule is a case-insensitive regex rather than a substring set, so the
+    mixed casing here -- which no enumeration would have listed -- still trips.
+    """
     _write_required_tree(tmp_path)
     (tmp_path / "CHANGELOG.md").write_text(
-        "Published " + "Switch" + "board" + " sync notes.\n",
+        "Published " + "kNoWoP" + " sync notes.\n", encoding="utf-8"
+    )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any("private project name" in error for error in errors)
+
+
+def test_check_tree_blocks_every_private_name_the_leak_check_blocks(tmp_path: Path):
+    """Block every private name the export-time leak check blocks.
+
+    This script is the only text scan that runs in the public checkout:
+    ``[[leak_check]]`` needs ``copy.barista.toml``, which never ships, so a
+    private name missing from this list is caught by nothing once the export
+    lands. The two lists had already drifted, each blocking names the other
+    did not. Names are split across concatenation so this file, which ships
+    publicly, does not itself contain one.
+    """
+    _write_required_tree(tmp_path)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "Ported the " + "Know" + "Op" + " viewer.\n",
         encoding="utf-8",
     )
 

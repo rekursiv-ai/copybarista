@@ -87,15 +87,31 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
     if transform.type == "replace":
         raw["before"] = transform.before
         raw["after"] = transform.after
+        if not transform.reversible:
+            raw["reversible"] = False
+        if transform.regex_groups:
+            raw["regex_groups"] = dict(transform.regex_groups)
         if transform.reverse_before or transform.reverse_after:
             raw["reverse_before"] = transform.reverse_before
             raw["reverse_after"] = transform.reverse_after
     elif transform.type == "move":
         raw["destination"] = transform.destination
-    else:
+    elif transform.type == "strip_block":
         raw["start"] = transform.start
         raw["end"] = transform.end
         raw["inclusive"] = transform.inclusive
+        if transform.else_marker:
+            raw["else"] = transform.else_marker
+    elif transform.type == "uncomment":
+        raw["start"] = transform.start
+        if transform.end:
+            raw["end"] = transform.end
+    elif transform.type == "internal_lines":
+        raw["start"] = transform.start
+    # ``ruff_format`` carries no fields beyond type/path/required. Emitting the
+    # marker keys for every non-replace type wrote start/end/inclusive onto it,
+    # which its own ``_check_keys`` rejects -- so the round trip raised rather
+    # than losing data quietly. Each branch mirrors one parser's accepted keys.
     return raw
 
 
@@ -582,11 +598,26 @@ class _CopyBaraSkyParser:
             raise ConfigError("Only string concatenation is supported")
         if isinstance(node, ast.List):
             return [self._eval(item, env) for item in node.elts]
+        if isinstance(node, ast.Dict):
+            return self._eval_dict(node, env)
         if isinstance(node, ast.Call):
             return self._eval_call(node, env)
         raise ConfigError(
             f"Unsupported copy.bara.sky expression: {type(node).__name__}"
         )
+
+    def _eval_dict(self, node: ast.Dict, env: dict[str, object]) -> dict[str, str]:
+        """Evaluate a string-to-string dict literal (``core.replace`` groups)."""
+        result: dict[str, str] = {}
+        for key_node, value_node in zip(node.keys, node.values, strict=True):
+            if key_node is None:
+                raise ConfigError("Unsupported dict unpacking in copy.bara.sky")
+            key = self._eval(key_node, env)
+            value = self._eval(value_node, env)
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ConfigError("copy.bara.sky dict keys and values must be strings")
+            result[key] = value
+        return result
 
     def _eval_call(self, call: ast.Call, env: dict[str, object]) -> object:
         """Evaluate one supported function call expression."""
@@ -725,7 +756,9 @@ class _CopyBaraSkyParser:
         self, call: ast.Call, env: dict[str, object]
     ) -> list[object]:
         """Evaluate a supported `core.transform([...])` wrapper."""
-        kwargs = self._kwargs(call, env, allowed={"transformations", "reversal"})
+        kwargs = self._kwargs(
+            call, env, allowed={"transformations", "reversal", "ignore_noop"}
+        )
         if len(call.args) > 1:
             raise ConfigError("core.transform accepts one transformation list")
         if call.args and "transformations" in kwargs:
@@ -737,10 +770,31 @@ class _CopyBaraSkyParser:
         )
         if transformations is None:
             raise ConfigError("core.transform requires one transformation list")
-        forward = _object_list(transformations, "core.transform transformations")
+        # Flatten and apply ``ignore_noop`` BEFORE branching on ``reversal``:
+        # the wrapper has three exits, and applying a wrapper-level kwarg inside
+        # one of them silently discards it on the other two.
+        forward = _flatten_transform_items(
+            _object_list(transformations, "core.transform transformations")
+        )
+        if _require_bool(
+            kwargs.get("ignore_noop", False), "core.transform.ignore_noop"
+        ):
+            forward = [
+                replace(item, required=False) if isinstance(item, Transform) else item
+                for item in forward
+            ]
         if "reversal" not in kwargs:
             return forward
         reversal = _object_list(kwargs["reversal"], "core.transform reversal")
+        # Copybara spells "forward-only" as an empty declared reversal. Without
+        # this the transform kept the reversible default and was replayed on
+        # import, which for a package-name substitution rewrites every
+        # legitimate mention back to the placeholder.
+        if not reversal:
+            return [
+                replace(item, reversible=False) if isinstance(item, Transform) else item
+                for item in forward
+            ]
         return _transforms_with_explicit_reversal(forward=forward, reversal=reversal)
 
     def _reverse_group_from_call(
@@ -778,22 +832,61 @@ class _CopyBaraSkyParser:
         kwargs = self._kwargs(
             call,
             env,
-            allowed={"before", "after", "paths", "multiline"},
+            allowed={"before", "after", "paths", "multiline", "regex_groups"},
         )
         if call.args:
             raise ConfigError("core.replace positional args are not supported")
         before = _require_string(kwargs.get("before", ""), "core.replace.before")
         after = _require_string(kwargs.get("after", ""), "core.replace.after")
         paths = _replace_paths(kwargs.get("paths"))
+        regex_groups = _regex_groups(kwargs.get("regex_groups"))
         multiline = kwargs.get("multiline", False)
+        if regex_groups:
+            if paths.exclude:
+                raise ConfigError("core.replace paths must not have exclude patterns")
+            if not before:
+                raise ConfigError("core.replace.before must be non-empty")
+            # Group patterns decide newline spanning here, so honouring
+            # ``multiline`` would be a no-op. Accepting and ignoring it lets a
+            # config read as if it controls matching when it does not.
+            if multiline:
+                raise ConfigError(
+                    "core.replace multiline is not supported with regex_groups; "
+                    "the group patterns control newline spanning"
+                )
+            return [
+                Transform(
+                    id="",
+                    type="replace",
+                    path=path,
+                    before=before,
+                    after=after,
+                    regex_groups=regex_groups,
+                )
+                for path in paths.include
+            ]
         if multiline:
             if not before:
                 raise ConfigError("core.replace.before must be non-empty")
             if paths.exclude:
                 raise ConfigError("core.replace paths must not have exclude patterns")
-            if not after and _looks_like_strip_block(before):
+            if not after and _looks_like_marker_strip(before):
                 if len(paths.include) != 1:
                     raise ConfigError("multiline strip replacement supports one path")
+                # A single marker line deletes every line carrying it
+                # (``internal_lines``); a start/end pair deletes the region
+                # between them (``strip_block``). Both re-insert the source's
+                # removed text on import, which a replace with an empty
+                # ``after`` cannot do -- so inferring the marker type here is
+                # what keeps a sky-config import from overwriting the source.
+                markers = [line for line in before.splitlines() if line.strip()]
+                if len(markers) == 1:
+                    return Transform(
+                        id="",
+                        type="internal_lines",
+                        path=paths.include[0],
+                        start=markers[0],
+                    )
                 start, end = _strip_markers(before)
                 return Transform(
                     id="",
@@ -993,6 +1086,15 @@ def _git_destination_fields(destination: DestinationSpec) -> tuple[str, str]:
     return destination.url, destination.branch
 
 
+def _regex_groups(value: object) -> tuple[tuple[str, str], ...]:
+    """Return ordered ``core.replace(regex_groups=...)`` name/pattern pairs."""
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ConfigError("core.replace.regex_groups must be a dict")
+    return tuple(cast("dict[str, str]", value).items())
+
+
 def _replace_paths(value: object) -> GlobSpec:
     """Return replace paths from a glob or literal path list."""
     if isinstance(value, GlobSpec):
@@ -1072,6 +1174,13 @@ def _require_string(value: object, field: str) -> str:
     """Return a string value or raise a field-specific config error."""
     if not isinstance(value, str):
         raise ConfigError(f"{field} must be a string")
+    return value
+
+
+def _require_bool(value: object, field: str) -> bool:
+    """Return a bool value or raise a field-specific config error."""
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field} must be a boolean")
     return value
 
 
@@ -1155,11 +1264,13 @@ def _strip_markers(before: str) -> tuple[str, str]:
     return start, end
 
 
-def _looks_like_strip_block(before: str) -> bool:
-    """Return whether a multiline replacement is a marker-delimited strip."""
+def _looks_like_marker_strip(before: str) -> bool:
+    """Return whether a multiline replacement is a marker-driven strip.
+
+    One marker line is a per-line strip; a start/end pair delimits a block.
+    """
     lines = [line for line in before.splitlines() if line.strip()]
-    # A strip block needs at least a start and an end marker line.
-    if len(lines) < 2:
+    if not lines:
         return False
     marker_text = "\n".join((lines[0], lines[-1]))
     return "copybarista:" in marker_text or "copybara:" in marker_text

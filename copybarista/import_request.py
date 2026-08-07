@@ -275,7 +275,7 @@ class PathMapper:
                 # back through the back-move.
                 #
                 # A root path a DEDICATED ``[[files.copy]]`` owns (its own
-                # ``destination = <path>``, e.g. the ``docs/AI_POLICY.md`` copy)
+                # ``destination = <path>``, e.g. the ``ops/github/shared/AI_POLICY.md`` copy)
                 # likewise yields, so that copy claims it below rather than the
                 # ``.`` copy shadowing it into ``.export/<path>``.
                 _, moved = _reverse_file_moves(public_path, self.config.files.moves)
