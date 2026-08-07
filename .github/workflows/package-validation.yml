@@ -47,4 +47,4 @@ jobs:
           uv run python -c "import copybarista"
           rm -rf dist
           uv build --out-dir dist
-          wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('ok')"
+          wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('ok')"

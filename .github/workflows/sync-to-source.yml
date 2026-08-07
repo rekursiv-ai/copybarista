@@ -216,7 +216,7 @@ jobs:
             --validation-command 'uv run python -c "import copybarista"' \
             --validation-command 'rm -rf dist' \
             --validation-command 'uv build --out-dir dist' \
-            --validation-command 'wheel="$(ls dist/copybarista-*.whl | head -n 1)"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
+            --validation-command 'wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
             --open-pr false
 
       - name: Open or update target import PR
