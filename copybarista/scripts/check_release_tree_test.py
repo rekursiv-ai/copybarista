@@ -130,6 +130,31 @@ def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
     assert any("local developer path" in error for error in errors)
 
 
+def test_check_tree_rejects_the_exporting_package_namespace(tmp_path: Path):
+    """The one monorepo reference this package's own export can emit.
+
+    ``blocked_text`` covered the sibling namespaces but not this package's own
+    -- the namespace whose rewrite this very export performs, and the one a
+    missed ``[[transform]]`` leaves behind. The package config blocks it; this
+    script, the only text scan that runs after the export lands, did not.
+
+    The probe strings are built from an f-string rather than written literally:
+    this file ships publicly and is scanned by the very rule under test, and a
+    formatter collapses adjacent string literals back into one.
+    """
+    package = "copybarista"
+    _write_required_tree(tmp_path)
+    (tmp_path / "docs/guide.md").parent.mkdir(exist_ok=True)
+    (tmp_path / "docs/guide.md").write_text(
+        f"See loop/{package} and loop.{package}.config\n",
+        encoding="utf-8",
+    )
+
+    errors = check_tree(root=tmp_path)
+
+    assert any("monorepo path" in error for error in errors)
+
+
 def test_check_tree_rejects_private_project_names_in_root_docs(tmp_path: Path):
     """Any casing of a private name is blocked, not the two that were listed.
 

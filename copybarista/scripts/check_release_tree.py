@@ -168,6 +168,7 @@ def _content_errors(root: Path) -> tuple[str, ...]:
     blocked_text = (
         (r"loop" + r"[./]experimental", "monorepo path"),
         (r"loop" + r"[./]lib", "monorepo path"),
+        (r"loop" + r"[./]copybarista", "monorepo path"),
         (r"/Users" + r"/dan", "local developer path"),
         (r"~/" + r"loop", "local developer path"),
         (r"\bKnow" + r"Op\b", "private project name"),
