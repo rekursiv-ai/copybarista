@@ -844,6 +844,50 @@ def test_ignore_noop_reaches_every_transform_group_exit(
     assert load_config(config_path).transforms[0].required is False
 
 
+def test_rejects_forward_only_declaration_on_a_marker_strip(tmp_path: Path):
+    """``reversal = []`` on a marker strip must fail loudly, not be discarded.
+
+    A marker strip reverses by RE-INSERTING the source's removed region
+    (``import_request`` dispatches on the transform type), and that dispatch
+    sits behind a ``not transform.reversible`` skip -- so a forward-only marker
+    would be skipped entirely and the import would overwrite the source file
+    with the stripped public one. ``reversible`` is therefore not a key the
+    marker parsers accept, and the declaration is unrepresentable rather than
+    merely unwritten: honouring it would be a bug, so the only correct
+    behaviour is to reject it.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "# copybarista:internal\\n",
+                            after = "",
+                            multiline = True,
+                            paths = glob([".pre-commit-config.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                ),
+            ],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="forward-only"):
+        load_config(config_path)
+
+
 def test_sky_replace_carries_required_and_reversible(tmp_path: Path):
     """``core.transform(reversal = [])`` and ``ignore_noop`` must reach Transform.
 

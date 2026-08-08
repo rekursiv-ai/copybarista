@@ -791,6 +791,27 @@ class _CopyBaraSkyParser:
         # import, which for a package-name substitution rewrites every
         # legitimate mention back to the placeholder.
         if not reversal:
+            # Only a ``replace`` can be forward-only. A marker strip reverses by
+            # RE-INSERTING the source's removed region, and that dispatch sits
+            # behind a ``not transform.reversible`` skip -- so honouring the
+            # declaration would skip the re-insertion and overwrite the source
+            # with the stripped public file. The marker parsers accept no
+            # ``reversible`` key for the same reason, which is why serializing
+            # it silently is not the alternative: reject it here.
+            unrepresentable = sorted(
+                {
+                    item.type
+                    for item in forward
+                    if isinstance(item, Transform) and item.type != "replace"
+                }
+            )
+            if unrepresentable:
+                raise ConfigError(
+                    "core.transform reversal = [] declares forward-only, which "
+                    f"{', '.join(unrepresentable)} cannot express: a marker strip "
+                    "reverses by re-inserting the source region, and skipping "
+                    "that overwrites the source file"
+                )
             return [
                 replace(item, reversible=False) if isinstance(item, Transform) else item
                 for item in forward
