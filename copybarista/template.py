@@ -87,6 +87,7 @@ def compile_replace(
     groups = dict(regex_groups)
     if len(groups) != len(regex_groups):
         raise ConfigError("replace regex_groups names must be unique")
+    _check_group_patterns(regex_groups)
     before_tokens = _parse(before)
     after_tokens = _parse(after)
     before_names = {t.value for t in before_tokens if t.is_group}
@@ -110,6 +111,26 @@ def compile_replace(
     return ReplaceTemplate(pattern=pattern, after_tokens=after_tokens)
 
 
+def _check_group_patterns(regex_groups: tuple[tuple[str, str], ...]) -> None:
+    """Reject a group whose regex is invalid on its own.
+
+    Compiling only the ASSEMBLED pattern is not sufficient: the groups are
+    concatenated, so a malformed one can be re-balanced by whatever follows it.
+    ``[unclosed`` stays an open character class that swallows text until a later
+    group closes it, and ``(grp`` is closed by a later ``)`` -- both compile as a
+    pair while each raises alone, yielding a regex that means nothing like what
+    was written. Copybara validates per group and refuses to load the config, so
+    a masked group here admits a ``.sky`` that cannot run there.
+    """
+    for name, pattern in regex_groups:
+        try:
+            re.compile(pattern)
+        except re.error as err:
+            raise ConfigError(
+                f"replace regex_groups.{name} is not valid regex: {pattern}"
+            ) from err
+
+
 def _build_pattern(
     *, tokens: tuple[_Token, ...], groups: dict[str, str]
 ) -> re.Pattern[str]:
@@ -126,6 +147,20 @@ def _build_pattern(
         raise ConfigError(
             f"replace regex_groups produce an invalid pattern: {err}"
         ) from err
+
+
+def literal_segments(template: str, *, separator: str) -> str:
+    """Return a template's literal text with interpolations replaced.
+
+    Each ``${name}`` is replaced by ``separator`` so callers that reason about
+    the literal skeleton -- e.g. recovering marker lines from a
+    ``regex_groups`` replacement -- share this module's interpolation grammar
+    instead of restating it. A second copy of the pattern would silently stop
+    agreeing the moment the grammar here changed.
+    """
+    return separator.join(
+        token.value for token in _parse(template) if not token.is_group
+    )
 
 
 def _parse(template: str) -> tuple[_Token, ...]:

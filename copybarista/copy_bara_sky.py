@@ -8,10 +8,11 @@ constructs with explicit configuration errors.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import ast
+import re
 import textwrap
 
 from copybarista.config import (
@@ -24,6 +25,7 @@ from copybarista.config import (
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
+from copybarista.template import compile_replace, literal_segments
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -384,13 +386,16 @@ class _CopyBaraSkyParser:
         destination_prefix = (
             source_root_move.destination if source_root_move is not None else ""
         )
-        _reject_partial_flatten_of_whole_tree(
-            source_root_move=source_root_move,
+        _reject_unrepresentable_flatten(
+            moves=[item for item in transformations if isinstance(item, MoveSpec)],
             origin_include=origin_files.include,
         )
 
         include, origin_copies = _strip_prefixes_and_file_copies(
             origin_files.include, source_root
+        )
+        origin_copies, transforms = _fuse_renamed_origin_copies(
+            copies=origin_copies, transforms=transforms
         )
         copies = (*origin_copies, *subtree_copies)
         if source_root and not include:
@@ -510,7 +515,11 @@ class _CopyBaraSkyParser:
                         id=f"{idx}:move:{item.source}",
                         type="move",
                         path=item.source,
-                        destination=item.destination,
+                        # An empty destination flattens to the export root, which
+                        # for a single file means its basename. ``move`` requires
+                        # a non-empty destination, so name it explicitly rather
+                        # than emit one the config parser rejects.
+                        destination=item.destination or PurePosixPath(item.source).name,
                     )
                 )
                 continue
@@ -559,26 +568,38 @@ class _CopyBaraSkyParser:
     ) -> MoveSpec | None:
         """Return the single source-root move, or None; reject duplicates.
 
-        The source-root move relocates the whole package: its source is an
-        origin-files root. A move with an empty destination whose source is a
-        SUBPATH of a root (e.g. ``<root>/.export`` -> "") is a subtree-to-root
-        move, not the source-root move, and is excluded here.
+        The source-root move relocates the whole package, so its source is an
+        origin-files root. That alone does not identify it: ``origin_files`` may
+        name several roots -- the package plus vendored trees like
+        ``typings/cloudpickle`` -- and treating every root-sourced move as a
+        candidate fails the config as a duplicate when the second one is merely
+        renamed. The package's move is the one whose DESTINATION the other moves
+        are expressed relative to; a vendored tree's rename has no such
+        dependents. A whole-tree selection names no root, so an empty source
+        stands in for it.
         """
-        found: MoveSpec | None = None
-        for item in transformations:
-            if not isinstance(item, MoveSpec):
-                continue
-            is_root = item.source in origin_roots or (
-                not item.destination
-                and not _is_subpath_of_any(item.source, origin_roots)
+        moves = [item for item in transformations if isinstance(item, MoveSpec)]
+        candidates = [
+            move
+            for move in moves
+            if move.source in origin_roots
+            or (not origin_roots and move.source in ("", "."))
+        ]
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+        nested = [
+            move
+            for move in candidates
+            if any(
+                other is not move
+                and move.destination
+                and other.source.startswith(f"{move.destination}/")
+                for other in moves
             )
-            if is_root:
-                if found is not None:
-                    raise ConfigError(
-                        "Only one source-root core.move transform is supported"
-                    )
-                found = item
-        return found
+        ]
+        if len(nested) != 1:
+            raise ConfigError("Only one source-root core.move transform is supported")
+        return nested[0]
 
     def _eval(self, node: ast.AST, env: dict[str, object]) -> object:
         """Evaluate one supported expression node."""
@@ -791,29 +812,19 @@ class _CopyBaraSkyParser:
         # import, which for a package-name substitution rewrites every
         # legitimate mention back to the placeholder.
         if not reversal:
-            # Only a ``replace`` can be forward-only. A marker strip reverses by
-            # RE-INSERTING the source's removed region, and that dispatch sits
-            # behind a ``not transform.reversible`` skip -- so honouring the
-            # declaration would skip the re-insertion and overwrite the source
-            # with the stripped public file. The marker parsers accept no
-            # ``reversible`` key for the same reason, which is why serializing
-            # it silently is not the alternative: reject it here.
-            unrepresentable = sorted(
-                {
-                    item.type
-                    for item in forward
-                    if isinstance(item, Transform) and item.type != "replace"
-                }
-            )
-            if unrepresentable:
-                raise ConfigError(
-                    "core.transform reversal = [] declares forward-only, which "
-                    f"{', '.join(unrepresentable)} cannot express: a marker strip "
-                    "reverses by re-inserting the source region, and skipping "
-                    "that overwrites the source file"
-                )
+            # A marker strip carries ``reversal = []`` for Copybara's benefit,
+            # not as a statement about reversibility: Copybara refuses a
+            # ``regex_groups`` replace with no declared reversal, and the group
+            # form is the ONLY spelling that deletes a whole line there. On our
+            # side the strip reverses by RE-INSERTING the source's removed
+            # region, so it stays reversible and the declaration is satisfied
+            # already. Honouring it literally would skip the re-insertion (the
+            # dispatch sits behind a ``not transform.reversible`` check) and
+            # overwrite the source with the stripped public file.
             return [
-                replace(item, reversible=False) if isinstance(item, Transform) else item
+                replace(item, reversible=False)
+                if isinstance(item, Transform) and item.type == "replace"
+                else item
                 for item in forward
             ]
         return _transforms_with_explicit_reversal(forward=forward, reversal=reversal)
@@ -867,6 +878,22 @@ class _CopyBaraSkyParser:
                 raise ConfigError("core.replace paths must not have exclude patterns")
             if not before:
                 raise ConfigError("core.replace.before must be non-empty")
+            # Validate the groups BEFORE any recovery: a marker transform
+            # discards them, so an invalid pattern or an undefined interpolation
+            # would never be checked -- and Copybara refuses to load either.
+            compile_replace(before=before, after=after, regex_groups=regex_groups)
+            marker = _marker_strip_from_regex_groups(before=before, after=after)
+            if marker is not None:
+                if len(paths.include) != 1:
+                    raise ConfigError("multiline strip replacement supports one path")
+                if not multiline:
+                    # Copybara hard-fails a marker rule spelled without it (exit
+                    # 2, no output), so accepting it admits a config that cannot
+                    # run in the tool this file mirrors.
+                    raise ConfigError(
+                        "core.replace on a marker requires multiline = True"
+                    )
+                return replace(marker, path=paths.include[0])
             # Group patterns decide newline spanning here, so honouring
             # ``multiline`` would be a no-op. Accepting and ignoring it lets a
             # config read as if it controls matching when it does not.
@@ -891,32 +918,17 @@ class _CopyBaraSkyParser:
                 raise ConfigError("core.replace.before must be non-empty")
             if paths.exclude:
                 raise ConfigError("core.replace paths must not have exclude patterns")
-            if not after and _looks_like_marker_strip(before):
+            marker = _marker_transform(before=before, after=after)
+            if marker is not None:
                 if len(paths.include) != 1:
                     raise ConfigError("multiline strip replacement supports one path")
-                # A single marker line deletes every line carrying it
-                # (``internal_lines``); a start/end pair deletes the region
-                # between them (``strip_block``). Both re-insert the source's
-                # removed text on import, which a replace with an empty
-                # ``after`` cannot do -- so inferring the marker type here is
-                # what keeps a sky-config import from overwriting the source.
-                markers = [line for line in before.splitlines() if line.strip()]
-                if len(markers) == 1:
-                    return Transform(
-                        id="",
-                        type="internal_lines",
-                        path=paths.include[0],
-                        start=markers[0],
-                    )
-                start, end = _strip_markers(before)
-                return Transform(
-                    id="",
-                    type="strip_block",
-                    path=paths.include[0],
-                    start=start,
-                    end=end,
-                    inclusive=True,
-                )
+                # A literal block carries its own leading/trailing blank lines in
+                # ``before``; ``_strip_markers`` recovers those boundaries, which
+                # the marker-line view discards.
+                if marker.type == "strip_block" and not marker.else_marker:
+                    start, end = _strip_markers(before)
+                    marker = replace(marker, start=start, end=end)
+                return replace(marker, path=paths.include[0])
             return [
                 Transform(
                     id="",
@@ -935,6 +947,12 @@ class _CopyBaraSkyParser:
             raise ConfigError("core.replace.before must be non-empty")
         if paths.exclude:
             raise ConfigError("core.replace paths must not have exclude patterns")
+        # One rule, reported the same way whichever spelling reached it: a marker
+        # replacement without ``multiline`` hard-fails in real Copybara (exit 2,
+        # no output), so a single-line spelling of one must not slip through with
+        # a message about newlines.
+        if _marker_transform(before=before, after=after) is not None:
+            raise ConfigError("core.replace on a marker requires multiline = True")
         return [
             Transform(
                 id="",
@@ -1040,30 +1058,48 @@ def _origin_move_roots(include: tuple[str, ...]) -> frozenset[str]:
     return frozenset(roots)
 
 
-def _reject_partial_flatten_of_whole_tree(
-    *, source_root_move: MoveSpec | None, origin_include: tuple[str, ...]
+def _reject_unrepresentable_flatten(
+    *, moves: list[MoveSpec], origin_include: tuple[str, ...]
 ) -> None:
-    """Reject a subtree flatten under a whole-tree (``**``) origin selection.
+    """Reject a ``core.move(SRC, "")`` the selection cannot account for.
 
-    When ``origin_files`` selects the entire tree (``**`` with no ``<root>/**``
-    pattern) and a ``core.move(SUB, "")`` flattens only a strict subtree, real
-    Copybara leaves every sibling path at its identity location while lifting the
-    subtree to the root -- a mixed tree copybarista's single ``source_root`` /
-    ``destination_prefix`` model cannot represent. Reject it here with a clear
-    message rather than misclassify ``SUB`` as the whole ``source_root`` and fail
-    later in prefix-stripping with a misleading "outside core.move source root".
+    One rule, two ways to break it. A flatten lifts ``SRC`` to the export root,
+    so the selection has to explain what ``SRC`` is:
+
+    - Under a whole-tree selection (``**`` naming no root) a strict subtree
+      flatten leaves every sibling at its identity location, which real Copybara
+      produces but copybarista's single ``source_root``/``destination_prefix``
+      model cannot represent.
+    - Under a rooted selection, a source neither in nor under any root -- and
+      not named individually, the way a shared ``ops/github/shared/LICENSE``
+      is -- selects nothing, so the export would silently ship an empty tree.
+
+    Checked against the SELECTION rather than the classified moves: the
+    flattening move is never recognized as the source-root move in either case,
+    so a guard reading the classification would never see one.
     """
-    if source_root_move is None:
-        return
-    selects_whole_tree = "**" in origin_include and not _origin_move_roots(
-        origin_include
-    )
-    if selects_whole_tree and source_root_move.source not in ("", "."):
-        raise ConfigError(
-            "core.move flattening a subtree under a whole-tree origin selection "
-            "(glob(['**'])) is unsupported: it mixes lifted-subtree and "
-            "identity-kept paths, which has no single source_root/destination_prefix"
-        )
+    roots = _origin_move_roots(origin_include)
+    selected = set(origin_include)
+    for move in moves:
+        if move.destination or move.source in ("", "."):
+            continue
+        if not roots:
+            if "**" in origin_include:
+                raise ConfigError(
+                    "core.move flattening a subtree under a whole-tree origin "
+                    "selection (glob(['**'])) is unsupported: it mixes "
+                    "lifted-subtree and identity-kept paths, which has no single "
+                    "source_root/destination_prefix"
+                )
+            continue
+        if (
+            move.source not in selected
+            and move.source not in roots
+            and not _is_subpath_of_any(move.source, roots)
+        ):
+            raise ConfigError(
+                f"origin_files pattern is outside core.move source root: {move.source}"
+            )
 
 
 def _call_name(call: ast.Call) -> str:
@@ -1246,6 +1282,57 @@ def _strip_prefixes_and_file_copies(
     return tuple(stripped), tuple(copies)
 
 
+def _fuse_renamed_origin_copies(
+    *, copies: tuple[FileCopy, ...], transforms: list[Transform]
+) -> tuple[tuple[FileCopy, ...], list[Transform]]:
+    """Fold a ``move`` that renames an origin copy into the copy's destination.
+
+    An ``origin_files`` entry outside the source root becomes an identity copy,
+    and Copybara names its public path with a following ``core.move``. Kept as
+    two steps the copy materializes the file under its SOURCE directories and
+    the move then relocates only the file, leaving that directory chain behind
+    as empty dirs the export ships. Copybara emits none, because its move
+    relocates the selection itself rather than a staged copy.
+    """
+    renames = {
+        transform.path: transform.destination
+        for transform in transforms
+        if transform.type == "move"
+    }
+    fused = tuple(
+        replace(file_copy, destination=renames[file_copy.destination])
+        if file_copy.source == file_copy.destination
+        and file_copy.destination in renames
+        else file_copy
+        for file_copy in copies
+    )
+    consumed = {
+        file_copy.destination
+        for file_copy in copies
+        if file_copy.source == file_copy.destination
+        and file_copy.destination in renames
+    }
+    # Folding moves into copies routes around ``config._validate_moves_injective``,
+    # which rejects a non-injective MOVE sequence because the import reverse is an
+    # exact inverse only when the forward map is injective. Enforce the same rule
+    # on the fused copies, or the clash surfaces as a late export-time path
+    # collision with an ambiguous reverse.
+    claimed: dict[str, str] = {}
+    for file_copy in fused:
+        prior = claimed.get(file_copy.destination)
+        if prior is not None:
+            raise ConfigError(
+                f"export destination {file_copy.destination!r} is claimed by two"
+                f" origin files ({prior!r} and {file_copy.source!r})"
+            )
+        claimed[file_copy.destination] = file_copy.source
+    return fused, [
+        transform
+        for transform in transforms
+        if not (transform.type == "move" and transform.path in consumed)
+    ]
+
+
 def _file_copy_from_origin_pattern(pattern: str) -> FileCopy:
     """Translate an extra ``origin_files`` root into a Copybarista file copy."""
     if pattern.endswith("/**"):
@@ -1285,13 +1372,154 @@ def _strip_markers(before: str) -> tuple[str, str]:
     return start, end
 
 
-def _looks_like_marker_strip(before: str) -> bool:
-    """Return whether a multiline replacement is a marker-driven strip.
+# A marker line is a comment introducer followed by the marker namespace. Anchored
+# per line rather than substring-tested: prose merely CONTAINING ``copybara:`` is
+# not a marker, and a marker on a middle line is still a marker.
+_MARKER_LINE = re.compile(
+    r"^\s*(?:#|<!--)\s*(?:copybarista|copybara):(?P<kind>[\w:-]*)"
+)
 
-    One marker line is a per-line strip; a start/end pair delimits a block.
+
+def _marker_lines(before: str) -> list[str]:
+    """Return the marker lines of a replacement's literal skeleton, in order."""
+    return [line for line in before.splitlines() if _MARKER_LINE.match(line)]
+
+
+def _marker_kind(line: str) -> str:
+    """Return the marker's namespace segment (``internal``, ``external``, ...)."""
+    match = _MARKER_LINE.match(line)
+    return match.group("kind").split(":")[0] if match else ""
+
+
+def _marker_transform(
+    *,
+    before: str,
+    after: str,
+    uncomment_kind: str = "external",
+    conditional_kinds: tuple[str, str, str] = ("if", "else", "endif"),
+) -> Transform | None:
+    """Return the native transform a marker replacement means, or ``None``.
+
+    The marker namespace -- not the mere presence of a marker -- decides the
+    semantics, and getting that wrong DELETES content the export must ship:
+    ``uncomment_kind`` marks lines to UNCOMMENT for the public tree and
+    ``conditional_kinds`` keeps the else branch, but both were recovered as
+    ``strip_block``, which removes the region instead.
+
+    ``after`` is the second half of the signal: an uncomment re-emits its capture
+    (non-empty ``after``), a strip does not. An unknown marker returns ``None``
+    and stays a literal replace rather than defaulting to a delete.
     """
-    lines = [line for line in before.splitlines() if line.strip()]
-    if not lines:
-        return False
-    marker_text = "\n".join((lines[0], lines[-1]))
-    return "copybarista:" in marker_text or "copybara:" in marker_text
+    markers = _marker_lines(before)
+    if not markers:
+        return None
+    kinds = {_marker_kind(line) for line in markers}
+    conditional = kinds <= set(conditional_kinds)
+    # Validated for EVERY shape, before any branch claims the markers. Both
+    # checks used to sit below the early returns: a membership test let an
+    # ``:internal:start`` paired with an ``:external:end`` reach the uncomment
+    # branch, which then uncommented an internal block into the public tree, and
+    # a stray third marker was dropped from a recovered block rather than
+    # reported. A conditional is the one shape spanning several kinds.
+    if len(kinds) > 1 and not conditional:
+        raise ConfigError(
+            "core.replace marker replacement spans more than one marker kind "
+            f"({', '.join(f':{kind}' for kind in sorted(kinds))}); a replacement "
+            "means one thing, so it must carry one kind"
+        )
+    if len(markers) > 2 and not conditional:
+        # Two markers delimit a block and one is a per-line rule; a third has no
+        # meaning in either shape. Recovering from the first and last would
+        # silently discard the middle marker, so reject instead.
+        raise ConfigError(
+            "core.replace marker replacement supports at most a start and end "
+            f"marker, got {len(markers)}"
+        )
+    if uncomment_kind in kinds:
+        if not after:
+            raise ConfigError(
+                f"core.replace on a ':{uncomment_kind}' marker with an empty "
+                "after would delete the lines the marker exists to uncomment; "
+                "re-emit the captured group instead"
+            )
+        if len(markers) < 2:
+            # An empty ``end`` is the INLINE uncomment form: it splits each line
+            # on the marker and uncomments the prefix. A fenced block spelled
+            # with one marker would silently take that reading instead.
+            raise ConfigError(
+                f"core.replace on a ':{uncomment_kind}' marker requires a start "
+                "and end marker to delimit the block it uncomments"
+            )
+        return Transform(
+            id="",
+            type="uncomment",
+            path="",
+            start=markers[0],
+            end=markers[-1],
+        )
+    if after:
+        return None
+    if conditional and kinds:
+        return _conditional_transform(markers, conditional_kinds=conditional_kinds)
+    if len(markers) == 1:
+        return Transform(id="", type="internal_lines", path="", start=markers[0])
+    return Transform(
+        id="",
+        type="strip_block",
+        path="",
+        start=markers[0],
+        end=markers[-1],
+        inclusive=True,
+    )
+
+
+def _conditional_transform(
+    markers: list[str], *, conditional_kinds: tuple[str, str, str]
+) -> Transform:
+    """Return the ``if``/``else``/``endif`` strip that keeps the else branch."""
+    by_kind = {_marker_kind(line): line for line in markers}
+    missing = [kind for kind in conditional_kinds if kind not in by_kind]
+    if missing:
+        raise ConfigError(
+            "core.replace conditional marker block requires "
+            f"{', '.join(f':{kind}' for kind in conditional_kinds)}; "
+            f"missing {', '.join(f':{kind}' for kind in missing)}"
+        )
+    return Transform(
+        id="",
+        type="strip_block",
+        path="",
+        start=by_kind[conditional_kinds[0]],
+        end=by_kind[conditional_kinds[2]],
+        else_marker=by_kind[conditional_kinds[1]],
+        inclusive=True,
+    )
+
+
+def _marker_strip_from_regex_groups(*, before: str, after: str) -> Transform | None:
+    """Recover the native marker transform from Copybara's group spelling.
+
+    Real Copybara cannot express a whole-line delete as a literal
+    ``core.replace``: the literal consumes the marker AND its newline, welding
+    the next line onto the previous one. Only the interpolated form -- where the
+    groups absorb the rest of the physical line -- removes the line cleanly, and
+    Copybara further requires ``reversal = []`` for it because a group replace is
+    not automatically reversible.
+
+    Copybarista must accept that spelling but must NOT keep it as a ``replace``:
+    an empty ``after`` cannot re-derive the removed text on import, which is
+    exactly why ``internal_lines`` / ``strip_block`` exist (they re-insert the
+    source's removed region instead). Stripping the interpolations off the
+    marker text recovers the native type, so one ``.sky`` drives both tools and
+    the reversal stays intact.
+
+    Returns ``None`` when the replacement is not a marker strip, leaving the
+    general ``regex_groups`` replace path untouched.
+    """
+    # Split ON the interpolations rather than deleting them: a block spells its
+    # markers as ``<start>${block}<end>``, so removing the group would join the
+    # two markers into one line and the pair would read as a single per-line
+    # marker.
+    return _marker_transform(
+        before=literal_segments(before, separator="\n"), after=after
+    )

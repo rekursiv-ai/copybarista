@@ -103,5 +103,35 @@ def test_rejects_after_group_absent_from_before() -> None:
 
 
 def test_rejects_invalid_group_regex() -> None:
-    with pytest.raises(ConfigError, match="invalid pattern"):
+    # Reported per group rather than from the assembled pattern, so the message
+    # names the offending group.
+    with pytest.raises(ConfigError, match=r"regex_groups\.x is not valid regex"):
         compile_replace(before="a${x}", after="a${x}", regex_groups=(("x", "[under"),))
+
+
+@pytest.mark.parametrize(
+    ("groups", "culprit"),
+    [
+        pytest.param(
+            (("a", "[unclosed"), ("b", "[^!]*")), "a", id="unterminated-class"
+        ),
+        pytest.param((("a", "(grp"), ("b", ")x")), "a", id="unbalanced-paren"),
+    ],
+)
+def test_rejects_a_malformed_group_masked_by_a_later_group(
+    groups: tuple[tuple[str, str], ...], culprit: str
+) -> None:
+    """Each group must be validated ALONE, not only in the assembled pattern.
+
+    ``_build_pattern`` concatenates the groups, so a malformed one can be
+    re-balanced by whatever follows it: ``[unclosed`` stays an open character
+    class that swallows text until the next group closes it, and ``(grp`` is
+    closed by a later ``)``. The combined regex then compiles into something
+    that means nothing like what was written, while the same group alone raises.
+
+    Real Copybara validates per group and refuses to load the config
+    (``'regex_groups' includes invalid regex for key a``, exit 2), so accepting
+    it here admits a ``.sky`` that cannot run there at all.
+    """
+    with pytest.raises(ConfigError, match=rf"regex_groups\.{culprit}"):
+        compile_replace(before="${a}MID${b}", after="", regex_groups=groups)
