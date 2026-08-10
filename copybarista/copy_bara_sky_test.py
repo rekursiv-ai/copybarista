@@ -20,6 +20,7 @@ from copybarista.copy_bara_sky import (
     translate_copy_bara_sky_to_toml,
 )
 from copybarista.errors import ConfigError
+from copybarista.export import export_folder
 from copybarista.transforms import apply_transform
 
 
@@ -589,6 +590,123 @@ def test_rejects_subtree_flatten_under_whole_tree_selection(tmp_path: Path):
         load_config(config_path)
 
 
+def test_a_chain_of_renames_lands_the_copy_at_its_final_path(tmp_path: Path):
+    """Fusing a rename must follow the whole chain, not one link.
+
+    ``core.move(a, B)`` then ``core.move(B, C)`` left the copy at ``B`` with a
+    trailing move to ``C``, reinstating the two-step staging the fuse exists to
+    remove -- and with it the orphaned source directories, whenever the
+    intermediate name is nested.
+    """
+    source = tmp_path / "repo"
+    (source / "project").mkdir(parents=True)
+    (source / "project" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "a").mkdir()
+    (source / "a" / "x.md").write_text("doc\n", encoding="utf-8")
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "a/x.md"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.move("a/x.md", "B.md"),
+                core.move("B.md", "C.md"),
+            ],
+        )
+        """,
+    )
+    output = tmp_path / "out"
+
+    export_folder(
+        config=load_config(config_path, workflow_name="export"),
+        source_ref=source,
+        destination=output,
+        force=True,
+    )
+
+    assert (output / "C.md").read_text(encoding="utf-8") == "doc\n"
+    assert not (output / "B.md").exists()
+
+
+def test_moving_a_second_origin_root_is_not_a_rival_source_root_move(
+    tmp_path: Path,
+):
+    """Only the move the package nests under is the source-root move.
+
+    ``origin_files`` may name several ``/**`` roots -- the package plus vendored
+    trees like ``typings/cloudpickle``. Treating "source is a root" as the whole
+    signal makes every one of them a source-root move, so relocating the second
+    fails as a duplicate. The package's move is the one whose destination the
+    other moves are expressed relative to; a vendored tree merely gets renamed.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "typings/cloudpickle/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, "pkg"),
+                core.move("pkg/README.md", "README.md"),
+                core.move("typings/cloudpickle", "vendor"),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+    assert ("typings/cloudpickle", "vendor") in [
+        (copy.source, copy.destination) for copy in config.files.copy
+    ]
+
+
+def test_flattening_an_extra_origin_root_is_not_a_source_root_move(tmp_path: Path):
+    """A move of a selected file OUTSIDE the package is not the source-root move.
+
+    The source-root move is the one relocating the package itself, named by an
+    ``origin_files`` root. Classifying on shape instead -- "empty destination and
+    not under a root" -- also claims a shared-boilerplate file flattened to the
+    public root, so the config dies with "Only one source-root core.move
+    transform is supported", naming a construct the author never wrote.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "ops/github/shared/LICENSE"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, "pkgpub"),
+                core.move("ops/github/shared/LICENSE", ""),
+            ],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_root == "project"
+
+
 def test_accepts_sky_extra_origin_files_as_file_copies(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -613,6 +731,59 @@ def test_accepts_sky_extra_origin_files_as_file_copies(tmp_path: Path):
         (".codespell-ignore", ".codespell-ignore"),
         ("typings/cloudpickle", "typings/cloudpickle"),
     ]
+
+
+def test_extra_origin_root_renamed_by_a_move_lands_only_at_its_destination(
+    tmp_path: Path,
+):
+    """A selected-then-moved file must not leave its source directories behind.
+
+    An ``origin_files`` entry outside the source root becomes an identity copy,
+    and a later ``core.move`` renames it. Run as two steps the copy first
+    materializes ``shared/nested/LICENSE`` and the move then relocates the FILE,
+    orphaning the now-empty ``shared/nested`` chain in the export. Real Copybara
+    emits no such directories, so the two steps must collapse into one copy that
+    writes the file at its final path.
+    """
+    source = tmp_path / "repo"
+    (source / "project").mkdir(parents=True)
+    (source / "project" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "shared" / "nested").mkdir(parents=True)
+    (source / "shared" / "nested" / "LICENSE").write_text("lic\n", encoding="utf-8")
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "shared/nested/LICENSE"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.move("shared/nested/LICENSE", "LICENSE"),
+            ],
+        )
+        """,
+    )
+    output = tmp_path / "out"
+
+    export_folder(
+        config=load_config(config_path, workflow_name="export"),
+        source_ref=source,
+        destination=output,
+        force=True,
+    )
+
+    assert (output / "LICENSE").read_text(encoding="utf-8") == "lic\n"
+    assert [
+        path.relative_to(output).as_posix()
+        for path in sorted(output.rglob("*"))
+        if path.is_dir()
+    ] == []
 
 
 def test_accepts_sky_file_move_transform(tmp_path: Path):
@@ -844,17 +1015,21 @@ def test_ignore_noop_reaches_every_transform_group_exit(
     assert load_config(config_path).transforms[0].required is False
 
 
-def test_rejects_forward_only_declaration_on_a_marker_strip(tmp_path: Path):
-    """``reversal = []`` on a marker strip must fail loudly, not be discarded.
+def test_forward_only_declaration_never_disarms_a_marker_strip(tmp_path: Path):
+    """``reversal = []`` on a marker strip must not make it forward-only.
 
     A marker strip reverses by RE-INSERTING the source's removed region
     (``import_request`` dispatches on the transform type), and that dispatch
     sits behind a ``not transform.reversible`` skip -- so a forward-only marker
     would be skipped entirely and the import would overwrite the source file
-    with the stripped public one. ``reversible`` is therefore not a key the
-    marker parsers accept, and the declaration is unrepresentable rather than
-    merely unwritten: honouring it would be a bug, so the only correct
-    behaviour is to reject it.
+    with the stripped public one.
+
+    Rejecting the declaration outright (the previous behaviour) is not
+    available: real Copybara REQUIRES ``reversal = []`` on the ``regex_groups``
+    replace that is its only whole-line-delete spelling, so a ``.sky`` valid for
+    both tools must carry it. The declaration is therefore accepted and ignored
+    for marker types -- they are already reversible by re-insertion, which is
+    what the declaration was asking for.
     """
     config_path = _write_sky(
         tmp_path,
@@ -884,8 +1059,10 @@ def test_rejects_forward_only_declaration_on_a_marker_strip(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="forward-only"):
-        load_config(config_path)
+    transform = load_config(config_path).transforms[0]
+
+    assert transform.type == "internal_lines"
+    assert transform.reversible is True
 
 
 def test_sky_replace_carries_required_and_reversible(tmp_path: Path):
@@ -929,6 +1106,503 @@ def test_sky_replace_carries_required_and_reversible(tmp_path: Path):
 
     assert transform.reversible is False
     assert transform.required is False
+
+
+@pytest.mark.parametrize(
+    ("before", "groups", "expected"),
+    [
+        pytest.param(
+            "${indent}# copybarista:internal${note}\\n",
+            '{ "indent" : "[^\\\\n]*", "note" : "[^\\\\n]*" }',
+            ("internal_lines", "# copybarista:internal", ""),
+            id="per-line",
+        ),
+        pytest.param(
+            "# copybarista:internal:start${block}# copybarista:internal:end\\n${gap}",
+            '{ "block" : "[\\\\s\\\\S]*?", "gap" : "\\\\n*" }',
+            (
+                "strip_block",
+                "# copybarista:internal:start",
+                "# copybarista:internal:end",
+            ),
+            id="block",
+        ),
+    ],
+)
+def test_marker_strip_spelled_with_regex_groups_maps_to_marker_transform(
+    tmp_path: Path,
+    before: str,
+    groups: str,
+    expected: tuple[str, str, str],
+):
+    """Copybara's marker-strip spelling must load as the native marker type.
+
+    Real Copybara cannot delete a whole line with a literal ``core.replace``: the
+    literal consumes the marker and its newline, welding the following line onto
+    the previous one (verified against the copybara binary). Only the
+    ``regex_groups`` form, whose ``${indent}``/``${note}`` groups absorb the rest
+    of the physical line, removes the line cleanly -- and Copybara additionally
+    demands ``reversal = []`` for it, since a group replace is not automatically
+    reversible.
+
+    Copybarista must therefore ACCEPT that spelling and recover the native
+    marker transform from it. Mapping it to a plain ``replace`` instead would be
+    non-reversible on import (an empty ``after`` cannot re-derive the removed
+    text), which is why the marker types exist.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        f"""
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "{before}",
+                            after = "",
+                            regex_groups = {groups},
+                            multiline = True,
+                            paths = glob([".pre-commit-config.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                    ignore_noop = True,
+                ),
+            ],
+        )
+        """,
+    )
+
+    transform = load_config(config_path).transforms[0]
+
+    assert (transform.type, transform.start, transform.end) == expected
+    # The marker types re-insert the source region on import, so they must stay
+    # reversible even though Copybara spells the rule ``reversal = []``.
+    assert transform.reversible is True
+    assert transform.required is False
+
+
+def test_marker_strip_regex_groups_strips_the_whole_line(tmp_path: Path):
+    """The recovered transform must delete the marker's entire physical line.
+
+    Pins the behaviour the literal spelling got wrong: an inline marker at the
+    end of a line must take the line break with it, leaving the following line
+    intact rather than welded onto the previous one.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "${indent}# copybarista:internal${note}\\n",
+                            after = "",
+                            regex_groups = {
+                                "indent" : "[^\\\\n]*",
+                                "note" : "[^\\\\n]*",
+                            },
+                            multiline = True,
+                            paths = glob(["conf.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                    ignore_noop = True,
+                ),
+            ],
+        )
+        """,
+    )
+    root = tmp_path / "staged"
+    root.mkdir()
+    (root / "conf.yaml").write_text(
+        "keep: 1\n  |drop/me/  # copybarista:internal\n  )\n", encoding="utf-8"
+    )
+
+    apply_transform(
+        root=root,
+        transform=load_config(config_path).transforms[0],
+        sources_by_destination={},
+    )
+
+    assert (root / "conf.yaml").read_text() == "keep: 1\n  )\n"
+
+
+def _marker_sky(
+    tmp_path: Path, *, before: str, after: str = "", groups: str, multiline: str = ""
+) -> Path:
+    """Write a one-transform sky config for the marker-recovery tests."""
+    return _write_sky(
+        tmp_path,
+        f"""
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "{before}",
+                            after = "{after}",
+                            regex_groups = {groups},
+                            {multiline}paths = glob(["c.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                ),
+            ],
+        )
+        """,
+    )
+
+
+@pytest.mark.parametrize(
+    ("groups", "match"),
+    [
+        pytest.param(
+            '{ "indent" : "[unclosed", "note" : "[^\\\\n]*" }',
+            "regex_groups.indent",
+            id="invalid-regex",
+        ),
+        pytest.param('{ "indent" : "[^\\\\n]*" }', "undefined", id="undefined-group"),
+    ],
+)
+def test_marker_recovery_validates_the_groups_it_discards(
+    tmp_path: Path, groups: str, match: str
+):
+    """Recovering a marker type must not silently drop unchecked groups.
+
+    ``_marker_strip_from_regex_groups`` returns a marker transform and discards
+    ``regex_groups`` entirely, so an invalid pattern or an undefined
+    interpolation was never validated. Real Copybara refuses to LOAD both --
+    ``'regex_groups' includes invalid regex for key indent`` (exit 2) and
+    ``Interpolation is used but not defined: note`` (exit 1) -- so a config
+    accepted here cannot run there.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="${indent}# copybarista:internal${note}\\n",
+        groups=groups,
+        multiline="multiline = True, ",
+    )
+
+    with pytest.raises(ConfigError, match=match):
+        load_config(config_path)
+
+
+def test_external_marker_recovers_as_uncomment(tmp_path: Path):
+    """An ``:external`` block uncomments; recovering it as a strip DELETES code.
+
+    ``# copybarista:external:*`` marks lines that must be UNCOMMENTED for the
+    public export. The detector recovered every marker as ``strip_block``, which
+    removes the region instead -- so the public package silently lost the code
+    the marker exists to ship.
+
+    Copybara expresses the same rule as a non-empty ``after`` that re-emits the
+    captured group; verified against the binary to produce the uncommented line
+    between its unchanged neighbours.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="# copybarista:external:start\\n# ${code}\\n# copybarista:external:end\\n",
+        after="${code}\\n",
+        groups='{ "code" : "[^\\\\n]*" }',
+        multiline="multiline = True, ",
+    )
+    root = tmp_path / "staged"
+    root.mkdir()
+    (root / "c.yaml").write_text(
+        "keep1\n# copybarista:external:start\n# import x\n"
+        "# copybarista:external:end\nkeep2\n",
+        encoding="utf-8",
+    )
+
+    transform = load_config(config_path).transforms[0]
+    apply_transform(root=root, transform=transform, sources_by_destination={})
+
+    assert transform.type == "uncomment"
+    assert (root / "c.yaml").read_text() == "keep1\nimport x\nkeep2\n"
+
+
+def test_rejects_external_marker_spelled_as_a_deletion(tmp_path: Path):
+    """An ``:external`` strip has no correct reading: it would delete public code.
+
+    There is no ``strip_block`` interpretation of an uncomment marker, so an
+    empty ``after`` on one is a config error rather than something to recover.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="# copybarista:external:start${block}# copybarista:external:end\\n",
+        groups='{ "block" : "[\\\\s\\\\S]*?" }',
+        multiline="multiline = True, ",
+    )
+
+    with pytest.raises(ConfigError, match="external"):
+        load_config(config_path)
+
+
+def test_conditional_markers_recover_the_else_branch(tmp_path: Path):
+    """``:if``/``:else``/``:endif`` keeps the else branch; a strip deletes it.
+
+    Recovered as a plain ``strip_block`` the whole block vanishes, taking the
+    PUBLIC branch with it. The ``else_marker`` form uncomments and keeps it.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before=("# copybarista:if${a}# copybarista:else${b}# copybarista:endif\\n"),
+        groups='{ "a" : "[\\\\s\\\\S]*?", "b" : "[\\\\s\\\\S]*?" }',
+        multiline="multiline = True, ",
+    )
+    root = tmp_path / "staged"
+    root.mkdir()
+    (root / "c.yaml").write_text(
+        "keep1\n# copybarista:if\nINTERNAL\n# copybarista:else\n# PUBLIC\n"
+        "# copybarista:endif\nkeep2\n",
+        encoding="utf-8",
+    )
+
+    transform = load_config(config_path).transforms[0]
+    apply_transform(root=root, transform=transform, sources_by_destination={})
+
+    assert transform.else_marker == "# copybarista:else"
+    assert (root / "c.yaml").read_text() == "keep1\nPUBLIC\nkeep2\n"
+
+
+def test_non_marker_text_containing_the_prefix_stays_a_replace(tmp_path: Path):
+    """A literal merely CONTAINING ``copybara:`` is not a marker strip.
+
+    The detector tested the first and last line for the substring, so a general
+    ``regex_groups`` replace was hijacked into ``strip_block start='prefix '``,
+    which then raises ``did not find end marker`` on text real Copybara simply
+    no-ops.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="prefix ${g} copybara: suffix",
+        groups='{ "g" : "[a-z]*" }',
+    )
+
+    assert load_config(config_path).transforms[0].type == "replace"
+
+
+def test_marker_on_a_middle_line_is_recovered(tmp_path: Path):
+    """Detection must inspect every literal line, not just first and last."""
+    config_path = _marker_sky(
+        tmp_path,
+        before="# aaa${x}# copybarista:internal:start${y}# copybarista:internal:end\\n",
+        groups='{ "x" : "[^!]*", "y" : "[\\\\s\\\\S]*?" }',
+        multiline="multiline = True, ",
+    )
+
+    assert load_config(config_path).transforms[0].type == "strip_block"
+
+
+def test_rejects_marker_recovery_without_multiline(tmp_path: Path):
+    """A marker rule without ``multiline = True`` hard-fails in real Copybara.
+
+    Measured: the same rule exits 2 with no output there, while copybarista
+    recovered and applied it regardless -- a config that loads here and cannot
+    run at all in the tool the ``.sky`` exists to mirror.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="${indent}# copybarista:internal${note}\\n",
+        groups='{ "indent" : "[^\\\\n]*", "note" : "[^\\\\n]*" }',
+    )
+
+    with pytest.raises(ConfigError, match="multiline"):
+        load_config(config_path)
+
+
+def test_rejects_a_lone_uncomment_marker(tmp_path: Path):
+    """An uncomment needs a start AND an end marker to name its block.
+
+    A single ``:external`` line recovered as ``uncomment`` with ``end = ""``,
+    which ``transforms._uncomment`` reads as the INLINE form: it splits the line
+    on the marker and uncomments the prefix, not the block the author fenced.
+    ``config`` accepts an empty ``end``, so nothing downstream notices.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before="# copybarista:external\\n# ${code}\\n",
+        after="${code}\\n",
+        groups='{ "code" : "[^\\\\n]*" }',
+        multiline="multiline = True, ",
+    )
+
+    with pytest.raises(ConfigError, match="start and end marker"):
+        load_config(config_path)
+
+
+def test_rejects_a_single_line_marker_without_multiline(tmp_path: Path):
+    """The multiline rule must read the same for both marker spellings.
+
+    The ``regex_groups`` branch rejected a marker rule lacking ``multiline``, but
+    a literal one fell through to the newline check and reported something else
+    for the same mistake. Copybara hard-fails either.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.replace(
+                    before = "# copybarista:internal",
+                    after = "",
+                    paths = glob([".pre-commit-config.yaml"]),
+                ),
+            ],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="marker requires multiline"):
+        load_config(config_path)
+
+
+def test_rejects_a_replacement_mixing_marker_kinds(tmp_path: Path):
+    """One replacement must not span two marker namespaces.
+
+    ``:internal`` deletes its region and ``:external`` uncomments it, so a
+    ``before`` pairing an ``:internal:start`` with an ``:external:end`` has no
+    single meaning. The kind test was a membership check, so the ``:external``
+    branch claimed the pair and UNCOMMENTED an internal block into the public
+    tree -- the same class of content leak the marker map exists to prevent,
+    inverted.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before=(
+            "# copybarista:internal:start\\n# code\\n# copybarista:external:end\\n"
+        ),
+        after="x",
+        groups="{}",
+        multiline="multiline = True, ",
+    )
+
+    with pytest.raises(ConfigError, match="one marker kind"):
+        load_config(config_path)
+
+
+def test_rejects_an_uncomment_marker_block_with_a_stray_third_marker(tmp_path: Path):
+    """The marker-count guard must cover uncomment, not only strips.
+
+    The ``:external`` branch returned before the count check, so a third marker
+    line was silently dropped from the recovered block rather than reported.
+    """
+    config_path = _marker_sky(
+        tmp_path,
+        before=(
+            "# copybarista:external:start\\n# copybarista:external\\n"
+            "# copybarista:external:end\\n"
+        ),
+        after="x",
+        groups="{}",
+        multiline="multiline = True, ",
+    )
+
+    with pytest.raises(ConfigError, match="at most a start and end marker"):
+        load_config(config_path)
+
+
+def test_rejects_two_origin_copies_fused_onto_one_destination(tmp_path: Path):
+    """Fusing a rename into a copy must not create two copies of one path.
+
+    ``config._validate_moves_injective`` rejects a non-injective MOVE sequence
+    because the import reverse is an exact inverse only when the forward map is
+    injective. Folding those moves into copies routes around that gate, so the
+    collision has to be rejected here instead -- otherwise it surfaces as a late
+    export-time path clash and an ambiguous reverse.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "a/x.md", "b/x.md"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, "pkg"),
+                core.move("a/x.md", "SHARED.md"),
+                core.move("b/x.md", "SHARED.md"),
+            ],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="claimed by two"):
+        load_config(config_path)
+
+
+def test_rejects_marker_strip_with_more_than_two_markers(tmp_path: Path):
+    """A third marker line has no meaning in either strip shape.
+
+    One marker is a per-line strip and two delimit a block; recovering a
+    ``strip_block`` from the first and last would silently discard the middle
+    one.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(["**"]),
+            destination_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.transform(
+                    [
+                        core.replace(
+                            before = "# copybarista:a:start${x}# copybarista:a${y}# copybarista:a:end",
+                            after = "",
+                            regex_groups = { "x" : "[^!]*", "y" : "[^!]*" },
+                            multiline = True,
+                            paths = glob(["conf.yaml"]),
+                        ),
+                    ],
+                    reversal = [],
+                ),
+            ],
+        )
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="at most a start and end"):
+        load_config(config_path)
 
 
 def test_rejects_multiline_with_regex_groups(tmp_path: Path):
