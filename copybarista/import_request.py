@@ -1150,8 +1150,8 @@ def _reverse_replace_all(*, transforms: tuple[Transform, ...], text: str) -> str
     the later transform's reverse, which re-matches it and doubles the rewrite.
     The wesearch pair is the canonical case: bare ``loop.wesearch`` <-> ``wesearch``
     plus dotted ``loop.wesearch.${s}`` <-> ``wesearch.${s}``. Sequentially,
-    ``wesearch.errors`` -> ``loop.wesearch.errors`` (bare reverse) -> then the
-    dotted reverse matches ``wesearch.e`` inside it -> ``loop.loop.wesearch.errors``.
+    ``wesearch.errors`` -> ``loop.wesearch.types.errors`` (bare reverse) -> then the
+    dotted reverse matches ``wesearch.e`` inside it -> ``loop.loop.wesearch.types.errors``.
 
     A single pass fixes this: scan the ORIGINAL public text once and, at each
     position, take the longest reverse-``before`` match among all transforms,
