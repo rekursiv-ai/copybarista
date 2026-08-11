@@ -32,6 +32,7 @@ from copybarista.scripts.sync_export_pr import (
     _preleakcheck_validation,
     _public_head_unimported,
     _public_pr_text,
+    _refresh_public_lockfile,
     _render_pr_body,
     _replace_pr_state,
     _replace_tree,
@@ -2361,6 +2362,63 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
     assert calls[-1][0] == "validate"
     assert calls[-1][1] != public_dir
     assert not dry_public_dir.exists()
+
+
+def test_refresh_public_lockfile_upgrades_git_branch_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A branch-tracking dependency re-resolves to branch HEAD on every export.
+
+    Plain ``uv lock`` keeps the SHA already in the lockfile, and the export
+    installs it with ``uv sync --frozen`` -- so without the upgrade flags the
+    public package ships against a sibling's stale commit forever.
+    """
+    public_dir = tmp_path / "public"
+    public_dir.mkdir()
+    (public_dir / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "sagent"\n'
+        "\n"
+        "[tool.uv.sources]\n"
+        'wesearch = { git = "https://example.invalid/wesearch", branch = "main" }\n'
+        'pinned = { git = "https://example.invalid/pinned", rev = "abc123" }\n'
+        'local = { path = "../local" }\n',
+        encoding="utf-8",
+    )
+    argv: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        argv.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    _refresh_public_lockfile(public_dir=public_dir)
+
+    assert argv == [["uv", "lock", "--upgrade-package", "wesearch"]]
+
+
+def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_dir = tmp_path / "public"
+    public_dir.mkdir()
+    (public_dir / "pyproject.toml").write_text(
+        '[project]\nname = "configgle"\n', encoding="utf-8"
+    )
+    argv: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        argv.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    _refresh_public_lockfile(public_dir=public_dir)
+
+    assert argv == [["uv", "lock"]]
 
 
 def test_run_export_sync_refreshes_public_lockfile_before_validation(

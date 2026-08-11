@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 from copybarista.config import Transform, load_config
 from copybarista.scripts.sync_import_change import (
@@ -803,7 +804,44 @@ def _is_git_checkout(path: Path) -> bool:
 
 def _refresh_public_lockfile(*, public_dir: Path) -> None:
     """Generate a lockfile from the exported public package metadata."""
-    _run(["uv", "lock"], cwd=public_dir)
+    _run(
+        ["uv", "lock", *_git_branch_upgrades(public_dir / "pyproject.toml")],
+        cwd=public_dir,
+    )
+
+
+def _git_branch_upgrades(pyproject: Path) -> list[str]:
+    """Return ``--upgrade-package`` flags for every git-branch dependency.
+
+    A ``[tool.uv.sources]`` entry naming a ``branch`` means "track that branch",
+    but plain ``uv lock`` honors the SHA already in the lockfile and only
+    re-resolves what changed. The export would then validate -- and publish --
+    against a sibling's stale commit indefinitely, since ``uv sync --frozen``
+    installs exactly the locked SHA. ``--upgrade-package`` is the documented
+    opt-out (``uv lock --help``: "ignoring pinned versions in any existing
+    output file"), so name every branch-tracking dependency on each export.
+
+    Args:
+      pyproject: The exported public ``pyproject.toml``.
+
+    Returns:
+      flags: Interleaved ``--upgrade-package NAME`` arguments, empty when the
+        package tracks no git branch.
+
+    """
+    table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    for key in ("tool", "uv", "sources"):
+        if not isinstance(table, dict):
+            return []
+        table = cast("dict[str, object]", table).get(key, {})
+    if not isinstance(table, dict):
+        return []
+    return [
+        flag
+        for name, source in cast("dict[str, object]", table).items()
+        if isinstance(source, dict) and "branch" in cast("dict[str, object]", source)
+        for flag in ("--upgrade-package", name)
+    ]
 
 
 def _validate_public(
