@@ -757,7 +757,9 @@ def last_synced_public_sha(
     for subject in subjects:
         match = pattern.match(subject)
         if match is not None:
-            return match.group(1)
+            sha = match[1]
+            assert isinstance(sha, str)
+            return sha
     if fallback:
         return fallback
     raise ImportBaseError(

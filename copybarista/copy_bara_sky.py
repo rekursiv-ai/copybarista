@@ -1388,7 +1388,11 @@ def _marker_lines(before: str) -> list[str]:
 def _marker_kind(line: str) -> str:
     """Return the marker's namespace segment (``internal``, ``external``, ...)."""
     match = _MARKER_LINE.match(line)
-    return match.group("kind").split(":")[0] if match else ""
+    if match is None:
+        return ""
+    kind = match["kind"]
+    assert isinstance(kind, str)
+    return kind.split(":")[0]
 
 
 def _marker_transform(
