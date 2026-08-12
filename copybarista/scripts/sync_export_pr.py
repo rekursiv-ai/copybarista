@@ -1816,11 +1816,11 @@ def _recover_body_entries(
     forbidden_text: tuple[str, ...],
 ) -> tuple[tuple[PrBodyEntry, ...], tuple[SourceAuthor, ...]]:
     """Recover reachable PR body entries and source authors."""
-    recovered_entries: tuple[PrBodyEntry, ...] = ()
+    recovered: list[PrBodyEntry] = []
     authors: tuple[SourceAuthor, ...] = ()
     for entry in entries:
         if not entry.commit_sha:
-            recovered_entries = (*recovered_entries, entry)
+            recovered.append(entry)
             continue
         commit_sha = _maybe_resolve_source_marker(
             source_dir=source_dir,
@@ -1833,7 +1833,7 @@ def _recover_body_entries(
                 f"marker={_short_source_marker(entry.commit_sha)}"
             )
             continue
-        recovered_entries = (*recovered_entries, entry)
+        recovered.append(entry)
         author = _source_author(
             source_dir=source_dir,
             commit_sha=commit_sha,
@@ -1849,7 +1849,7 @@ def _recover_body_entries(
             f"commit={_short_rev(commit_sha)} "
             f"author={_format_source_authors((author,))}"
         )
-    return recovered_entries, authors
+    return tuple(recovered), authors
 
 
 def _source_author(
