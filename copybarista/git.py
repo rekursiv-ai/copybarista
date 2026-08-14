@@ -73,7 +73,7 @@ class GitRuntime:
     git: str = field(default_factory=lambda: resolve_executable("git"))
     commands: GitCommands = field(default_factory=CommandRunner)
     cache_root: Path = field(
-        default_factory=lambda: cache_dir("rekursiv-ai") / "copybarista" / "git"
+        default_factory=lambda: cache_dir() / "rekursiv-ai" / "copybarista" / "git"
     )
     source_rev_label: str = "Copybarista-Source-Rev"
 
