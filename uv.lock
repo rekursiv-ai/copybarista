@@ -62,7 +62,6 @@ test = [
 [package.dev-dependencies]
 lint = [
     { name = "codespell", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "ruff", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 pre-commit = [
@@ -108,7 +107,6 @@ provides-extras = ["test"]
 [package.metadata.requires-dev]
 lint = [
     { name = "codespell", specifier = ">=2.2.4" },
-    { name = "pre-commit", specifier = ">=4.6" },
     { name = "ruff" },
 ]
 pre-commit = [
