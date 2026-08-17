@@ -47,7 +47,15 @@ jobs:
       - name: Verify sync token identity
         if: env.COPYBARISTA_SYNC_TOKEN_LOGIN != ''
         run: |
-          token_login="$(gh api user --jq .login)"
+          # Retried: this is one unauthenticated-side API call standing in front
+          # of the whole export, and a transient GitHub 503 on it failed three
+          # package exports in the same second. The call is idempotent, so
+          # re-asking costs nothing; an empty result after three tries is a real
+          # auth failure and still fails the check below.
+          for attempt in 1 2 3; do
+            token_login="$(gh api user --jq .login)" && break
+            sleep $((attempt * 5))
+          done
           if [ "$token_login" != "$COPYBARISTA_SYNC_TOKEN_LOGIN" ]; then
             echo "::error::COPYBARISTA_SYNC_TOKEN authenticates as '$token_login', expected '$COPYBARISTA_SYNC_TOKEN_LOGIN'. Rotate COPYBARISTA_SYNC_TOKEN to a token owned by $COPYBARISTA_SYNC_TOKEN_LOGIN; git author settings cannot change GitHub push or PR attribution."
             exit 1
