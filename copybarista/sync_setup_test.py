@@ -500,6 +500,36 @@ def test_package_validation_workflow_runs_configured_commands():
     assert "uv run pytest" in workflow
 
 
+@pytest.mark.parametrize(
+    "render",
+    [package_validation_workflow, import_workflow, export_workflow],
+    ids=["package-validation", "import", "export"],
+)
+def test_apt_is_bounded_and_retried_in_every_workflow(
+    render: Callable[[SyncSettings], str],
+) -> None:
+    """A stalled apt mirror must cost minutes, not the whole job budget.
+
+    Measured: ``apt-get update`` hung from 02:23:21 to 03:07:36 on an Ubuntu
+    mirror and was cancelled by the 45-minute job cap, taking two exports with
+    it. The command normally finishes in ~15s, and nothing bounded it -- no
+    timeout, no retry -- so one upstream stall burned every remaining minute
+    and reported only "The operation was canceled".
+
+    Both parts are load-bearing. The timeout converts a hang into a fast
+    failure; the retry is what lets a transient stall still succeed, since apt
+    had already fallen back from the Azure mirror to archive.ubuntu.com in that
+    same run. All three workflows render from one helper, so all three are
+    checked -- the export is the one that actually failed.
+    """
+    workflow = render(_settings(system_packages=("ripgrep",)))
+
+    assert "timeout " in workflow, "apt is unbounded; a mirror stall hangs the job"
+    assert "for attempt in" in workflow, (
+        "apt has no retry; a transient mirror stall fails the whole workflow"
+    )
+
+
 def test_check_sync_config_rejects_package_validation_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
     workflow = tmp_path / ".github/workflows/package-validation.yml"

@@ -8,6 +8,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, cast
 
+import hashlib
 import json
 import keyword
 import re
@@ -88,6 +89,7 @@ GITHUB_ACTION_PINS: Final = {
         _pin("actions/setup-python", "ece7cb06caefa5fff74198d8649806c4678c61a1", 6),
         _pin("astral-sh/setup-uv", "37802adc94f370d6bfd71619e3f0bf239e1f3b78", 7),
         _pin("actions/upload-artifact", "b7c566a772e6b6bfb58ed0dc250532a479d7789f", 6),
+        _pin("actions/cache", "0057852bfaa89a56745cba8c7296529d2fc39830", 4),
     )
 }
 """The revision every generated workflow pins, per action.
@@ -770,11 +772,33 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
     guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
     names = " ".join(packages)
     lines = [
+        # Cache the downloaded .debs, so a warm run never reaches the mirror
+        # that stalled below. Keyed on the package list, so adding one busts it;
+        # `apt-get install` is idempotent, so a hit merely skips the download.
+        "      - name: Cache apt packages\n",
+        guard,
+        f"        uses: {GITHUB_ACTION_PINS['actions/cache'].uses}\n",
+        "        with:\n",
+        "          path: /var/cache/apt/archives\n",
+        f"          key: apt-${{{{ runner.os }}}}-{_packages_key(packages)}\n",
         "      - name: Install system packages\n",
         guard,
         "        run: |\n",
-        "          sudo apt-get update\n",
-        f"          sudo apt-get install -y --no-install-recommends {names}\n",
+        # Bounded and retried. An Ubuntu mirror stalled `apt-get update` for 44
+        # minutes -- 02:23:21 to 03:07:36 -- until the 45-minute job cap
+        # cancelled two exports, reporting only "The operation was canceled".
+        # The command normally takes ~15s, and nothing here limited it.
+        #
+        # The timeout turns a hang into a fast, legible failure; the retry is
+        # what still lets a transient stall succeed, since apt fell back from
+        # the Azure mirror to archive.ubuntu.com within that same run. Failing
+        # after three tries is a real outage and must stay red.
+        "          for attempt in 1 2 3; do\n",
+        "            timeout 120 sudo apt-get update && break\n",
+        '            echo "apt-get update stalled (attempt $attempt)" >&2\n',
+        "            sleep $((attempt * 10))\n",
+        "          done\n",
+        f"          timeout 300 sudo apt-get install -y --no-install-recommends {names}\n",
     ]
     if "postgresql" in packages:
         # pgvector ships as `postgresql-<major>-pgvector`, so the name depends
@@ -792,6 +816,15 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
             '--no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi\n'
         )
     return "".join(lines)
+
+
+def _packages_key(packages: tuple[str, ...]) -> str:
+    """Return a cache-key segment identifying one apt package set.
+
+    Hashed rather than joined: the names go into a cache key, which GitHub caps
+    at 512 characters, and a package list is unbounded.
+    """
+    return hashlib.sha256(" ".join(sorted(packages)).encode()).hexdigest()[:16]
 
 
 def _render_template(name: str, values: dict[str, str]) -> str:
