@@ -88,8 +88,8 @@ GITHUB_ACTION_PINS: Final = {
         _pin("actions/checkout", "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09", 5),
         _pin("actions/setup-python", "ece7cb06caefa5fff74198d8649806c4678c61a1", 6),
         _pin("astral-sh/setup-uv", "37802adc94f370d6bfd71619e3f0bf239e1f3b78", 7),
-        _pin("actions/upload-artifact", "b7c566a772e6b6bfb58ed0dc250532a479d7789f", 6),
-        _pin("actions/cache", "0057852bfaa89a56745cba8c7296529d2fc39830", 4),
+        _pin("actions/upload-artifact", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", 7),
+        _pin("actions/cache", "caa296126883cff596d87d8935842f9db880ef25", 5),
     )
 }
 """The revision every generated workflow pins, per action.
