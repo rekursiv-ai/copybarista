@@ -14,7 +14,7 @@ import pytest
 from copybarista.cli import main
 
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.cli_git
 
 EXAMPLES_ROOT = Path(__file__).resolve().parent
 SOURCE_REPO = EXAMPLES_ROOT / "python-package" / "source-repo"

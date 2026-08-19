@@ -70,7 +70,7 @@ def test_report_json_is_machine_readable():
     assert set(data) == {"copybarista"}
 
 
-@pytest.mark.performance
+@pytest.mark.bench_throughput
 def test_synthetic_export_performance_has_actionable_timings(tmp_path: Path):
     source_ref = tmp_path / "repo"
     project = source_ref / "project"
@@ -109,7 +109,7 @@ def test_synthetic_export_performance_has_actionable_timings(tmp_path: Path):
     )
 
 
-@pytest.mark.performance
+@pytest.mark.bench_throughput
 def test_self_export_performance_has_recordable_timings():
     source_repo_text = os.environ.get("COPYBARISTA_SOURCE_REPO", "")
     source_root = os.environ.get("COPYBARISTA_SOURCE_ROOT", "")

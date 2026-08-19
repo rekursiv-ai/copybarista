@@ -8,6 +8,7 @@ after export, the installer's -- real clone cache.
 
 from __future__ import annotations
 
+from copybarista.lib.testing.resource_markers import pytest_collection_modifyitems
 from copybarista.lib.userdirs_fixture import (
     isolate_user_dirs,
     pytest_configure,
@@ -17,4 +18,4 @@ from copybarista.lib.userdirs_fixture import (
 # Re-exported, not merely imported: an autouse fixture reaches only the
 # directory of the conftest that names it, so binding it here is what widens it
 # to the whole package.
-__all__ = ["isolate_user_dirs", "pytest_configure"]
+__all__ = ["isolate_user_dirs", "pytest_collection_modifyitems", "pytest_configure"]
