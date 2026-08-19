@@ -7,6 +7,12 @@ on:
       - @@SOURCE_ROOT_PATH@@
 @@EXPORT_WATCH_PATHS@@      - @@EXPORT_SCRIPT_PATH@@
       - @@IMPORT_SCRIPT_PATH@@
+      # Every copy.barista.toml excludes these, so a push touching only a
+      # private path exports an identical tree -- a runner minute spent to
+      # produce no diff. Negatives must stay LAST: GitHub applies patterns in
+      # order and a later positive re-includes the path.
+      - "!**/*private*"
+      - "!**/*private*/**"
   workflow_dispatch:
     inputs:
       replay_bootstrap_base:
