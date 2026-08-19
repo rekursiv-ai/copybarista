@@ -24,7 +24,7 @@ from copybarista.workflow import WorkflowRunner
 
 
 pytestmark = [
-    pytest.mark.integration,
+    pytest.mark.cli_git,
     pytest.mark.skipif(shutil.which("git") is None, reason="git not installed"),
 ]
 
