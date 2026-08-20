@@ -568,7 +568,7 @@ def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings())
 
-    assert 'name: "Export Configgle public repo"' in workflow
+    assert 'name: "Export Configgle"' in workflow
     assert 'name: "Export Configgle and update public PR"' in workflow
     assert "configgle/export/main" in workflow
     assert (
