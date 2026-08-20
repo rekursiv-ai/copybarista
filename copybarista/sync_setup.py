@@ -17,6 +17,7 @@ import tomllib
 
 import yaml
 
+from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
 
@@ -51,77 +52,17 @@ rejects the mismatch rather than letting the two silently diverge.
 """
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ActionPin:
-    """One action's immutable revision, plus the major a human reads.
-
-    Two fields rather than the string ``"<sha> # vN"``: that spelling had
-    three consumers disassembling it three ways -- rendered raw into YAML,
-    split on ``#`` for the parsed value, and re-parsed by a regex in
-    ``ops/github`` to recover the major. Any one of them could disagree with
-    the others and nothing would notice.
-    """
-
-    action: str
-    sha: str
-    major: int
-
-    @property
-    def ref(self) -> str:
-        """What a parsed ``uses:`` holds -- no comment, since YAML drops it."""
-        return f"{self.action}@{self.sha}"
-
-    @property
-    def uses(self) -> str:
-        """What the workflow file says: the pin plus its human-readable major."""
-        return f"{self.ref} # v{self.major}"
-
-
-def _pin(action: str, sha: str, major: int) -> ActionPin:
-    """Build one pin; keeps the table below one line per action."""
-    return ActionPin(action=action, sha=sha, major=major)
-
-
-GITHUB_ACTION_PINS: Final = {
-    pin.action: pin
-    for pin in (
-        _pin("actions/checkout", "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09", 5),
-        _pin("actions/setup-python", "ece7cb06caefa5fff74198d8649806c4678c61a1", 6),
-        _pin("astral-sh/setup-uv", "37802adc94f370d6bfd71619e3f0bf239e1f3b78", 7),
-        _pin("actions/upload-artifact", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", 7),
-        _pin("actions/cache", "caa296126883cff596d87d8935842f9db880ef25", 5),
-    )
-}
-"""The revision every generated workflow pins, per action.
-
-Pinned to a full commit SHA, not a tag: a tag is mutable, so ``@v5`` can be
-repointed at arbitrary code without any workflow changing. The consequence is
-that a security patch REQUIRES an edit here -- that is the trade, not a
-drawback.
-
-Every major is at or above its first ``node24`` release, since GitHub is
-removing the Node 20 runtime and an action still declaring ``using: node20``
-first warns and then stops running: ``setup-python@v6``, ``setup-uv@v7``,
-``upload-artifact@v6``; ``checkout@v5`` was already node24.
-
-Scope is the GENERATED workflows -- templates render ``@@USES_<NAME>@@`` from
-this table and :func:`check_sync_config` reads it back. Workflows this repo
-writes by hand carry their own pins; ``ops/github/action_pins_test.py`` holds
-both to one revision per action.
-"""
-
-
 def _uses_placeholders() -> dict[str, str]:
     """Render keys for each pinned action, e.g. ``USES_SETUP_PYTHON``."""
     return {
-        f"USES_{action.split('/')[1].replace('-', '_').upper()}": pin.uses
+        f"USES_{_action_token(action)}": pin.uses
         for action, pin in GITHUB_ACTION_PINS.items()
     }
 
 
-def action_ref(action: str) -> str:
-    """The pinned ``owner/name@sha`` reference for one action."""
-    return GITHUB_ACTION_PINS[action].ref
+def _action_token(action: str) -> str:
+    """Return the placeholder suffix for one action path."""
+    return "_".join(part.replace("-", "_").upper() for part in action.split("/")[1:])
 
 
 # System (apt) packages installed before both public package validation and
