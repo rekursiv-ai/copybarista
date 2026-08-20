@@ -19,6 +19,7 @@ from copybarista.scripts.sync_import_change import (
     _validate_target,
     import_branch_name,
     import_change_pr_body,
+    import_commit_subject,
     import_commit_subject_prefix,
     last_synced_public_sha,
 )
@@ -58,10 +59,10 @@ def _import_request(*, target_dir: Path) -> ImportRequest:
         project_path=Path("package"),
         base_branch="main",
         public_repo="rekursiv-ai/public",
-        public_sha="abcdef123456",
+        public_sha="abcdef1234567890abcdef1234567890abcdef12",
         public_base_ref="base",
         public_head_ref="head",
-        branch="copybarista/import/sha-abcdef123456",
+        branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
         sync_label="Package",
         sync_user_name="copybarista",
         sync_user_email="copybarista@example.com",
@@ -248,10 +249,10 @@ def test_import_change_ignores_generated_public_lockfile(
             project_path=Path("package"),
             base_branch="main",
             public_repo="rekursiv-ai/public",
-            public_sha="abcdef123456",
+            public_sha="abcdef1234567890abcdef1234567890abcdef12",
             public_base_ref="base",
             public_head_ref="head",
-            branch="copybarista/import/sha-abcdef123456",
+            branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
             sync_label="Package",
             sync_user_name="copybarista",
             sync_user_email="copybarista@example.com",
@@ -327,10 +328,10 @@ def test_run_import_sync_imports_then_validates(
             project_path=Path("package"),
             base_branch="main",
             public_repo="rekursiv-ai/public",
-            public_sha="abcdef123456",
+            public_sha="abcdef1234567890abcdef1234567890abcdef12",
             public_base_ref="base",
             public_head_ref="head",
-            branch="copybarista/import/sha-abcdef123456",
+            branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
             sync_label="Package",
             sync_user_name="copybarista",
             sync_user_email="copybarista@example.com",
@@ -496,7 +497,7 @@ def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     assert not _gh_pr_exists(
-        branch="copybarista/import/sha-abcdef123456",
+        branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
         repo="rekursiv-ai/source",
         cwd=Path.cwd(),
     )
@@ -526,7 +527,7 @@ def test_gh_pr_exists_retries_transient_github_failures(
     monkeypatch.setattr("time.sleep", no_sleep)
 
     assert not _gh_pr_exists(
-        branch="copybarista/import/sha-abcdef123456",
+        branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
         repo="rekursiv-ai/source",
         cwd=Path.cwd(),
     )
@@ -557,7 +558,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
 
     with pytest.raises(SystemExit) as error:
         _gh_pr_exists(
-            branch="copybarista/import/sha-abcdef123456",
+            branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
             repo="rekursiv-ai/source",
             cwd=Path.cwd(),
         )
@@ -701,6 +702,38 @@ def test_import_commit_subject_round_trips_through_baseline_walk(
     assert (
         last_synced_public_sha(
             target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+        )
+        == sha
+    )
+
+
+def test_import_commit_subject_refuses_an_abbreviated_sha() -> None:
+    """The writer rejects what the baseline walk could not read.
+
+    An abbreviated SHA parses as no marker at all, so the walk returns an older
+    baseline (or none) and the export guard concludes the public head was never
+    imported -- which stops the project exporting while every run stays green.
+    Refusing at the write side is what keeps that unrepresentable.
+    """
+    with pytest.raises(ImportBaseError, match="unreadable import ledger"):
+        import_commit_subject("Wesearch", "7f2f091d115a")
+
+
+def test_import_commit_subject_refuses_a_reworded_prefix() -> None:
+    """A subject missing the exact prefix is refused, not silently written."""
+    with pytest.raises(ImportBaseError, match="unreadable import ledger"):
+        import_commit_subject("Wesearch", "not-a-sha")
+
+
+def test_import_commit_subject_round_trips_a_full_sha(tmp_path: Path) -> None:
+    """What the writer accepts, the baseline walk recovers unchanged."""
+    sha = "7" * 40
+    subject = import_commit_subject("Wesearch", sha)
+    _git_repo_with_commits(root=tmp_path, subjects=[subject])
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path, sync_label="Wesearch", base_branch="main"
         )
         == sha
     )

@@ -309,13 +309,20 @@ def run_export_sync(request: ExportRequest) -> None:
             sync_user_email=request.sync_user_email,
         )
         if unimported:
-            _warn(
-                f"Skipping {request.sync_label} export: public commit "
+            # FAIL, where the open-PR case above merely returns. That one is
+            # transient -- the next export runs once the PR merges. This one
+            # never clears on its own: a failed import opens no PR, so nothing
+            # will land the marker, and exiting green here means the project
+            # silently stops syncing while every run reports success. Measured
+            # 2026-08-19: wesearch sat wedged for roughly four hours, across
+            # three green export runs, before anyone read a log.
+            raise ExportGuardError(
+                f"{request.sync_label} export is blocked: public commit "
                 f"{unimported[:12]} has not been imported into the source "
                 "(no landed import records it), so exporting would revert it. "
-                "Land that import; until then this project stops syncing."
+                "Land that import -- check the public repository's import "
+                "workflow for a failure -- then re-run this export."
             )
-            return
     dry_public_dir = None
     if request.dry_run:
         dry_public_dir = _clone_public_checkout_for_dry_run(
