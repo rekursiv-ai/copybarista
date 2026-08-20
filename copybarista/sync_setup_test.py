@@ -9,11 +9,10 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
-    GITHUB_ACTION_PINS,
     SyncSettings,
-    action_ref,
     check_sync_config,
     export_workflow,
     import_workflow,
