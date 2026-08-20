@@ -77,6 +77,8 @@ jobs:
           # users can install.
           python-version: @@PYTHON_VERSION@@
       - uses: @@USES_SETUP_UV@@
+        with:
+          working-directory: source
       - uses: @@USES_CHECKOUT@@
         with:
           repository: ${{ env.TARGET_REPO }}
