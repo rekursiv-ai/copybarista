@@ -519,7 +519,7 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             "--author",
             _commit_author(request.sync_user_name, request.sync_user_email),
             "-m",
-            import_commit_subject_prefix(request.sync_label) + request.public_sha,
+            import_commit_subject(request.sync_label, request.public_sha),
         ],
         cwd=request.target_dir,
     )
@@ -700,6 +700,52 @@ def import_commit_subject_prefix(sync_label: str) -> str:
     return f"Import {sync_label} public changes "
 
 
+def import_commit_subject(sync_label: str, public_sha: str) -> str:
+    """Return the ledger subject, refusing one the baseline walk cannot read.
+
+    This subject IS the ledger: :func:`last_synced_public_sha` re-reads the
+    imported SHA out of it to pick the next merge baseline, and the export
+    guard asks that walk whether a force-write would revert public work. So a
+    subject the walk cannot parse does not merely lose one import -- the
+    project stops exporting, with every run still reporting success.
+
+    Validating at the WRITE side is what makes that unrepresentable. The read
+    side already anchors on ``[0-9a-f]{40}``; composing a subject and pushing
+    it without checking left an abbreviated or reworded one to fail silently
+    hours later, in a different repository, as a skipped export.
+
+    Args:
+      sync_label: Import label, e.g. ``Wesearch``.
+      public_sha: Full 40-character public commit SHA being imported.
+
+    Returns:
+      subject: The commit subject to write.
+
+    Raises:
+      ImportBaseError: The composed subject would not survive the walk.
+
+    """
+    subject = import_commit_subject_prefix(sync_label) + public_sha
+    if _import_subject_pattern(sync_label).match(subject) is None:
+        raise ImportBaseError(
+            f"Refusing to write an unreadable import ledger subject: "
+            f"{subject!r}. The baseline walk requires the full 40-character "
+            f"SHA, so this would silently wedge {sync_label} exports."
+        )
+    return subject
+
+
+def _import_subject_pattern(sync_label: str) -> re.Pattern[str]:
+    """Return the regex both the writer and the baseline walk agree on.
+
+    One expression, so the two directions cannot drift: a subject the writer
+    accepts is by construction one the walk can read.
+    """
+    prefix = import_commit_subject_prefix(sync_label)
+    # ``(#N)`` is GitHub's squash-merge suffix, which is how these imports land.
+    return re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})(?: \(#\d+\))?$")
+
+
 def last_synced_public_sha(
     *, target_dir: Path, sync_label: str, base_branch: str, fallback: str = ""
 ) -> str:
@@ -750,10 +796,8 @@ def last_synced_public_sha(
         cwd=target_dir,
         capture=True,
     ).stdout.splitlines()
-    # ``(#N)`` is GitHub's squash-merge suffix, which is how these imports
-    # land. Anchoring on the SHA alone skipped every squash-merged commit and
-    # silently returned an older baseline.
-    pattern = re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})(?: \(#\d+\))?$")
+    # Shared with the writer, so a subject one accepts is one the other reads.
+    pattern = _import_subject_pattern(sync_label)
     for subject in subjects:
         match = pattern.match(subject)
         if match is not None:

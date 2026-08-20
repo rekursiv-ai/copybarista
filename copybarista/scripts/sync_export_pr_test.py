@@ -2718,7 +2718,12 @@ def test_run_export_sync_skips_when_public_head_is_unimported(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The content check gates the export even with no import PR open."""
+    """The content check gates the export even with no import PR open.
+
+    It RAISES rather than returning: this block never clears on its own, since
+    a failed import opens no PR for anyone to merge. Exiting green here is what
+    let wesearch sit wedged across three successful-looking export runs.
+    """
     request = replace(
         _export_request(tmp_path),
         import_branch_prefix="sagent/import/",
@@ -2741,7 +2746,8 @@ def test_run_export_sync_skips_when_public_head_is_unimported(
     monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
     monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
 
-    sync_export_pr.run_export_sync(request)
+    with pytest.raises(sync_export_pr.ExportGuardError, match="bbbb222"):
+        sync_export_pr.run_export_sync(request)
 
     assert ran == [], "a failed import must still block the export"
 
@@ -2751,12 +2757,13 @@ def test_skipped_export_annotates_the_workflow_run(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A skip must raise a workflow annotation, not pass silently.
+    """An unimported public head must FAIL the run, not annotate and pass.
 
-    Skipping is correct -- exporting would revert the public commit -- but a
-    silent skip exits green, so a repository can stall indefinitely with every
-    run reporting success. That is exactly how six projects sat un-exported
-    while CI stayed green. The skip is the alert.
+    Blocking is correct -- exporting would revert the public commit -- but a
+    green exit means the repository stalls indefinitely with every run
+    reporting success, which is exactly how projects sat un-exported while CI
+    stayed green. The error names the blocking commit and the project so the
+    log says what to land, and the non-zero exit is what makes anyone read it.
     """
     request = replace(
         _export_request(tmp_path),
@@ -2778,12 +2785,13 @@ def test_skipped_export_annotates_the_workflow_run(
     monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
     monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
 
-    sync_export_pr.run_export_sync(request)
+    with pytest.raises(sync_export_pr.ExportGuardError) as excinfo:
+        sync_export_pr.run_export_sync(request)
 
-    out = capsys.readouterr().out
-    assert "::warning::" in out, "a skipped export must annotate the run"
-    assert "bbbb222" in out, "the annotation must name the blocking commit"
-    assert "Sagent" in out, "the annotation must name the project"
+    message = str(excinfo.value)
+    assert "bbbb222" in message, "the error must name the blocking commit"
+    assert "Sagent" in message, "the error must name the project"
+    del capsys
 
 
 def test_pending_import_skip_annotates_the_workflow_run(
