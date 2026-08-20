@@ -665,7 +665,7 @@ def export_workflow(settings: SyncSettings) -> str:
     return _render_template(
         "source-to-public.yml.tmpl",
         {
-            "WORKFLOW_NAME": _yaml_str(f"Export {settings.sync_label} public repo"),
+            "WORKFLOW_NAME": _yaml_str(f"Export {settings.sync_label}"),
             "JOB_NAME": _yaml_str(f"Export {settings.sync_label} and update public PR"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
