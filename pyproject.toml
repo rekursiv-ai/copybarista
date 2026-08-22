@@ -62,7 +62,9 @@ test = [
 ]
 typecheck = [
     "basedpyright>=1.10",
-    "ty>=0.0.56",
+    # 0.0.72 and basedpyright 1.39.10 work correctly.
+    # https://github.com/astral-sh/ty/issues/4352
+    "ty>=0.0.60,!=0.0.73",
 ]
 "pre-commit" = [
     "pre-commit>=4.6",
@@ -97,9 +99,12 @@ python_files = ["*_test.py", "test_*.py"]
 pythonpath = ["."]
 markers = [
     "ci_smoke: slower package/CLI smoke tests run explicitly in CI",
-    "integration: tests that require networking or external CLIs (deselected by default)",
+    "cuda: tests that require a real CUDA device (skipped in hosted CI)",
+    "integration: tests that require networking or external deps (deselected by default)",
     "performance: timing-sensitive tests (deselected by default)",
     "slow: expensive local correctness test (JIT, training, full fixtures, git, bash, or a fresh interpreter); excluded from the fast unit tier and run by the pre-push slow gate",
+    "real_llm: integration tests that spawn a live LLM CLI (claude/codex); skipped unless RUN_REAL_LLM=1 is set",
+    "cluster: requires live cluster access; deselected by default (run explicitly with -m cluster)",
     "bench_compile_time: asserts a compile-time budget or comparison",
     "bench_memory: asserts a memory-use budget or comparison",
     "bench_statistical: asserts a statistical performance contract",
@@ -149,7 +154,7 @@ markers = [
 ]
 addopts = [
     "-m",
-    "not ci_smoke and not integration and not performance and not slow",
+    "not ci_smoke and not cuda and not integration and not performance and not cluster and not slow",
     "--durations=20",
     "--dist=worksteal",
     "--cov=copybarista",
@@ -219,8 +224,6 @@ exclude = [
     "build/",
     "dist/",
     "**/third_party/",
-    "typings/",
-    "**/typings/",
 ]
 extend-include = ["*.ipynb"]
 
@@ -309,9 +312,6 @@ ignore = [
     # Exclusions due to public export.
     # "TC002",   # Typing-only third-party import. (Export strips runtime uses, leaving type-only imports.)
 ]
-exclude = [
-    "**/typings/**",
-]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = [
@@ -334,7 +334,7 @@ exclude = [
 #
 # Refresh workflow after a `pyright --createstub` regen (verified to keep
 # `ty check .` and `basedpyright .` clean).
-#    (run the repo's extra-autofix helper over `typings`)
+#    tools/ruff_check_extra_autofix.py --select PYI002,PYI036,PYI051 typings
 #    uv --quiet run --frozen ruff check typings --fix --unsafe-fixes
 #    uv --quiet run --frozen ruff format typings
 "typings/**" = [
@@ -412,20 +412,7 @@ exclude = [
     "T201",    # Print found. (Eval scripts use print for output.)
 ]
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
-"{*_test.py,tests/*}" = [
-    "INP001",  # Implicit namespace package. (Tests don't need __init__.py.)
-    "PLR2004", # Magic value comparison.
-    "S101",    # Use of `assert` detected.
-    "S301",    # Pickle usage.
-    "SLF001",  # Private member access.
-]
-"docs/**" = [
-    "INP001",  # Standalone scripts.
-    "T201",    # Print found. (CLI tools use print for output.)
-]
-"scripts/**" = [
-    "T201",    # Print found. (CLI tools use print for output.)
-]
+
 [tool.ruff.lint.isort]
 case-sensitive = false
 combine-as-imports = true
@@ -511,9 +498,9 @@ exclude = [
     ".pytest_cache/",
     "build/",
     "dist/",
-    "**/docs/",
     "typings/",
     "**/third_party/",
+    "**/docs/",
 ]
 
 [tool.ty.environment]
