@@ -715,6 +715,7 @@ def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
     )
 
 
+@pytest.mark.cli_python_subprocess
 def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     """Invariant: importing a public change must not pollute source with lint
     violations. A namespace ``replace`` is pure text substitution that preserves
