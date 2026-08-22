@@ -116,7 +116,7 @@ pre-commit = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff" },
     { name = "ruff", specifier = ">=0.15.12" },
-    { name = "ty", specifier = ">=0.0.56" },
+    { name = "ty", specifier = ">=0.0.60,!=0.0.73" },
 ]
 test = [
     { name = "coverage", specifier = "<7.13" },
@@ -128,7 +128,7 @@ test = [
 ]
 typecheck = [
     { name = "basedpyright", specifier = ">=1.10" },
-    { name = "ty", specifier = ">=0.0.56" },
+    { name = "ty", specifier = ">=0.0.60,!=0.0.73" },
 ]
 
 [[package]]
