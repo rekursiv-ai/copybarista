@@ -279,7 +279,7 @@ def load_config(path: Path, *, workflow_name: str = "export") -> WorkflowConfig:
     """
     if path.name == "copy.bara.sky" or path.suffix == ".sky":
         load_copy_bara_sky_config = cast(
-            "_SkyConfigLoader",
+            _SkyConfigLoader,
             import_module("copybarista.copy_bara_sky").load_copy_bara_sky_config,
         )
         return load_copy_bara_sky_config(path, workflow_name=workflow_name)
@@ -529,7 +529,7 @@ def _parse_forbidden_text_rule(idx: int, raw_rule: object) -> ForbiddenTextRule:
     """Parse one `[[leak_check.forbidden_text]]` rule."""
     if not isinstance(raw_rule, dict):
         raise ConfigError("Each leak_check.forbidden_text entry must be a table")
-    raw_rule = cast("dict[str, object]", raw_rule)
+    raw_rule = cast(dict[str, object], raw_rule)
     _check_keys(
         raw_rule,
         {"id", "pattern", "paths", "exclude", "message"},
@@ -567,7 +567,7 @@ def _parse_forbidden_path_rule(idx: int, raw_rule: object) -> ForbiddenPathRule:
     """Parse one `[[leak_check.forbidden_path]]` rule."""
     if not isinstance(raw_rule, dict):
         raise ConfigError("Each leak_check.forbidden_path entry must be a table")
-    raw_rule = cast("dict[str, object]", raw_rule)
+    raw_rule = cast(dict[str, object], raw_rule)
     _check_keys(
         raw_rule,
         {"id", "paths", "message"},
@@ -592,7 +592,7 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
     """Parse one `[[files.copy]]` table into an assembly copy config."""
     if not isinstance(raw_copy, dict):
         raise ConfigError("Each files.copy entry must be a table")
-    raw_copy = cast("dict[str, object]", raw_copy)
+    raw_copy = cast(dict[str, object], raw_copy)
     _check_keys(
         raw_copy,
         {
@@ -637,7 +637,7 @@ def _parse_file_move(idx: int, raw_move: object) -> FileMove:
     """Parse one `[[files.moves]]` table into an ordered placement move."""
     if not isinstance(raw_move, dict):
         raise ConfigError("Each files.moves entry must be a table")
-    raw_move = cast("dict[str, object]", raw_move)
+    raw_move = cast(dict[str, object], raw_move)
     _check_keys(raw_move, {"path", "destination"}, f"files.moves[{idx}]")
     destination = _string(raw_move, "destination", default="")
     if not destination:
@@ -686,7 +686,7 @@ def _parse_file_write(idx: int, raw_write: object) -> FileWrite:
     """Parse one `[[files.write]]` table into a generated file config."""
     if not isinstance(raw_write, dict):
         raise ConfigError("Each files.write entry must be a table")
-    raw_write = cast("dict[str, object]", raw_write)
+    raw_write = cast(dict[str, object], raw_write)
     _check_keys(raw_write, {"path", "content"}, f"files.write[{idx}]")
     path = _relative_path(_string(raw_write, "path"), "files.write.path")
     if not path:
@@ -706,7 +706,7 @@ def _parse_regex_groups(
     raw = raw_transform.get("regex_groups", {})
     if not isinstance(raw, dict):
         raise ConfigError("replace regex_groups must be a table")
-    raw = cast("dict[str, object]", raw)
+    raw = cast(dict[str, object], raw)
     groups: list[tuple[str, str]] = []
     for name, pattern in raw.items():
         if not isinstance(pattern, str):
@@ -725,7 +725,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
     """Parse one `[[transform]]` table into a typed transform config."""
     if not isinstance(raw_transform, dict):
         raise ConfigError("Each transform entry must be a table")
-    raw_transform = cast("dict[str, object]", raw_transform)
+    raw_transform = cast(dict[str, object], raw_transform)
     _check_keys(
         raw_transform,
         {
@@ -1000,7 +1000,7 @@ def _table(
     value = data.get(key, default)
     if not isinstance(value, dict):
         raise ConfigError(f"{key} must be a table")
-    return cast("dict[str, object]", value)
+    return cast(dict[str, object], value)
 
 
 def _list(data: dict[str, object], key: str) -> list[object]:
@@ -1008,7 +1008,7 @@ def _list(data: dict[str, object], key: str) -> list[object]:
     value = data.get(key, [])
     if not isinstance(value, list):
         raise ConfigError(f"{key} must be a list")
-    return cast("list[object]", value)
+    return cast(list[object], value)
 
 
 def _dict_value(
@@ -1020,7 +1020,7 @@ def _dict_value(
     value = data.get(key, default)
     if not isinstance(value, dict):
         return None
-    return cast("dict[str, object]", value)
+    return cast(dict[str, object], value)
 
 
 def _string(
@@ -1044,10 +1044,10 @@ def _string_list(
     value = data.get(key, list(default))
     if not isinstance(value, list):
         raise ConfigError(f"{key} must be a list of strings")
-    value = cast("list[object]", value)
+    value = cast(list[object], value)
     if not all(isinstance(item, str) for item in value):
         raise ConfigError(f"{key} must be a list of strings")
-    return cast("list[str]", value)
+    return cast(list[str], value)
 
 
 def _bool(data: dict[str, object], key: str, default: bool) -> bool:

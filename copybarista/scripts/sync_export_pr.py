@@ -840,13 +840,13 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
     for key in ("tool", "uv", "sources"):
         if not isinstance(table, dict):
             return []
-        table = cast("dict[str, object]", table).get(key, {})
+        table = cast(dict[str, object], table).get(key, {})
     if not isinstance(table, dict):
         return []
     return [
         flag
-        for name, source in cast("dict[str, object]", table).items()
-        if isinstance(source, dict) and "branch" in cast("dict[str, object]", source)
+        for name, source in cast(dict[str, object], table).items()
+        if isinstance(source, dict) and "branch" in cast(dict[str, object], source)
         for flag in ("--upgrade-package", name)
     ]
 
@@ -1174,10 +1174,10 @@ def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]
     if not isinstance(parsed, list):
         raise PrReplayError(f"Open PR list for {repo} is not a list.")
     out: list[str] = []
-    for item in cast("list[object]", parsed):
+    for item in cast(list[object], parsed):
         if not isinstance(item, dict):
             continue
-        row = cast("dict[str, object]", item)
+        row = cast(dict[str, object], item)
         branch = str(row.get("headRefName", ""))
         if branch.startswith(prefix):
             out.append(f"#{row.get('number', 0)} {branch}")
@@ -1207,7 +1207,7 @@ def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
     )
     if not isinstance(parsed, dict):
         raise PrReplayError(f"GitHub PR state for branch {branch} is not a mapping.")
-    raw = cast("dict[str, object]", parsed)
+    raw = cast(dict[str, object], parsed)
     number = raw.get("number", 0)
     if not isinstance(number, int):
         raise PrReplayError(f"GitHub PR number for branch {branch} is not an integer.")

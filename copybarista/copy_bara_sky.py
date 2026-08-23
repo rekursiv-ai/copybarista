@@ -542,7 +542,7 @@ class _CopyBaraSkyParser:
                 continue
             if isinstance(item, list):
                 item_transforms: list[Transform] = []
-                for transform in cast("list[object]", item):
+                for transform in cast(list[object], item):
                     if not isinstance(transform, Transform):
                         raise ConfigError(f"Unsupported transformation: {item!r}")
                     item_transforms.append(transform)
@@ -842,7 +842,7 @@ class _CopyBaraSkyParser:
         flat_items: list[object] = []
         for item in items:
             if isinstance(item, list):
-                flat_items.extend(cast("list[object]", item))
+                flat_items.extend(cast(list[object], item))
             else:
                 flat_items.append(item)
         reversed_items: list[object] = []
@@ -1149,7 +1149,7 @@ def _regex_groups(value: object) -> tuple[tuple[str, str], ...]:
         return ()
     if not isinstance(value, dict):
         raise ConfigError("core.replace.regex_groups must be a dict")
-    return tuple(cast("dict[str, str]", value).items())
+    return tuple(cast(dict[str, str], value).items())
 
 
 def _replace_paths(value: object) -> GlobSpec:
@@ -1189,7 +1189,7 @@ def _flatten_transform_items(items: list[object]) -> list[object]:
     flattened: list[object] = []
     for item in items:
         if isinstance(item, list):
-            flattened.extend(cast("list[object]", item))
+            flattened.extend(cast(list[object], item))
         else:
             flattened.append(item)
     return flattened
@@ -1213,7 +1213,7 @@ def _string_tuple(value: object, field: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ConfigError(f"{field} must be a list of strings")
     strings: list[str] = []
-    for item in cast("list[object]", value):
+    for item in cast(list[object], value):
         if not isinstance(item, str):
             raise ConfigError(f"{field} must be a list of strings")
         strings.append(item)
@@ -1224,7 +1224,7 @@ def _object_list(value: object, field: str) -> list[object]:
     """Validate a list expression."""
     if not isinstance(value, list):
         raise ConfigError(f"{field} must be a list")
-    return list(cast("list[object]", value))
+    return list(cast(list[object], value))
 
 
 def _require_string(value: object, field: str) -> str:
