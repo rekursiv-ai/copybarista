@@ -720,7 +720,7 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
     """The import token stays on the credential-free checkout and the PR step."""
     steps = _import_steps(import_workflow(_settings()))
     ledger = steps[_step_index(steps, lambda step: _checkout_path(step) == "target")]
-    with_config = cast("dict[str, Any]", ledger["with"])
+    with_config = cast(dict[str, Any], ledger["with"])
 
     assert with_config.get("persist-credentials") is False
     assert with_config.get("token") == "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}"
@@ -791,7 +791,7 @@ def _import_steps(workflow: str) -> list[dict[str, Any]]:
     """Return the parsed steps of the generated import job, in file order."""
     parsed: Any = yaml.safe_load(workflow)
     steps: Any = parsed["jobs"]["import-change"]["steps"]
-    return [cast("dict[str, Any]", step) for step in cast("list[Any]", steps)]
+    return [cast(dict[str, Any], step) for step in cast(list[Any], steps)]
 
 
 def _step_index(
@@ -808,7 +808,7 @@ def _checkout_path(step: dict[str, Any]) -> str:
     if step.get("uses") != action_ref("actions/checkout"):
         return ""
     with_config: Any = step.get("with", {})
-    return str(cast("dict[str, Any]", with_config).get("path", ""))
+    return str(cast(dict[str, Any], with_config).get("path", ""))
 
 
 def test_workflow_dir_prefers_the_staged_export_over_a_source_only_github(

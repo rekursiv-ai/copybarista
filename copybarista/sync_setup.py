@@ -205,11 +205,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
     sync = raw.get("sync", {})
     if not isinstance(sync, dict):
         raise ConfigError("copybarista.sync.toml must contain a [sync] table.")
-    sync = cast("dict[str, object]", sync)
+    sync = cast(dict[str, object], sync)
     pull_request = raw.get("pull_request", {})
     if not isinstance(pull_request, dict):
         raise ConfigError("copybarista.sync.toml [pull_request] must be a table.")
-    pull_request = cast("dict[str, object]", pull_request)
+    pull_request = cast(dict[str, object], pull_request)
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -850,7 +850,7 @@ def _validate_import_workflow_yaml(
         raise ConfigError(f"Cannot read sync workflow: {err}") from err
     if not isinstance(parsed, dict):
         raise ConfigError("sync-to-source.yml must be a YAML mapping.")
-    workflow = cast("dict[str, object]", parsed)
+    workflow = cast(dict[str, object], parsed)
     jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
     job = _yaml_mapping(jobs.get("import-change"), "jobs.import-change")
     env = _yaml_mapping(job.get("env"), "jobs.import-change.env")
@@ -1090,14 +1090,14 @@ def _yaml_mapping(value: object, name: str) -> dict[str, object]:
     """Return `value` as a YAML mapping or raise a config error."""
     if not isinstance(value, dict):
         raise ConfigError(f"sync-to-source.yml {name} must be a YAML mapping.")
-    return cast("dict[str, object]", value)
+    return cast(dict[str, object], value)
 
 
 def _yaml_list(value: object, name: str) -> list[object]:
     """Return `value` as a YAML list or raise a config error."""
     if not isinstance(value, list):
         raise ConfigError(f"sync-to-source.yml {name} must be a YAML list.")
-    return cast("list[object]", value)
+    return cast(list[object], value)
 
 
 def _required_str(sync: dict[str, object], key: str) -> str:
@@ -1162,12 +1162,12 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
         raise ConfigError(
             f"copybarista.sync.toml sync.{key} must be a list of strings."
         )
-    value = cast("list[object]", value)
+    value = cast(list[object], value)
     if not all(isinstance(item, str) for item in value):
         raise ConfigError(
             f"copybarista.sync.toml sync.{key} must be a list of strings."
         )
-    value = cast("list[str]", value)
+    value = cast(list[str], value)
     if not value and key == "type_check_targets":
         raise ConfigError(
             "copybarista.sync.toml sync.type_check_targets cannot be empty."
