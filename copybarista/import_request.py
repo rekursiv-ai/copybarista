@@ -1148,10 +1148,11 @@ def _reverse_replace_all(*, transforms: tuple[Transform, ...], text: str) -> str
     strings. Forward, a later transform only mops up text an earlier one did not
     consume; reversed, the earlier transform's reverse output becomes visible to
     the later transform's reverse, which re-matches it and doubles the rewrite.
-    The wesearch pair is the canonical case: bare ``loop.wesearch`` <-> ``wesearch``
-    plus dotted ``loop.wesearch.${s}`` <-> ``wesearch.${s}``. Sequentially,
-    ``wesearch.errors`` -> ``loop.wesearch.types.errors`` (bare reverse) -> then the
-    dotted reverse matches ``wesearch.e`` inside it -> ``loop.loop.wesearch.types.errors``.
+    A namespace-rewrite pair is the canonical case: a bare package name mapped
+    from its internal prefix, plus the dotted submodule form of the same rule.
+    Sequentially, the bare reverse re-prefixes the token, and the dotted reverse
+    then matches inside its own output and prefixes it a second time -- the
+    doubled-prefix import that shipped.
 
     A single pass fixes this: scan the ORIGINAL public text once and, at each
     position, take the longest reverse-``before`` match among all transforms,
