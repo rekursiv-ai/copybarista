@@ -8,6 +8,7 @@ import json
 import shutil
 import stat
 import subprocess
+import tempfile
 
 import pytest
 
@@ -28,7 +29,7 @@ from copybarista.import_request import (
     _three_way_merge,
     import_change_request,
 )
-from copybarista.transforms import strip_source_text
+from copybarista.transforms import strip_source_text, uncomment_source_text
 from copybarista.workflow import MoveSequence, _relocate_path
 
 
@@ -1298,6 +1299,242 @@ def test_merge_import_appends_run_when_last_function_wholly_rewritten(tmp_path: 
     assert "secret = 0  # copybarista:internal" in imported
     transform = load_config(config).transforms[0]
     assert strip_source_text(imported, transform) == public_head_module
+
+
+def test_merge_import_leaves_unedited_lines_alone(tmp_path: Path):
+    """An untouched line keeps its source bytes, whatever the reverse would do.
+
+    A namespace-collapse rule is not injective backwards: once the internal
+    prefix is gone, the public text cannot tell a module reference from a path
+    segment, prose, or a URL. Reversing the whole file therefore rewrote lines
+    the public side never edited -- measured on a real export, an XDG namespace
+    segment gained a module prefix and broke the profile directory.
+
+    Only the edited line carries an incoming change; every other line already has
+    authoritative source bytes.
+    """
+    source_module = (
+        "from loop.demo.core import run\n"
+        'PROFILE = data_dir() / "vendor" / "demo" / "cache"\n'
+        'URL = "https://pypi.org/project/demo/"\n'
+        "VALUE = 1\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "loop.demo${b}"
+        after = "demo${b}"
+        regex_groups = { b = "[^A-Za-z0-9_.]" }
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    exported = source_module.replace("loop.demo.core", "demo.core")
+    public_head_module = exported.replace("VALUE = 1", "VALUE = 2")
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(exported, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    assert "VALUE = 2" in imported
+    assert 'data_dir() / "vendor" / "demo" / "cache"' in imported
+    assert 'URL = "https://pypi.org/project/demo/"' in imported
+    assert "from loop.demo.core import run" in imported
+
+
+def test_merge_import_preserves_unedited_lines_when_export_reorders(tmp_path: Path):
+    """Restoration must survive an export that reorders lines.
+
+    The export runs isort under the PUBLIC namespace, so imports can land in a
+    different order than source. An earlier attempt aligned raw source against
+    the export and matched only lines no rule rewrote, dropping every reordered
+    or renamed line back onto the non-injective guess.
+    """
+    source_module = (
+        "from loop.demo.zeta import z\n"
+        "from loop.demo.alpha import a\n"
+        'PROFILE = data_dir() / "vendor" / "demo" / "cache"\n'
+        "VALUE = 1\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "loop.demo${b}"
+        after = "demo${b}"
+        regex_groups = { b = "[^A-Za-z0-9_.]" }
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    exported = source_module.replace("loop.demo.", "demo.")
+    public_head_module = exported.replace("VALUE = 1", "VALUE = 2")
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(exported, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    assert "VALUE = 2" in imported
+    assert 'data_dir() / "vendor" / "demo" / "cache"' in imported
+    assert "from loop.demo.zeta import z" in imported
+    assert "from loop.demo.alpha import a" in imported
+
+
+def test_successful_import_leaves_no_backup_tree(tmp_path: Path):
+    """The rollback snapshot must be removed when the import succeeds.
+
+    Cleanup lived only inside the rollback path, so every successful import left
+    a full copy of each touched file under a ``mkdtemp`` root -- source text
+    accumulating in the system temp dir for the process's lifetime and beyond.
+    """
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 2\n", encoding="utf-8"
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+    before = set(Path(tempfile.gettempdir()).glob("copybarista-import-backup-*"))
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            verify=False,
+        )
+    )
+
+    after = set(Path(tempfile.gettempdir()).glob("copybarista-import-backup-*"))
+    assert after == before
+
+
+def test_merge_import_restores_uncomment_block(tmp_path: Path):
+    """An ``uncomment`` block must reverse back to its commented source form.
+
+    Export replaces the block with its uncommented body, so public holds a
+    transformed form rather than a subset. Reaching the ``replace`` bucket, its
+    empty ``before``/``after`` reversed as a no-op and the markers were written
+    away permanently -- re-export then reproduced public, so nothing downstream
+    noticed.
+    """
+    source_module = (
+        'VALUE = "hello"\n'
+        "# copybarista:external:start\n"
+        "# PUBLIC_ONLY = 1\n"
+        "# copybarista:external:end\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "uncomment"
+        path = "pkg/*.py"
+        start = "# copybarista:external:start"
+        end = "# copybarista:external:end"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    transform = load_config(config).transforms[0]
+    exported, _count = uncomment_source_text(source_module, transform)
+    public_head_module = exported.replace('"hello"', '"hello world"')
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(exported, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    assert '"hello world"' in imported
+    assert "# copybarista:external:start" in imported
+    assert "# PUBLIC_ONLY = 1" in imported
+    assert uncomment_source_text(imported, transform)[0] == public_head_module
 
 
 def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path):

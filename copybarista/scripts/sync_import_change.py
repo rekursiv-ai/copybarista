@@ -364,8 +364,11 @@ def _run_import_change(
                 # Merge imports tolerate a source that has drifted ahead of the
                 # public base (e.g. a change applied to source before its public
                 # commit imports), reconciling each file by three-way merge
-                # instead of demanding exact base reproduction. With no drift
-                # this is byte-identical to a strict import.
+                # instead of demanding exact base reproduction.
+                #
+                # Not equivalent to strict even with no drift: strict also runs
+                # the injective-reverse guard, which merge replaces with a
+                # per-file comparison against the source's own export.
                 "--merge-import",
                 "--json",
             ],

@@ -306,7 +306,7 @@ def _uncomment(
         if path.is_symlink():
             continue
         original = _read_text(path)
-        updated, count = _uncomment_text(original, transform)
+        updated, count = uncomment_source_text(original, transform)
         if count == 0 or updated == original:
             continue
         path.write_text(updated, encoding="utf-8")
@@ -327,8 +327,12 @@ def _uncomment(
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
 
 
-def _uncomment_text(text: str, transform: Transform) -> tuple[str, int]:
-    """Uncomment single-line markers and block-delimited regions."""
+def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
+    """Uncomment single-line markers and block-delimited regions.
+
+    Public so the importer can reverse an ``uncomment`` by locating each source
+    block's exported form; a second copy of this walk would drift from it.
+    """
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
