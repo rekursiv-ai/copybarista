@@ -502,6 +502,13 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
             )
         if transform.inclusive:
             end_idx += len(transform.end)
+            # Cut from the marker's OWN line start: ``find`` returns the marker
+            # offset, so an indented block left its leading whitespace behind as
+            # a stub line. ``ruff_format`` then deletes that stub, and reversal
+            # could never reproduce the public text from the stubbed form.
+            line_start = updated.rfind("\n", 0, start_idx) + 1
+            if not updated[line_start:start_idx].strip():
+                start_idx = line_start
             updated = _collapse_removed_block_gap(
                 updated[:start_idx], updated[end_idx:]
             )
@@ -718,6 +725,11 @@ def _strip_blocks_regions(
             )
         if transform.inclusive:
             end_idx += len(transform.end)
+            # Mirror ``_strip_blocks``: the cut starts at the marker's own line
+            # start so an indented block leaves no whitespace stub.
+            line_start = updated.rfind("\n", 0, start_idx) + 1
+            if not updated[line_start:start_idx].strip():
+                start_idx = line_start
             removed = updated[start_idx:end_idx]
             after = updated[end_idx:]
             # Match _collapse_removed_block_gap: when kept text before the block

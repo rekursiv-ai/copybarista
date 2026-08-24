@@ -21,10 +21,12 @@ from copybarista.import_request import (
     PathMapper,
     TreeSnapshot,
     _anchor_source_only_regions,
+    _recomment_block,
     _removed_regions,
     _reverse_file_moves,
     _reverse_relocation,
     _ruff_format_matches,
+    _splice_public_edits,
     _splice_source_only_regions,
     _three_way_merge,
     import_change_request,
@@ -1439,7 +1441,9 @@ def test_merge_import_preserves_unedited_lines_when_export_reorders(tmp_path: Pa
     assert "from loop.demo.alpha import a" in imported
 
 
-def test_successful_import_leaves_no_backup_tree(tmp_path: Path):
+def test_successful_import_leaves_no_backup_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """The rollback snapshot must be removed when the import succeeds.
 
     Cleanup lived only inside the rollback path, so every successful import left
@@ -1452,7 +1456,11 @@ def test_successful_import_leaves_no_backup_tree(tmp_path: Path):
         "from copybarista.public import api\nVALUE = 2\n", encoding="utf-8"
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
-    before = set(Path(tempfile.gettempdir()).glob("copybarista-import-backup-*"))
+    # Private temp root: globbing the shared one counts a concurrent xdist
+    # worker's backup as this import's.
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
 
     import_change_request(
         ImportRequest(
@@ -1465,8 +1473,243 @@ def test_successful_import_leaves_no_backup_tree(tmp_path: Path):
         )
     )
 
-    after = set(Path(tempfile.gettempdir()).glob("copybarista-import-backup-*"))
-    assert after == before
+    assert not list(scratch.glob("copybarista-import-backup-*"))
+
+
+def test_merge_import_keeps_source_only_lines_a_deletion_spans():
+    """Deleting the lines around a stripped region must not delete the region.
+
+    A public hunk is expressed in EXPORT lines, which do not include source-only
+    ones, so replacing the hunk's whole source span consumed any stripped region
+    inside it -- measured at 30 of 600 randomised splices. Asserted on the
+    splice itself: the importer's later gates reject a lossy reversal, which
+    hides the loss behind an error rather than showing it.
+    """
+    source_lines = ["a\n", "SRC_ONLY\n", "b\n", "c\n"]
+    # The export drops the source-only line.
+    ours_lines = ["a\n", "b\n", "c\n"]
+    # The public edit deletes BOTH lines bracketing it.
+    reversed_lines = ["c\n"]
+
+    spliced = _splice_public_edits(
+        reversed_ours_lines=ours_lines,
+        reversed_lines=reversed_lines,
+        source_lines=source_lines,
+    )
+
+    assert "SRC_ONLY\n" in spliced.splitlines(keepends=True)
+    assert "a\n" not in spliced.splitlines(keepends=True)
+
+
+def test_recomment_block_rebuilds_an_inline_marker():
+    """An inline marker carries body and marker on ONE line; rebuild it.
+
+    Treating it as a block prepended the pre-edit source line and appended the
+    edit beneath it, so the public change was discarded and the old value
+    re-exported.
+    """
+    transform = Transform(
+        id="u",
+        type="uncomment",
+        path="pkg/*.py",
+        start="# copybarista:external",
+    )
+
+    out = _recomment_block(
+        '    "RenamedCLI",\n',
+        '    # "PublicCLI",  # copybarista:external\n',
+        transform,
+    )
+
+    assert "PublicCLI" not in out
+    assert out == '    # "RenamedCLI",  # copybarista:external\n'
+
+
+def test_recomment_keeps_markers_when_another_line_also_changed(tmp_path: Path):
+    """An edit elsewhere in the file must not disable block reconstruction.
+
+    Reconstruction required the surrounding public text to be byte-identical, so
+    any unrelated edit -- or an earlier block already restored -- wrote the
+    uncommented body to source. Re-export still reproduced the public head, so
+    no downstream gate caught the lost markers.
+    """
+    source_module = (
+        "HEADER = 1\n"
+        "# copybarista:external:start\n"
+        "# PUBLIC_ONLY = 1\n"
+        "# copybarista:external:end\n"
+        "TAIL = 9\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "uncomment"
+        path = "pkg/*.py"
+        start = "# copybarista:external:start"
+        end = "# copybarista:external:end"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    transform = loaded.transforms[0]
+    exported, _count = uncomment_source_text(source_module, transform)
+    edited = exported.replace("PUBLIC_ONLY = 1", "PUBLIC_ONLY = 2").replace(
+        "HEADER = 1", "HEADER = 7"
+    )
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    importer = ChangeRequestImporter(
+        config=loaded,
+        public_base=tmp_path / "pb",
+        public_head=tmp_path / "ph",
+        source_base=source_base,
+        destination=tmp_path / "dest",
+        verify=False,
+        merge_import=True,
+    )
+
+    reversed_text = importer._recomment_source_blocks(
+        public_path="pkg/m.py", transform=transform, content=edited.encode()
+    ).decode()
+
+    assert "# copybarista:external:start" in reversed_text
+    assert "# PUBLIC_ONLY = 2" in reversed_text
+    assert uncomment_source_text(reversed_text, transform)[0] == edited
+
+
+def test_uncomment_reverse_anchors_block_to_its_own_line(tmp_path: Path):
+    """The exported body must be matched as whole lines, never as a substring.
+
+    A bare ``str.replace`` hit the body inside an earlier line that merely ended
+    with the same text, splicing the markers mid-identifier into a tree that no
+    longer exports. Asserted on the reversal itself: ``_splice_public_edits``
+    rebuilds from source and would mask the corruption end-to-end.
+    """
+    source_module = (
+        "OTHER_VALUE = 1\n"
+        "# copybarista:external:start\n"
+        "# VALUE = 1\n"
+        "# copybarista:external:end\n"
+        "TAIL = 9\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "uncomment"
+        path = "pkg/*.py"
+        start = "# copybarista:external:start"
+        end = "# copybarista:external:end"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    transform = loaded.transforms[0]
+    exported, _count = uncomment_source_text(source_module, transform)
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+
+    importer = ChangeRequestImporter(
+        config=loaded,
+        public_base=tmp_path / "public-base",
+        public_head=tmp_path / "public-head",
+        source_base=source_base,
+        destination=tmp_path / "destination",
+        verify=False,
+        merge_import=True,
+    )
+    reversed_bytes = importer._recomment_source_blocks(
+        public_path="pkg/m.py", transform=transform, content=exported.encode()
+    )
+
+    assert reversed_bytes.decode() == source_module
+
+
+def test_merge_import_recomments_edited_uncomment_block(tmp_path: Path):
+    """An edit INSIDE an uncomment block keeps the markers and comment prefix.
+
+    Restoration matched the exported body verbatim, so any edit to it fell
+    through and wrote the uncommented text to source. Re-export reproduced the
+    public head from that, so no downstream gate caught the lost markers.
+    """
+    source_module = (
+        'VALUE = "hello"\n'
+        "# copybarista:external:start\n"
+        "# PUBLIC_ONLY = 1\n"
+        "# copybarista:external:end\n"
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "uncomment"
+        path = "pkg/*.py"
+        start = "# copybarista:external:start"
+        end = "# copybarista:external:end"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    transform = load_config(config).transforms[0]
+    exported, _count = uncomment_source_text(source_module, transform)
+    public_head_module = exported.replace("PUBLIC_ONLY = 1", "PUBLIC_ONLY = 2")
+
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/m.py").write_text(source_module, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    (public_base / "pkg/m.py").write_text(exported, encoding="utf-8")
+    public_head = tmp_path / "public-head"
+    (public_head / "pkg").mkdir(parents=True)
+    (public_head / "pkg/m.py").write_text(public_head_module, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        )
+    )
+
+    imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
+    assert imported == source_module.replace("PUBLIC_ONLY = 1", "PUBLIC_ONLY = 2")
+    assert uncomment_source_text(imported, transform)[0] == public_head_module
 
 
 def test_merge_import_restores_uncomment_block(tmp_path: Path):
@@ -1531,9 +1774,7 @@ def test_merge_import_restores_uncomment_block(tmp_path: Path):
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
-    assert '"hello world"' in imported
-    assert "# copybarista:external:start" in imported
-    assert "# PUBLIC_ONLY = 1" in imported
+    assert imported == source_module.replace('"hello"', '"hello world"')
     assert uncomment_source_text(imported, transform)[0] == public_head_module
 
 

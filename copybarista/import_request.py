@@ -642,17 +642,15 @@ class ChangeRequestImporter:
             )
         except UnicodeDecodeError:
             return reversed_whole
-        # Unequal lengths mean the pairing below would misattribute.
-        if len(reversed_ours_lines) != len(source_lines):
-            return reversed_whole
-        # Unique keys only: a repeated line cannot be attributed to one source
-        # line.
-        mistaken = {
-            guessed: actual
-            for guessed, actual in zip(reversed_ours_lines, source_lines, strict=True)
-            if guessed != actual and reversed_ours_lines.count(guessed) == 1
-        }
-        return "".join(mistaken.get(line, line) for line in reversed_lines).encode()
+        # Rebuild against SOURCE, splicing in only the public edit's own hunks.
+        # Restoring line-by-line cannot recover a source line the export dropped
+        # entirely (ruff prunes an import a stripped region was the sole user
+        # of), because that line has no counterpart in reversal space to key on.
+        return _splice_public_edits(
+            reversed_ours_lines=reversed_ours_lines,
+            reversed_lines=reversed_lines,
+            source_lines=source_lines,
+        ).encode()
 
     def _merge_change(
         self, *, change: ImportChange, source_export: Path
@@ -912,9 +910,9 @@ class ChangeRequestImporter:
         back. Left to the ``replace`` bucket it reversed as a no-op in merge mode
         (its ``before``/``after`` are empty) and destroyed the markers.
 
-        A block whose exported form the public edit rewrote is skipped; the
-        re-export gate downstream rejects a source that no longer reproduces
-        public.
+        A block the public edit rewrote is re-commented in place, markers and
+        all: skipping it wrote the uncommented body straight to source, which
+        re-exports to the same public text and so is caught by nothing.
         """
         source_path = self.source_base / _source_path(
             config=self.config, public_path=public_path
@@ -932,10 +930,36 @@ class ChangeRequestImporter:
                 f"Public path requires text reversal but is not UTF-8: {public_path}"
             ) from err
         result = public_text
+        # Advances past each restored block, so two blocks with identical bodies
+        # do not both resolve to the first occurrence.
+        search_from = 0
         for source_block in _uncomment_source_blocks(source_text, transform):
             exported, _count = uncomment_source_text(source_block, transform)
-            if exported and exported != source_block and exported in result:
-                result = result.replace(exported, source_block, 1)
+            if not exported or exported == source_block:
+                continue
+            replaced = _replace_whole_lines(
+                text=result,
+                needle=exported,
+                replacement=source_block,
+                search_from=search_from,
+            )
+            if replaced is not None:
+                result, search_from = replaced
+                continue
+            whole_export, _total = uncomment_source_text(source_text, transform)
+            edited = _edited_block_body(
+                result=result, exported=exported, whole_export=whole_export
+            )
+            if edited is None:
+                continue
+            replaced = _replace_whole_lines(
+                text=result,
+                needle=edited,
+                replacement=_recomment_block(edited, source_block, transform),
+                search_from=search_from,
+            )
+            if replaced is not None:
+                result, search_from = replaced
         return result.encode()
 
     def _reinsert_source_only_regions(
@@ -1454,6 +1478,164 @@ def _reverse_else_blocks(
         if exported and exported in result:
             result = result.replace(exported, source_block, 1)
     return result
+
+
+def _replace_whole_lines(
+    *, text: str, needle: str, replacement: str, search_from: int = 0
+) -> tuple[str, int] | None:
+    """Replace ``needle`` where it occupies whole lines at/after ``search_from``.
+
+    A bare ``str.replace`` matched the exported body anywhere, including as the
+    suffix of an unrelated line -- splicing a block's markers into the middle of
+    that line and producing a tree that no longer exports.
+
+    Returns the new text and the line index just past the replacement, so a
+    caller restoring several blocks with IDENTICAL bodies advances past each and
+    does not resolve them all to the first occurrence.
+    """
+    needle_lines = needle.splitlines(keepends=True)
+    if not needle_lines:
+        return None
+    text_lines = text.splitlines(keepends=True)
+    span = len(needle_lines)
+    for index in range(search_from, len(text_lines) - span + 1):
+        if text_lines[index : index + span] == needle_lines:
+            replaced = [*text_lines[:index], replacement, *text_lines[index + span :]]
+            return "".join(replaced), index + len(replacement.splitlines(keepends=True))
+    return None
+
+
+def _edited_block_body(*, result: str, exported: str, whole_export: str) -> str | None:
+    """Return the public text now occupying an ``uncomment`` block's position.
+
+    Located by ALIGNING the original export against the incoming text, not by
+    requiring the surrounding lines to be byte-identical: an edit anywhere else
+    in the file -- or an earlier block already restored into ``result`` -- would
+    otherwise disable reconstruction and write the uncommented body to source.
+
+    Returns ``None`` when the lines bracketing the block were themselves
+    rewritten, leaving no determined position.
+    """
+    export_lines = whole_export.splitlines(keepends=True)
+    block_lines = exported.splitlines(keepends=True)
+    start = next(
+        (
+            index
+            for index in range(len(export_lines) - len(block_lines) + 1)
+            if export_lines[index : index + len(block_lines)] == block_lines
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    result_lines = result.splitlines(keepends=True)
+    aligned = _align_kept_to_public(export_lines, result_lines)
+    # The block's own lines may be edited past recognition, so bound it by the
+    # nearest surviving line on each side.
+    before = _max_aligned(aligned, 0, start)
+    after = _min_aligned(aligned, start + len(block_lines), len(aligned))
+    lower = 0 if before is None else before + 1
+    upper = len(result_lines) if after is None else after
+    if upper < lower:
+        return None
+    return "".join(result_lines[lower:upper])
+
+
+def _recomment_block(edited_body: str, source_block: str, transform: Transform) -> str:
+    """Wrap an edited public body back in its source markers, commented.
+
+    The inline form is ONE line carrying both the body and a trailing marker, so
+    it is rebuilt rather than bracketed: prepending the source line would keep
+    the pre-edit body and append the edit beneath it, discarding the change.
+    """
+    marker_lines = source_block.splitlines(keepends=True)
+    start_line = marker_lines[0] if marker_lines else ""
+    if transform.start not in start_line:
+        return source_block
+    if not transform.end:
+        body = edited_body.rstrip("\n")
+        if not body:
+            return source_block
+        return f"{_comment_line(f'{body}  {transform.start}')}\n"
+    end_line = marker_lines[-1] if len(marker_lines) > 1 else ""
+    if transform.end not in end_line:
+        return source_block
+    commented = "".join(
+        _comment_line(line) for line in edited_body.splitlines(keepends=True)
+    )
+    return f"{start_line}{commented}{end_line}"
+
+
+def _comment_line(line: str) -> str:
+    """Prefix one line with ``# ``, preserving indentation and blank lines."""
+    stripped = line.lstrip()
+    if not stripped.strip():
+        return line
+    indent = line[: len(line) - len(stripped)]
+    return f"{indent}# {stripped}"
+
+
+def _splice_public_edits(
+    *,
+    reversed_ours_lines: list[str],
+    reversed_lines: list[str],
+    source_lines: list[str],
+) -> str:
+    """Return source with only the public edit's hunks applied.
+
+    Source is the base, not the reversal: a reversal is a guess wherever a
+    transform is not injective, and it has already lost any source line the
+    export dropped. Diffing the pre-edit reversal against the post-edit one
+    isolates what the contributor actually changed; each such hunk is mapped
+    onto source through a second alignment and spliced there.
+    """
+    edit = difflib.SequenceMatcher(
+        a=reversed_ours_lines, b=reversed_lines, autojunk=False
+    )
+    ours_to_source = _align_kept_to_public(reversed_ours_lines, source_lines)
+    # Source lines the export dropped, identified POSITIONALLY: an index that no
+    # export line aligns to and that lies strictly between two aligned ones. A
+    # mis-reversed line also fails to align, but it sits at the boundary of its
+    # own hunk rather than between neighbours, so this keeps the two apart.
+    exported = {index for index in ours_to_source if index is not None}
+    dropped = {
+        index
+        for index in range(len(source_lines))
+        if index not in exported
+        and any(value is not None and value < index for value in ours_to_source)
+        and any(value is not None and value > index for value in ours_to_source)
+    }
+    result: list[str] = []
+    cursor = 0
+    for tag, a_start, a_stop, b_start, b_stop in edit.get_opcodes():
+        if tag == "equal":
+            continue
+        anchor = _min_aligned(ours_to_source, a_start, a_stop)
+        end = _max_aligned(ours_to_source, a_start, a_stop)
+        if anchor is None or end is None:
+            # Nothing in this hunk's pre-image aligns to source. For a true
+            # insertion (``a_start == a_stop``) there is no source span to
+            # replace, so place it after the preceding source text. For a
+            # REPLACEMENT the span exists but was mis-reversed, so bound it by
+            # the surrounding aligned lines -- inserting instead would emit the
+            # edit AND keep the line it replaces.
+            preceding = _max_aligned(ours_to_source, 0, a_start)
+            anchor = 0 if preceding is None else preceding + 1
+            if a_start == a_stop:
+                end = anchor - 1
+            else:
+                following = _min_aligned(ours_to_source, a_stop, len(ours_to_source))
+                end = (len(source_lines) if following is None else following) - 1
+        result.extend(source_lines[cursor:anchor])
+        result.extend(reversed_lines[b_start:b_stop])
+        result.extend(
+            line
+            for index, line in enumerate(source_lines[anchor : end + 1], start=anchor)
+            if index in dropped
+        )
+        cursor = end + 1
+    result.extend(source_lines[cursor:])
+    return "".join(result)
 
 
 def _uncomment_source_blocks(source_text: str, transform: Transform) -> list[str]:
