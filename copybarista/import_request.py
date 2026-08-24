@@ -31,6 +31,7 @@ from copybarista.transforms import (
     line_has_marker_token,
     strip_source_regions,
     strip_source_text,
+    uncomment_source_text,
 )
 
 
@@ -443,6 +444,8 @@ class ChangeRequestImporter:
         except Exception:
             _restore_originals(originals)
             raise
+        finally:
+            _discard_backups(originals)
         return ImportResult(changes=applied)
 
     def _apply_change(self, change: ImportChange) -> ImportChange:
@@ -465,8 +468,10 @@ class ChangeRequestImporter:
             return change
         if public_path.is_dir():
             raise ImportRequestError(f"Cannot import directory change: {change.public}")
-        head_data = self._reverse_content(
-            public_path=change.public, data=public_path.read_bytes()
+        head_data = self._reverse_changed_lines(
+            public_path=change.public,
+            merged_public=public_path.read_bytes(),
+            ours_public=self._public_base_bytes(change.public),
         )
         if change.action == "type_changed" or target.is_symlink():
             _delete_path(target)
@@ -579,6 +584,76 @@ class ChangeRequestImporter:
                 return source_file.read_bytes()
         return b""
 
+    def _public_base_bytes(self, public_path: str) -> bytes:
+        """Return the public base's bytes for a path, or empty when absent."""
+        base_path = self.public_base / public_path
+        if base_path.is_file() and not base_path.is_symlink():
+            return base_path.read_bytes()
+        return b""
+
+    def _reverse_changed_lines(
+        self,
+        *,
+        public_path: str,
+        merged_public: bytes,
+        ours_public: bytes,
+    ) -> bytes:
+        """Reverse the public text, then restore lines the edit never touched.
+
+        A namespace-collapse reverse is a guess: once the internal prefix is
+        gone, public text cannot distinguish a module reference from a path
+        segment or prose. Where the source still holds the real text, use it.
+
+        Whole-document, not per line: ``strip_block`` and ``internal_lines``
+        reinsert multi-line regions.
+
+        Args:
+          public_path: Public repository path being imported.
+          merged_public: Public-space bytes to reverse.
+          ours_public: The source's own export, i.e. public text before the edit.
+
+        Returns:
+          source_bytes: Reversed content, with mis-guessed lines corrected.
+
+        """
+        reversed_whole = self._reverse_content(
+            public_path=public_path, data=merged_public
+        )
+        source_file = self.source_base / _source_path(
+            config=self.config, public_path=public_path
+        )
+        if not source_file.is_file() or source_file.is_symlink():
+            return reversed_whole
+        try:
+            source_lines = source_file.read_text(encoding="utf-8").splitlines(
+                keepends=True
+            )
+            reversed_lines = reversed_whole.decode().splitlines(keepends=True)
+        except UnicodeDecodeError:
+            return reversed_whole
+
+        # Reversing the pre-edit export exposes what the reverse gets wrong on
+        # text whose true form is known, so the two can be paired.
+        try:
+            reversed_ours_lines = (
+                self._reverse_content(public_path=public_path, data=ours_public)
+                .decode()
+                .splitlines(keepends=True)
+            )
+        except UnicodeDecodeError:
+            return reversed_whole
+        # Unequal lengths mean the pairing below would misattribute.
+        if len(reversed_ours_lines) != len(source_lines):
+            return reversed_whole
+        # Unique keys only: a repeated line cannot be attributed to one source
+        # line.
+        mistaken = {
+            guessed: actual
+            for guessed, actual in zip(reversed_ours_lines, source_lines, strict=True)
+            if guessed != actual and reversed_ours_lines.count(guessed) == 1
+        }
+        return "".join(mistaken.get(line, line) for line in reversed_lines).encode()
+
     def _merge_change(
         self, *, change: ImportChange, source_export: Path
     ) -> tuple[ImportChange, bool]:
@@ -635,8 +710,10 @@ class ChangeRequestImporter:
             # (which can raise on marker text), write, or reformat them -- report
             # the conflict and leave the destination untouched.
             return _with_outcome(change, "merged"), True
-        merged_source = self._reverse_content(
-            public_path=change.public, data=merged_public
+        merged_source = self._reverse_changed_lines(
+            public_path=change.public,
+            merged_public=merged_public,
+            ours_public=ours_public,
         )
         # Mirror _apply_change: a drifted symlink target must be removed, not
         # written through -- otherwise write_bytes follows the link and mutates
@@ -670,6 +747,15 @@ class ChangeRequestImporter:
             if transform.type in ("move", "ruff_format") or not transform.reversible:
                 continue
             if not _matches_transform(transform, match_path, self.config.globstar):
+                continue
+            if transform.type == "uncomment":
+                content = self._flush_reverse_replaces(
+                    public_path=public_path, transforms=pending, content=content
+                )
+                pending = []
+                content = self._recomment_source_blocks(
+                    public_path=public_path, transform=transform, content=content
+                )
                 continue
             if transform.type in ("strip_block", "internal_lines"):
                 content = self._flush_reverse_replaces(
@@ -706,21 +792,21 @@ class ChangeRequestImporter:
             raise ImportRequestError(
                 f"Public path requires text reversal but is not UTF-8: {public_path}"
             ) from err
-        # A regex_groups transform anchors its reverse symmetrically, so the
-        # reversal is unambiguous by construction -- no heuristic guard.
-        # For a plain literal transform, strict imports use this guard as a
-        # proxy for "is the reversal unambiguous"; merge imports establish
-        # that ground truth directly by comparing the source's actual export
-        # to the public base/head, so the heuristic is redundant and wrong
-        # there (the source legitimately carries exported text from drift).
+        # Strict imports use this guard as a proxy for "is the reversal
+        # unambiguous"; merge imports establish that ground truth directly by
+        # comparing the source's actual export to the public base/head, so the
+        # heuristic is redundant and wrong there (the source legitimately
+        # carries exported text from drift).
+        #
+        # ``regex_groups`` transforms are not exempt: a boundary anchor still
+        # matches the bare public name in a URL, a path segment, or prose.
         if not self.merge_import:
             for transform in transforms:
-                if not transform.regex_groups:
-                    self._check_injective_reverse(
-                        public_path=public_path,
-                        transform=transform,
-                        text=text,
-                    )
+                self._check_injective_reverse(
+                    public_path=public_path,
+                    transform=transform,
+                    text=text,
+                )
         return _reverse_replace_all(transforms=tuple(transforms), text=text).encode()
 
     def _check_injective_reverse(
@@ -764,11 +850,12 @@ class ChangeRequestImporter:
             # ``pkg``) with no self-overlap, so the proxy is exact in practice.
             before_text = transform.before
             explained = (
-                source_text.count(before_text) * before_text.count(reverse_before)
+                _match_count(transform, before_text, source_text)
+                * before_text.count(reverse_before)
                 if before_text and reverse_before in before_text
                 else 0
             )
-            if source_text.count(reverse_before) > explained:
+            if _match_count(transform, reverse_before, source_text) > explained:
                 raise ImportRequestError(
                     f"Source base already contains exported replacement text "
                     f"for transform '{transform.id}': {public_path}"
@@ -779,10 +866,10 @@ class ChangeRequestImporter:
                 path=base_path,
                 label=f"Public base path is not UTF-8: {public_path}",
             )
-            base_count = base_text.count(reverse_before)
+            base_count = _match_count(transform, reverse_before, base_text)
         else:
             base_count = 0
-        if text.count(reverse_before) > base_count:
+        if _match_count(transform, reverse_before, text) > base_count:
             raise ImportRequestError(
                 f"Public path adds exported replacement text for transform "
                 f"'{transform.id}': {public_path}"
@@ -812,6 +899,44 @@ class ChangeRequestImporter:
                     continue
                 ids.append(transform.id)
         return tuple(ids)
+
+    def _recomment_source_blocks(
+        self, *, public_path: str, transform: Transform, content: bytes
+    ) -> bytes:
+        """Restore an ``uncomment`` transform's commented source form.
+
+        Export replaces each marked block with its uncommented body, so the
+        public text holds a TRANSFORMED form rather than a subset -- the same
+        shape as an ``else``-branch ``strip_block``, and reversed the same way:
+        locate each source block's exported form and substitute the source block
+        back. Left to the ``replace`` bucket it reversed as a no-op in merge mode
+        (its ``before``/``after`` are empty) and destroyed the markers.
+
+        A block whose exported form the public edit rewrote is skipped; the
+        re-export gate downstream rejects a source that no longer reproduces
+        public.
+        """
+        source_path = self.source_base / _source_path(
+            config=self.config, public_path=public_path
+        )
+        if not source_path.exists() or source_path.is_symlink():
+            return content
+        source_text = _read_import_text(
+            path=source_path,
+            label=f"Source base path is not UTF-8: {source_path}",
+        )
+        try:
+            public_text = content.decode()
+        except UnicodeDecodeError as err:
+            raise ImportRequestError(
+                f"Public path requires text reversal but is not UTF-8: {public_path}"
+            ) from err
+        result = public_text
+        for source_block in _uncomment_source_blocks(source_text, transform):
+            exported, _count = uncomment_source_text(source_block, transform)
+            if exported and exported != source_block and exported in result:
+                result = result.replace(exported, source_block, 1)
+        return result.encode()
 
     def _reinsert_source_only_regions(
         self, *, public_path: str, transform: Transform, content: bytes
@@ -1096,6 +1221,21 @@ def _has_explicit_reversal(transform: Transform) -> bool:
     return bool(transform.reverse_before or transform.reverse_after)
 
 
+def _match_count(transform: Transform, template: str, text: str) -> int:
+    """Count occurrences of one side of a transform in ``text``.
+
+    A ``regex_groups`` template is counted through its compiled pattern, so the
+    declared boundary anchors apply. Counting the raw string instead treats
+    ``${b}`` as literal and finds nothing, which silently retires the guard for
+    exactly the rules whose anchors it needs to respect.
+    """
+    if not transform.regex_groups:
+        return text.count(template)
+    return compile_replace(
+        before=template, after=template, regex_groups=transform.regex_groups
+    ).count(text)
+
+
 def _reverse_before(transform: Transform) -> str:
     """Return text to find when reversing this transform."""
     if _has_explicit_reversal(transform):
@@ -1314,6 +1454,35 @@ def _reverse_else_blocks(
         if exported and exported in result:
             result = result.replace(exported, source_block, 1)
     return result
+
+
+def _uncomment_source_blocks(source_text: str, transform: Transform) -> list[str]:
+    """Return each verbatim source region an ``uncomment`` transform rewrites.
+
+    A block form spans ``start``..``end``; the inline form is the single line
+    carrying the marker.
+    """
+    start = transform.start
+    if not start:
+        return []
+    lines = source_text.splitlines(keepends=True)
+    blocks: list[str] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        if transform.end and start in lines[index]:
+            block_start = index
+            index += 1
+            while index < total and transform.end not in lines[index]:
+                index += 1
+            if index < total:
+                index += 1
+                blocks.append("".join(lines[block_start:index]))
+            continue
+        if not transform.end and line_has_marker_token(lines[index], start):
+            blocks.append(lines[index])
+        index += 1
+    return blocks
 
 
 def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
@@ -1689,9 +1858,6 @@ def _capture_originals(
 
 def _restore_originals(originals: tuple[_OriginalPath, ...]) -> None:
     """Restore destination paths captured before a failed import."""
-    backup_parents = {
-        original.backup.parent for original in originals if original.backup is not None
-    }
     for original in reversed(originals):
         _delete_path(original.path)
         if original.backup is None:
@@ -1701,7 +1867,13 @@ def _restore_originals(originals: tuple[_OriginalPath, ...]) -> None:
             shutil.copytree(original.backup, original.path, symlinks=True)
         else:
             shutil.copy2(original.backup, original.path, follow_symlinks=False)
-    for parent in backup_parents:
+
+
+def _discard_backups(originals: tuple[_OriginalPath, ...]) -> None:
+    """Remove the rollback snapshot tree, on success and on failure alike."""
+    for parent in {
+        original.backup.parent for original in originals if original.backup is not None
+    }:
         shutil.rmtree(parent, ignore_errors=True)
 
 
