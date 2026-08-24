@@ -225,6 +225,43 @@ def test_strip_block_removes_inclusive_markers(tmp_path: Path):
     ]
 
 
+def test_strip_block_removes_an_indented_block_whole_line(tmp_path: Path):
+    """An indented block must not leave its leading whitespace behind.
+
+    ``find`` returns the marker's offset, so the indent before it survived the
+    cut as a whitespace-only line. ``ruff_format`` then deleted that stub on
+    export, and no reversal could reproduce the public text from the stubbed
+    form -- an ordinary public edit wedged the import.
+    """
+    path = tmp_path / "m.py"
+    path.write_text(
+        "def f():\n"
+        "    keep = 1\n"
+        "    # copybarista:internal:start\n"
+        "    secret = 2\n"
+        "    # copybarista:internal:end\n"
+        "    return keep\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="strip-py",
+                type="strip_block",
+                path="m.py",
+                start="# copybarista:internal:start",
+                end="# copybarista:internal:end",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        "def f():\n    keep = 1\n    return keep\n"
+    )
+
+
 def test_strip_block_reports_blocks_removed(tmp_path: Path):
     path = tmp_path / "README.md"
     path.write_text(
