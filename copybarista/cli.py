@@ -44,15 +44,16 @@ from copybarista.sync_setup import (
 )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Run the Copybarista CLI."""
+def main(argv: list[str] | None = None) -> int:
+    """Run the Copybarista CLI. Return the process exit code."""
     parser = _parser()
     args = parser.parse_args(argv)
     try:
         _command_handlers()[args.command](args)
     except CopybaristaError as err:
         sys.stderr.write(f"{err}\n")
-        sys.exit(_exit_code(err))
+        return _exit_code(err)
+    return 0
 
 
 def _parser() -> argparse.ArgumentParser:

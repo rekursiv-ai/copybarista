@@ -1,7 +1,17 @@
-"""Module entry point for Copybarista."""
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+Module entry point for Copybarista. Dispatches to the sibling module's ``main``.
+'''
+# fmt: on
+
+from __future__ import annotations
 
 from copybarista.cli import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+# vim: ft=python
