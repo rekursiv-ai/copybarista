@@ -491,21 +491,15 @@ class _CopyBaraSkyParser:
                     # Copybara's move only relocates SELECTED files, so
                     # origin_files excludes (rebuildable caches) never ride along.
                     # Our copy reads from source directly, so carry the same cache
-                    # excludes to keep the verbatim ship free of junk.
+                    # excludes to keep the verbatim ship free of junk. Opt into
+                    # DEFAULT_PYTHON_EXCLUDES rather than restating a subset: an
+                    # omitted `.venv` holds symlinks outside the checkout, which
+                    # the export symlink guard rejects instead of skipping.
                     subtree_copies.append(
                         FileCopy(
                             source=item.source,
                             destination=".",
-                            exclude=(
-                                ".ruff_cache/**",
-                                "**/.ruff_cache/**",
-                                "__pycache__/**",
-                                "**/__pycache__/**",
-                                "*.pyc",
-                                "**/*.pyc",
-                                ".pytest_cache/**",
-                                "**/.pytest_cache/**",
-                            ),
+                            use_default_python_excludes=True,
                         )
                     )
                     _add_sweep_exclude(sweep_excludes, item.source, root, ("**",))

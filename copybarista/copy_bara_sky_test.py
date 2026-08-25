@@ -484,6 +484,55 @@ def test_move_subtree_to_root_becomes_copy_to_root(tmp_path: Path):
     ) in [(copy.source, copy.destination) for copy in config.files.copy]
 
 
+def test_subtree_copy_skips_a_local_virtualenv(tmp_path: Path):
+    """The recovered subtree copy must drop a local `.venv`, not choke on it.
+
+    A `uv sync` inside the verbatim-ship staging dir leaves `.venv/bin/python`
+    symlinked at an interpreter outside the checkout, which the export symlink
+    guard rejects outright. The translator hardcoded a partial artifact list here
+    while the native config opts into `DEFAULT_PYTHON_EXCLUDES`, so the same
+    source tree exported under `.toml` and failed under `.sky`.
+    """
+    source = tmp_path / "repo"
+    staging = source / "project" / ".export"
+    (staging / ".venv" / "bin").mkdir(parents=True)
+    (source / "project" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (staging / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    interpreter = tmp_path / "outside" / "python3.14"
+    interpreter.parent.mkdir()
+    interpreter.touch()
+    (staging / ".venv" / "bin" / "python").symlink_to(interpreter)
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.move(ROOT + "/.export", ""),
+            ],
+        )
+        """,
+    )
+    output = tmp_path / "out"
+
+    export_folder(
+        config=load_config(config_path, workflow_name="export"),
+        source_ref=source,
+        destination=output,
+        force=True,
+    )
+
+    assert (output / "pyproject.toml").read_text(encoding="utf-8") == "[project]\n"
+    assert not (output / ".venv").exists()
+
+
 def test_core_copy_with_paths_becomes_file_copy_with_include(tmp_path: Path):
     """``core.copy(SRC, DEST, paths=glob([...]))`` maps to a copy with include.
 
