@@ -72,18 +72,17 @@ def test_cli_reports_copybarista_errors(
     config = tmp_path / "copy.barista.toml"
     _config(config, source_root="missing")
 
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "export",
-                str(config),
-                str(tmp_path / "repo"),
-                "--folder-dir",
-                str(tmp_path / "out"),
-            ]
-        )
+    code = main(
+        [
+            "export",
+            str(config),
+            str(tmp_path / "repo"),
+            "--folder-dir",
+            str(tmp_path / "out"),
+        ]
+    )
 
-    assert exc.value.code == 3
+    assert code == 3
     assert "Source root" in capsys.readouterr().err
 
 
@@ -93,10 +92,9 @@ def test_cli_export_requires_folder_destination(
     config = tmp_path / "copy.barista.toml"
     _config(config)
 
-    with pytest.raises(SystemExit) as exc:
-        main(["export", str(config), str(tmp_path / "repo")])
+    code = main(["export", str(config), str(tmp_path / "repo")])
 
-    assert exc.value.code == 1
+    assert code == 1
     assert "--folder-dir" in capsys.readouterr().err
 
 
@@ -127,18 +125,17 @@ def test_cli_reports_transform_errors_as_release_gate_failures(
         encoding="utf-8",
     )
 
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "export",
-                str(config),
-                str(source),
-                "--folder-dir",
-                str(tmp_path / "out"),
-            ]
-        )
+    code = main(
+        [
+            "export",
+            str(config),
+            str(source),
+            "--folder-dir",
+            str(tmp_path / "out"),
+        ]
+    )
 
-    assert exc.value.code == 2
+    assert code == 2
     assert "no changes" in capsys.readouterr().err
 
 
@@ -169,10 +166,9 @@ def test_cli_check_leaks_reports_policy_violations(
         encoding="utf-8",
     )
 
-    with pytest.raises(SystemExit) as exc:
-        main(["check-leaks", str(config), str(root)])
+    code = main(["check-leaks", str(config), str(root)])
 
-    assert exc.value.code == 2
+    assert code == 2
     assert "loop-imports: module.py:1" in capsys.readouterr().err
 
 
@@ -207,10 +203,9 @@ def test_cli_check_leaks_honors_config_globstar(
         encoding="utf-8",
     )
 
-    with pytest.raises(SystemExit) as exc:
-        main(["check-leaks", str(config), str(root)])
+    code = main(["check-leaks", str(config), str(root)])
 
-    assert exc.value.code == 2
+    assert code == 2
     assert "no-secrets" in capsys.readouterr().err
 
 

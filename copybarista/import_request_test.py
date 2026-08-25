@@ -2264,23 +2264,22 @@ def test_cli_import_change_mismatch_exits_three(
     bad_base = _copy_tree(paths.public_base, tmp_path / "bad-public-base")
     (bad_base / "README.md").write_text("stale\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "import-change",
-                str(paths.config),
-                "--public-base",
-                str(bad_base),
-                "--public-head",
-                str(paths.public_base),
-                "--source-base",
-                str(paths.source_base),
-                "--destination",
-                str(_copy_tree(paths.source_base, tmp_path / "destination")),
-            ]
-        )
+    code = main(
+        [
+            "import-change",
+            str(paths.config),
+            "--public-base",
+            str(bad_base),
+            "--public-head",
+            str(paths.public_base),
+            "--source-base",
+            str(paths.source_base),
+            "--destination",
+            str(_copy_tree(paths.source_base, tmp_path / "destination")),
+        ]
+    )
 
-    assert exc.value.code == 3
+    assert code == 3
     assert "public base" in capsys.readouterr().err
 
 
