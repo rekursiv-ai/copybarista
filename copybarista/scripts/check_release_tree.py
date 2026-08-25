@@ -171,7 +171,9 @@ def _content_errors(root: Path) -> tuple[str, ...]:
         (r"loop" + r"[./]copybarista", "monorepo path"),
         (r"/Users" + r"/dan", "local developer path"),
         (r"~/" + r"loop", "local developer path"),
-        (r"\bKnow" + r"Op\b", "private project name"),
+        # No trailing \b: it would not fire between "p" and a digit, so the
+        # successor project's "...2" spelling sailed through until widened.
+        (r"\b[Kk]now" + r"[Oo]p", "private project name"),
     )
     blocked_text_by_path = {
         ".gitignore": ("private/fixtures",),
