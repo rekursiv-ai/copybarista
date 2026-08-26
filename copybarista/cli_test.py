@@ -38,7 +38,7 @@ def test_cli_validate_accepts_valid_config(tmp_path: Path):
     config = tmp_path / "copy.barista.toml"
     _config(config)
 
-    main(["validate", str(config)])
+    assert main(["validate", str(config)]) == 0
 
 
 def test_cli_export_writes_json_manifest(
@@ -395,7 +395,7 @@ def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
         ]
     )
 
-    main(["check-sync-config", str(tmp_path)])
+    assert main(["check-sync-config", str(tmp_path)]) == 0
 
 
 def test_cli_write_export_workflow_uses_sync_metadata(
