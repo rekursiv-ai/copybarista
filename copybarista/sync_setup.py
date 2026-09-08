@@ -1167,12 +1167,16 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
         raise ConfigError(
             f"copybarista.sync.toml sync.{key} must be a list of strings."
         )
-    value = cast(list[str], value)
-    if not value and key == "type_check_targets":
+    strings = [item for item in value if isinstance(item, str)]
+    if len(strings) != len(value):
+        raise ConfigError(
+            f"copybarista.sync.toml sync.{key} must be a list of strings."
+        )
+    if not strings and key == "type_check_targets":
         raise ConfigError(
             "copybarista.sync.toml sync.type_check_targets cannot be empty."
         )
-    return tuple(value)
+    return tuple(strings)
 
 
 def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
