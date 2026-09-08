@@ -1044,10 +1044,11 @@ def _string_list(
     value = data.get(key, list(default))
     if not isinstance(value, list):
         raise ConfigError(f"{key} must be a list of strings")
-    value = cast(list[object], value)
-    if not all(isinstance(item, str) for item in value):
+    items = cast(list[object], value)
+    strings = [item for item in items if isinstance(item, str)]
+    if len(strings) != len(items):
         raise ConfigError(f"{key} must be a list of strings")
-    return cast(list[str], value)
+    return strings
 
 
 def _bool(data: dict[str, object], key: str, default: bool) -> bool:
