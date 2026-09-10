@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import os
 import shutil
@@ -16,10 +17,7 @@ from copybarista.cli import main
 
 pytestmark = pytest.mark.cli_git
 
-EXAMPLES_ROOT = Path(__file__).resolve().parent
-SOURCE_REPO = EXAMPLES_ROOT / "python-package" / "source-repo"
-GITHUB_EXAMPLE = EXAMPLES_ROOT / "python-package" / "github"
-CONFIG = SOURCE_REPO / "copy.barista.toml"
+_CWD: Final = Path(__file__).resolve().parent
 PACKAGE_TESTS = Path("packages/widget/tests")
 
 
@@ -30,8 +28,9 @@ def test_python_package_example_exports_and_imports_public_change(
     public_head = tmp_path / "public-head"
     destination = tmp_path / "source-destination"
 
-    _run_pytest(root=SOURCE_REPO, tests=SOURCE_REPO / PACKAGE_TESTS)
-    _export(source_ref=SOURCE_REPO, destination=public_base)
+    source_repo = _CWD / "python-package" / "source-repo"
+    _run_pytest(root=source_repo, tests=source_repo / PACKAGE_TESTS)
+    _export(source_ref=source_repo, destination=public_base)
     _assert_public_export(public_base)
     _run_pytest(root=public_base, tests=public_base / "tests")
 
@@ -45,18 +44,18 @@ def test_python_package_example_exports_and_imports_public_change(
         "    return NAME\n",
         encoding="utf-8",
     )
-    shutil.copytree(SOURCE_REPO, destination)
+    shutil.copytree(source_repo, destination)
 
     main(
         [
             "import-change",
-            str(CONFIG),
+            str(source_repo / "copy.barista.toml"),
             "--public-base",
             str(public_base),
             "--public-head",
             str(public_head),
             "--source-base",
-            str(SOURCE_REPO),
+            str(source_repo),
             "--destination",
             str(destination),
         ]
@@ -69,10 +68,11 @@ def test_python_package_example_exports_and_imports_public_change(
 
 
 def test_github_workflow_examples_call_copybarista_commands():
-    source_to_public = (GITHUB_EXAMPLE / "source-to-public.yml").read_text(
+    github_example = _CWD / "python-package" / "github"
+    source_to_public = (github_example / "source-to-public.yml").read_text(
         encoding="utf-8"
     )
-    public_to_source = (GITHUB_EXAMPLE / "public-to-source.yml").read_text(
+    public_to_source = (github_example / "public-to-source.yml").read_text(
         encoding="utf-8"
     )
 
@@ -123,7 +123,7 @@ def _export(*, source_ref: Path, destination: Path) -> None:
     main(
         [
             "export",
-            str(CONFIG),
+            str(source_ref / "copy.barista.toml"),
             str(source_ref),
             "--folder-dir",
             str(destination),
@@ -174,7 +174,7 @@ def _run_pytest(*, root: Path, tests: Path) -> None:
             str(tests),
         ],
         check=True,
-        cwd=EXAMPLES_ROOT.parent,
+        cwd=_CWD.parent,
         env=env,
         text=True,
         capture_output=True,

@@ -14,13 +14,14 @@ remain available for tests.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import argparse
 import shutil
 import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def main() -> int:
@@ -74,8 +75,9 @@ def main() -> int:
 
 def _safe_project_path(relative_target: str) -> Path:
     """Return a project-local cleanup path or fail closed."""
-    target = (PROJECT_ROOT / relative_target).resolve()
-    if target == PROJECT_ROOT or not target.is_relative_to(PROJECT_ROOT):
+    project_root = _CWD.parent
+    target = (project_root / relative_target).resolve()
+    if target == project_root or not target.is_relative_to(project_root):
         raise ValueError(f"Refusing to clean path outside project: {target}")
     return target
 

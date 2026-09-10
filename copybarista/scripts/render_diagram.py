@@ -28,9 +28,6 @@ import subprocess
 import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
 def render(input_path: Path, output_path: Path, width: int, scale: int) -> None:
     """Render ``input_path`` to ``output_path`` via mmdc + cwebp."""
     npx = _require_tool("npx")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import json
 import os
@@ -12,7 +13,7 @@ import pytest
 from copybarista.scripts import bench
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def test_build_report_times_copybarista_export(tmp_path: Path):
@@ -118,7 +119,7 @@ def test_self_export_performance_has_recordable_timings():
     source_repo = Path(source_repo_text).resolve()
     if not (source_repo / source_root).is_dir():
         pytest.skip("Source checkout unavailable for self-export performance test")
-    config_path = PROJECT_ROOT / "copy.barista.toml"
+    config_path = _CWD.parent / "copy.barista.toml"
     if not config_path.exists():
         pytest.skip("Copybarista self-export config is unavailable")
 
