@@ -26,7 +26,7 @@ class ActionPin:
 
     @property
     def uses(self) -> str:
-        """What workflow source says: immutable ref plus readable major."""
+        """What workflow source says: immutable ref plus readable version."""
         return f"{self.ref} # {self.version}"
 
 
@@ -35,23 +35,23 @@ GITHUB_ACTION_PINS: Final = {
     for pin in (
         ActionPin(
             action="actions/cache",
-            sha="caa296126883cff596d87d8935842f9db880ef25",
-            version="v5",
+            sha="55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+            version="v6.1.0",
         ),
         ActionPin(
             action="actions/cache/restore",
-            sha="caa296126883cff596d87d8935842f9db880ef25",
-            version="v5",
+            sha="55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+            version="v6.1.0",
         ),
         ActionPin(
             action="actions/cache/save",
-            sha="caa296126883cff596d87d8935842f9db880ef25",
-            version="v5",
+            sha="55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+            version="v6.1.0",
         ),
         ActionPin(
             action="actions/checkout",
-            sha="fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
-            version="v5",
+            sha="3d3c42e5aac5ba805825da76410c181273ba90b1",
+            version="v7.0.1",
         ),
         ActionPin(
             action="actions/configure-pages",
@@ -65,18 +65,18 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="actions/download-artifact",
-            sha="37930b1c2abaa49bbe596cd826c3c89aef350131",
-            version="v7",
+            sha="3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            version="v8.0.1",
         ),
         ActionPin(
             action="actions/setup-node",
-            sha="a0853c24544627f65ddf259abe73b1d18a591444",
-            version="v5",
+            sha="820762786026740c76f36085b0efc47a31fe5020",
+            version="v7.0.0",
         ),
         ActionPin(
             action="actions/setup-python",
-            sha="ece7cb06caefa5fff74198d8649806c4678c61a1",
-            version="v6",
+            sha="5fda3b95a4ea91299a34e894583c3862153e4b97",
+            version="v7.0.0",
         ),
         ActionPin(
             action="actions/upload-artifact",
@@ -90,8 +90,8 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="astral-sh/setup-uv",
-            sha="37802adc94f370d6bfd71619e3f0bf239e1f3b78",
-            version="v7",
+            sha="20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+            version="v10.0.1",
         ),
         ActionPin(
             action="docker/build-push-action",
@@ -105,7 +105,7 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="docker/setup-buildx-action",
-            sha="bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+            sha="37fe631027851001ddb9b187196cc803df7f5f0e",
             version="v4",
         ),
         ActionPin(
