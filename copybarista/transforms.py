@@ -8,12 +8,14 @@ describe the export without inspecting destination state.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import os
 import shutil
+import stat
 import sys
 
 from copybarista.commands import CommandRunner
@@ -61,15 +63,23 @@ def apply_transforms(
 
     """
     sources_by_destination = {entry.destination: entry.source for entry in files}
-    return tuple(
-        apply_transform(
-            root=root,
-            transform=transform,
-            sources_by_destination=sources_by_destination,
-            globstar=globstar,
+    reports: list[TransformReport] = []
+    # One walk of the staged tree serves every text transform; only a ``move``
+    # changes which paths exist, so the listing is refreshed after one.
+    listing = _list_staged_files(root)
+    for transform in transforms:
+        reports.append(
+            apply_transform(
+                root=root,
+                transform=transform,
+                sources_by_destination=sources_by_destination,
+                globstar=globstar,
+                listing=listing,
+            )
         )
-        for transform in transforms
-    )
+        if transform.type == "move":
+            listing = _list_staged_files(root)
+    return tuple(reports)
 
 
 def apply_transform(
@@ -78,6 +88,7 @@ def apply_transform(
     transform: Transform,
     sources_by_destination: dict[str, str],
     globstar: Globstar = "one_or_more",
+    listing: tuple[str, ...] = (),
 ) -> TransformReport:
     """Apply one configured transform and return its report.
 
@@ -86,17 +97,22 @@ def apply_transform(
       transform: Transform config entry.
       sources_by_destination: Source paths keyed by staged destination path.
       globstar: Workflow ``**`` semantics for the transform path glob.
+      listing: Root-relative POSIX paths of the staged files, as returned by a
+        prior walk; empty means walk ``root`` now.
 
     Returns:
       report: Transform execution report.
 
     """
+    if not listing:
+        listing = _list_staged_files(root)
     if transform.type == "replace":
         result = _replace(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
             globstar=globstar,
+            listing=listing,
         )
     elif transform.type == "move":
         result = _move(
@@ -110,6 +126,7 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
             globstar=globstar,
+            listing=listing,
         )
     elif transform.type == "internal_lines":
         result = _internal_lines(
@@ -117,6 +134,7 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
             globstar=globstar,
+            listing=listing,
         )
     elif transform.type == "uncomment":
         result = _uncomment(
@@ -124,6 +142,7 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
             globstar=globstar,
+            listing=listing,
         )
     else:
         result = _ruff_format(
@@ -155,6 +174,7 @@ def _replace(
     transform: Transform,
     sources_by_destination: dict[str, str],
     globstar: Globstar,
+    listing: tuple[str, ...],
 ) -> _TransformResult:
     """Apply a literal or regex-group replacement and return its change report."""
     if not transform.before:
@@ -170,7 +190,9 @@ def _replace(
         if transform.regex_groups
         else None
     )
-    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
+    paths = _matching_files(
+        root=root, listing=listing, pattern=transform.path, globstar=globstar
+    )
     matched_files = 0
     skipped_symlinks = 0
     changed = 0
@@ -219,9 +241,12 @@ def _strip_block(
     transform: Transform,
     sources_by_destination: dict[str, str],
     globstar: Globstar,
+    listing: tuple[str, ...],
 ) -> _TransformResult:
     """Remove marker-delimited blocks from matched files."""
-    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
+    paths = _matching_files(
+        root=root, listing=listing, pattern=transform.path, globstar=globstar
+    )
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -257,9 +282,12 @@ def _internal_lines(
     transform: Transform,
     sources_by_destination: dict[str, str],
     globstar: Globstar,
+    listing: tuple[str, ...],
 ) -> _TransformResult:
     """Remove every line containing the start marker from matched files."""
-    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
+    paths = _matching_files(
+        root=root, listing=listing, pattern=transform.path, globstar=globstar
+    )
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -297,9 +325,12 @@ def _uncomment(
     transform: Transform,
     sources_by_destination: dict[str, str],
     globstar: Globstar,
+    listing: tuple[str, ...],
 ) -> _TransformResult:
     """Uncomment lines marked for external export."""
-    paths = _matching_files(root=root, pattern=transform.path, globstar=globstar)
+    paths = _matching_files(
+        root=root, listing=listing, pattern=transform.path, globstar=globstar
+    )
     changed = 0
     total_count = 0
     files: list[TransformFileReport] = []
@@ -456,9 +487,11 @@ def _ruff_format(
         ) from err
     after = _snapshot_regular_files(root=root, target=target)
     changed_paths = tuple(
-        path for path in sorted(after) if before.get(path) != after[path]
+        path for path in _sorted_by_segments(after) if before.get(path) != after[path]
     )
-    deleted_paths = tuple(path for path in sorted(before) if path not in after)
+    deleted_paths = tuple(
+        path for path in _sorted_by_segments(before) if path not in after
+    )
     files = tuple(
         _file_report(
             root=root,
@@ -585,28 +618,46 @@ def _file_report(
     )
 
 
-def _matching_files(root: Path, pattern: str, globstar: Globstar) -> tuple[Path, ...]:
-    """Return staged files matched by one supported path glob.
+def _list_staged_files(root: Path) -> tuple[str, ...]:
+    """Return every staged non-directory entry as a root-relative POSIX path.
 
-    ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``. Both
-    describe the same set -- the walk is re-done per call because a ``move``
-    transform can rename staged files between calls, so a cached listing would
-    go stale -- but the pathlib spelling builds a ``Path`` per entry and then
-    reparses it: exporting priml called ``relative_to`` 108,615 times across 17
-    patterns, 2.6s of a 7.5s export. Slicing the prefix off the walked string
-    is the same answer without the object churn (measured 0.024s -> 0.003s per
-    walk over 1,025 files), and it is O(files), not O(files x patterns), for the
-    part that repeats.
+    ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``: the
+    pathlib spelling builds a ``Path`` per entry and then reparses it, and
+    exporting priml called ``relative_to`` 108,615 times across 17 patterns,
+    2.6s of a 7.5s export. Walked once per ``apply_transforms`` (0.015s over
+    4,785 files) rather than once per transform (0.32s for the 17 priml text
+    transforms); a ``move`` is the only transform that changes the set, and the
+    caller re-walks after one.
     """
-    matcher = GlobSet(include=(pattern,), globstar=globstar)
     prefix = len(str(root)) + 1
-    matched: list[Path] = []
+    rel_paths: list[str] = []
     for directory, _, names in os.walk(root):
-        for name in names:
-            full = os.path.join(directory, name)  # noqa: PTH118 -- str path is the point.
-            if matcher.matches(full[prefix:].replace(os.sep, "/")):
-                matched.append(Path(full))
-    return tuple(sorted(matched))
+        rel_paths.extend(
+            os.path.join(directory, name)[prefix:].replace(os.sep, "/")  # noqa: PTH118 -- str path is the point.
+            for name in names
+        )
+    return tuple(_sorted_by_segments(rel_paths))
+
+
+def _sorted_by_segments(rel_paths: Iterable[str]) -> list[str]:
+    """Sort relative POSIX paths the way ``sorted()`` orders ``Path`` objects.
+
+    ``Path`` compares by path segments, so ``a/b`` sorts before ``a-b``; a plain
+    string sort puts ``-`` before ``/`` and would reorder manifests and reports.
+    """
+    return sorted(rel_paths, key=_path_segments)
+
+
+def _path_segments(rel_path: str) -> list[str]:
+    return rel_path.split("/")
+
+
+def _matching_files(
+    root: Path, *, listing: tuple[str, ...], pattern: str, globstar: Globstar
+) -> tuple[Path, ...]:
+    """Return staged files from ``listing`` matched by one supported path glob."""
+    matcher = GlobSet(include=(pattern,), globstar=globstar)
+    return tuple(root / rel for rel in listing if matcher.matches(rel))
 
 
 def _read_text(path: Path) -> str:
@@ -617,14 +668,34 @@ def _read_text(path: Path) -> str:
         raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
 
 
-def _snapshot_regular_files(root: Path, target: Path) -> dict[Path, bytes]:
-    """Return staged file bytes keyed by root-relative path."""
-    paths = (target,) if target.is_file() else tuple(sorted(target.rglob("*")))
-    return {
-        path.relative_to(root): path.read_bytes()
-        for path in paths
-        if path.is_file() and not path.is_symlink()
-    }
+def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, int]]:
+    """Return ``(size, mtime_ns)`` per staged regular file, keyed by relative path.
+
+    Not the bytes: reading every staged file twice cost 0.36s of a priml export.
+    A same-length rewrite is still caught because ruff runs as a subprocess whose
+    startup exceeds the filesystem timestamp tick, so any file it writes carries
+    a later ``mtime_ns`` than the snapshot taken before it was spawned.
+
+    ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``:
+    the two snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s
+    as strings.
+    """
+    prefix = len(str(root)) + 1
+    if target.is_file():
+        candidates = [str(target)]
+    else:
+        candidates = [
+            os.path.join(directory, name)  # noqa: PTH118 -- str path is the point.
+            for directory, _, names in os.walk(target)
+            for name in names
+        ]
+    snapshot: dict[str, tuple[int, int]] = {}
+    for full in candidates:
+        status = os.lstat(full)
+        if stat.S_ISREG(status.st_mode):
+            rel = full[prefix:].replace(os.sep, "/")
+            snapshot[rel] = (status.st_size, status.st_mtime_ns)
+    return snapshot
 
 
 def line_has_marker_token(line: str, marker: str) -> bool:
