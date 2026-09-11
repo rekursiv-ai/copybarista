@@ -24,7 +24,7 @@ from copybarista.sync_setup import (
 )
 
 
-def _settings(**kwargs: Any) -> SyncSettings:
+def _settings(**kwargs: object) -> SyncSettings:
     values: dict[str, Any] = {
         "package_name": "configgle",
         "sync_label": "Configgle",
@@ -831,3 +831,9 @@ def test_workflow_dir_falls_back_for_a_fresh_scaffold(tmp_path: Path):
     (tmp_path / ".github/workflows").mkdir(parents=True)
 
     assert workflow_dir(tmp_path) == tmp_path / ".github/workflows"
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

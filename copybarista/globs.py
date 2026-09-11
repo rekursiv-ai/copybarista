@@ -47,10 +47,15 @@ class GlobSet:
     """
 
     include: tuple[str, ...]
+
     exclude: tuple[str, ...] = ()
+
     globstar: Globstar = "one_or_more"
+
     min_brace_choices: int = 2
+
     _include_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
+
     _exclude_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -75,7 +80,15 @@ class GlobSet:
         )
 
     def matches(self, path: str) -> bool:
-        """Return whether a path is included and not excluded."""
+        """Return whether a path is included and not excluded.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         normalized = path.replace("\\", "/").strip("/")
         return any(r.fullmatch(normalized) for r in self._include_regex) and not any(
             r.fullmatch(normalized) for r in self._exclude_regex
@@ -87,23 +100,16 @@ class GlobSet:
         Used to test an out-of-selection path (never subject to the include set)
         against the exclude patterns alone -- e.g. an identity-mapped public path
         the config explicitly suppresses.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
         """
         normalized = path.replace("\\", "/").strip("/")
         return any(r.fullmatch(normalized) for r in self._exclude_regex)
-
-
-def _compile_all(
-    patterns: tuple[str, ...], *, globstar: Globstar, min_brace_choices: int
-) -> tuple[re.Pattern[str], ...]:
-    """Compile supported glob patterns to full-match regexes."""
-    return tuple(
-        re.compile(
-            _glob_to_regex(
-                pattern, globstar=globstar, min_brace_choices=min_brace_choices
-            )
-        )
-        for pattern in patterns
-    )
 
 
 def validate_pattern(pattern: str) -> str:
@@ -111,6 +117,13 @@ def validate_pattern(pattern: str) -> str:
 
     Rejecting unsupported patterns at config load time is safer than treating
     them as literals and exporting the wrong file set.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The str.
+
     """
     if not pattern:
         raise GlobError("Glob pattern must not be empty")
@@ -143,17 +156,15 @@ def _check_balanced(*, pattern: str, left: str, right: str) -> None:
         raise GlobError(f"Unbalanced glob syntax in pattern: {pattern}")
 
 
+# The returned regex intentionally has no anchors because callers use `fullmatch`, which
+# keeps the translation focused on path component rules.
 def _glob_to_regex(
     pattern: str,
     *,
     globstar: Globstar = "one_or_more",
     min_brace_choices: int = 2,
 ) -> str:
-    """Translate the supported glob subset to a Python regex.
-
-    The returned regex intentionally has no anchors because callers use
-    `fullmatch`, which keeps the translation focused on path component rules.
-    """
+    """Translate the supported glob subset to a Python regex."""
     pattern = validate_pattern(pattern)
     globstar_slash = ".+/" if globstar == "one_or_more" else "(?:.+/)?"
     parts: list[str] = []
@@ -241,4 +252,18 @@ def _brace_regex(
         )
         + ")",
         end + 1,
+    )
+
+
+def _compile_all(
+    patterns: tuple[str, ...], *, globstar: Globstar, min_brace_choices: int
+) -> tuple[re.Pattern[str], ...]:
+    """Compile supported glob patterns to full-match regexes."""
+    return tuple(
+        re.compile(
+            _glob_to_regex(
+                pattern, globstar=globstar, min_brace_choices=min_brace_choices
+            )
+        )
+        for pattern in patterns
     )

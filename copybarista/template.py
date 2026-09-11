@@ -27,6 +27,15 @@ _INTERPOLATION = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Token:
+    """One literal or interpolation segment of a template."""
+
+    value: str
+
+    is_group: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReplaceTemplate:
     """A compiled ``before`` pattern paired with its ``after`` renderer.
 
@@ -37,14 +46,31 @@ class ReplaceTemplate:
     """
 
     pattern: re.Pattern[str]
+
     after_tokens: tuple[_Token, ...]
 
     def apply(self, text: str) -> str:
-        """Return ``text`` with every ``before`` match rendered as ``after``."""
+        """Return ``text`` with every ``before`` match rendered as ``after``.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The str.
+
+        """
         return self.pattern.sub(self._render, text)
 
     def count(self, text: str) -> int:
-        """Return how many non-overlapping ``before`` matches occur in ``text``."""
+        """Return how many non-overlapping ``before`` matches occur in ``text``.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The int.
+
+        """
         return sum(1 for _ in self.pattern.finditer(text))
 
     def _render(self, match: re.Match[str]) -> str:
@@ -53,14 +79,6 @@ class ReplaceTemplate:
             match.group(token.value) if token.is_group else token.value
             for token in self.after_tokens
         )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Token:
-    """One literal or interpolation segment of a template."""
-
-    value: str
-    is_group: bool
 
 
 def compile_replace(
@@ -97,7 +115,7 @@ def compile_replace(
         raise ConfigError(
             "replace references undefined regex_groups: " + ", ".join(sorted(undefined))
         )
-    if not after_names <= before_names:
+    if after_names - before_names:
         raise ConfigError(
             "replace after interpolates groups absent from before: "
             + ", ".join(sorted(after_names - before_names))
@@ -111,17 +129,53 @@ def compile_replace(
     return ReplaceTemplate(pattern=pattern, after_tokens=after_tokens)
 
 
-def _check_group_patterns(regex_groups: tuple[tuple[str, str], ...]) -> None:
-    """Reject a group whose regex is invalid on its own.
+def literal_segments(template: str, *, separator: str) -> str:
+    """Return a template's literal text with interpolations replaced.
 
-    Compiling only the ASSEMBLED pattern is not sufficient: the groups are
-    concatenated, so a malformed one can be re-balanced by whatever follows it.
-    ``[unclosed`` stays an open character class that swallows text until a later
-    group closes it, and ``(grp`` is closed by a later ``)`` -- both compile as a
-    pair while each raises alone, yielding a regex that means nothing like what
-    was written. Copybara validates per group and refuses to load the config, so
-    a masked group here admits a ``.sky`` that cannot run there.
+    Each ``${name}`` is replaced by ``separator`` so callers that reason about
+    the literal skeleton -- e.g. recovering marker lines from a
+    ``regex_groups`` replacement -- share this module's interpolation grammar
+    instead of restating it. A second copy of the pattern would silently stop
+    agreeing the moment the grammar here changed.
+
+    Args:
+      template: Template.
+      separator: Separator.
+
+    Returns:
+      result: The str.
+
     """
+    return separator.join(
+        token.value for token in _parse(template) if not token.is_group
+    )
+
+
+def _parse(template: str) -> tuple[_Token, ...]:
+    """Split a template into literal and interpolation tokens."""
+    tokens: list[_Token] = []
+    cursor = 0
+    for match in _INTERPOLATION.finditer(template):
+        if match.start() > cursor:
+            tokens.append(
+                _Token(value=template[cursor : match.start()], is_group=False)
+            )
+        tokens.append(_Token(value=match.group("name"), is_group=True))
+        cursor = match.end()
+    if cursor < len(template):
+        tokens.append(_Token(value=template[cursor:], is_group=False))
+    return tuple(tokens)
+
+
+# Compiling only the ASSEMBLED pattern is not sufficient: the groups are concatenated,
+# so a malformed one can be re-balanced by whatever follows it. ``[unclosed`` stays an
+# open character class that swallows text until a later group closes it, and ``(grp`` is
+# closed by a later ``)`` -- both compile as a pair while each raises alone, yielding a
+# regex that means nothing like what was written. Copybara validates per group and
+# refuses to load the config, so a masked group here admits a ``.sky`` that cannot run
+# there.
+def _check_group_patterns(regex_groups: tuple[tuple[str, str], ...]) -> None:
+    """Reject a group whose regex is invalid on its own."""
     for name, pattern in regex_groups:
         try:
             re.compile(pattern)
@@ -147,33 +201,3 @@ def _build_pattern(
         raise ConfigError(
             f"replace regex_groups produce an invalid pattern: {err}"
         ) from err
-
-
-def literal_segments(template: str, *, separator: str) -> str:
-    """Return a template's literal text with interpolations replaced.
-
-    Each ``${name}`` is replaced by ``separator`` so callers that reason about
-    the literal skeleton -- e.g. recovering marker lines from a
-    ``regex_groups`` replacement -- share this module's interpolation grammar
-    instead of restating it. A second copy of the pattern would silently stop
-    agreeing the moment the grammar here changed.
-    """
-    return separator.join(
-        token.value for token in _parse(template) if not token.is_group
-    )
-
-
-def _parse(template: str) -> tuple[_Token, ...]:
-    """Split a template into literal and interpolation tokens."""
-    tokens: list[_Token] = []
-    cursor = 0
-    for match in _INTERPOLATION.finditer(template):
-        if match.start() > cursor:
-            tokens.append(
-                _Token(value=template[cursor : match.start()], is_group=False)
-            )
-        tokens.append(_Token(value=match.group("name"), is_group=True))
-        cursor = match.end()
-    if cursor < len(template):
-        tokens.append(_Token(value=template[cursor:], is_group=False))
-    return tuple(tokens)

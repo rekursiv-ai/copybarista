@@ -46,7 +46,9 @@ class StagedTree:
     """A transformed tree plus manifest metadata for destination publishing."""
 
     root: Path
+
     files: tuple[ManifestEntry, ...]
+
     transforms: tuple[TransformReport, ...]
 
 
@@ -55,6 +57,7 @@ class _StagedFile:
     """Source and destination pair for files copied into staging."""
 
     source: str
+
     destination: str
 
 
@@ -63,6 +66,7 @@ class WorkflowRunner:
     """Prepare the transformed staged tree for one workflow run."""
 
     config: WorkflowConfig
+
     source_ref: Path
 
     def stage(
@@ -162,27 +166,6 @@ class WorkflowRunner:
         )
 
 
-def _apply_transform_destinations(
-    entries: tuple[_StagedFile, ...], *, config: WorkflowConfig
-) -> tuple[_StagedFile, ...]:
-    """Update manifest destinations for transforms that relocate staged files."""
-    for transform in config.transforms:
-        if transform.type != "move":
-            continue
-        entries = tuple(_apply_move_destination(entry, transform) for entry in entries)
-    return entries
-
-
-def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _StagedFile:
-    """Return `entry` with its destination rewritten by one move transform."""
-    return replace(
-        entry,
-        destination=_relocate_path(
-            entry.destination, source=transform.path, destination=transform.destination
-        ),
-    )
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MoveSequence:
     """Map source-root paths to exported destination paths via ordered moves.
@@ -201,22 +184,28 @@ class MoveSequence:
     moves: tuple[FileMove, ...]
 
     def destination_path(self, rel: str) -> str:
-        """Return the exported destination path for a source-relative path."""
+        """Return the exported destination path for a source-relative path.
+
+        Args:
+          rel: Rel.
+
+        Returns:
+          rel: The str.
+
+        """
         for move in self.moves:
             rel = _relocate_path(rel, source=move.path, destination=move.destination)
         return rel
 
 
+# An empty ``source`` matches the whole tree, so every path gains the ``destination``
+# prefix. A non-empty ``source`` matches its exact value or any path under ``source/``,
+# rewriting that prefix to ``destination``; a path matching neither is returned
+# unchanged. This is the single forward relocation rule shared by the ``files.moves``
+# sequence and ``move`` transforms; its inverse is
+# ``import_request._reverse_relocation``.
 def _relocate_path(path: str, *, source: str, destination: str) -> str:
-    """Return ``path`` with a ``source`` prefix rewritten to ``destination``.
-
-    An empty ``source`` matches the whole tree, so every path gains the
-    ``destination`` prefix. A non-empty ``source`` matches its exact value or any
-    path under ``source/``, rewriting that prefix to ``destination``; a path
-    matching neither is returned unchanged. This is the single forward relocation
-    rule shared by the ``files.moves`` sequence and ``move`` transforms; its
-    inverse is ``import_request._reverse_relocation``.
-    """
+    """Return ``path`` with a ``source`` prefix rewritten to ``destination``."""
     if not source:
         return f"{destination}/{path}"
     if path == source:
@@ -376,3 +365,24 @@ def _record_phase(
     """Record an optional benchmark phase without coupling staging to scripts."""
     if record_phase is not None:
         record_phase(phase, elapsed_sec)
+
+
+def _apply_transform_destinations(
+    entries: tuple[_StagedFile, ...], *, config: WorkflowConfig
+) -> tuple[_StagedFile, ...]:
+    """Update manifest destinations for transforms that relocate staged files."""
+    for transform in config.transforms:
+        if transform.type != "move":
+            continue
+        entries = tuple(_apply_move_destination(entry, transform) for entry in entries)
+    return entries
+
+
+def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _StagedFile:
+    """Return `entry` with its destination rewritten by one move transform."""
+    return replace(
+        entry,
+        destination=_relocate_path(
+            entry.destination, source=transform.path, destination=transform.destination
+        ),
+    )

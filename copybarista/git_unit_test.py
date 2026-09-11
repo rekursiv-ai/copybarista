@@ -9,7 +9,7 @@ import hashlib
 
 import pytest
 
-from copybarista import git as git_module
+from copybarista import git
 from copybarista.commands import CommandResult
 from copybarista.config import (
     FileSelection,
@@ -61,7 +61,7 @@ def test_export_git_requires_destination_url(tmp_path: Path):
     config = _workflow_config(git=GitDestination())
 
     with pytest.raises(ExportError, match="url"):
-        git_module.export_git(config=config, source_ref=tmp_path)
+        git.export_git(config=config, source_ref=tmp_path)
 
 
 def test_export_git_stages_manifest_without_real_git(
@@ -85,9 +85,9 @@ def test_export_git_stages_manifest_without_real_git(
         assert (staged_tree.root / "README.md").read_text(encoding="utf-8") == "hello\n"
         return DestinationResult(status="updated", ref="abc123")
 
-    monkeypatch.setattr(git_module, "write_git_destination", fake_write)
+    monkeypatch.setattr(git, "write_git_destination", fake_write)
 
-    manifest = git_module.export_git(
+    manifest = git.export_git(
         config=_workflow_config(
             git=GitDestination(url="ssh://example.com/repo.git", branch="main")
         ),
@@ -138,8 +138,8 @@ def test_write_git_destination_uses_temporary_worktree(
         )
         return "abc123"
 
-    monkeypatch.setattr(git_module, "_prepare_destination", fake_prepare)
-    monkeypatch.setattr(git_module, "_commit_and_push", fake_commit)
+    monkeypatch.setattr(git, "_prepare_destination", fake_prepare)
+    monkeypatch.setattr(git, "_commit_and_push", fake_commit)
 
     result = write_git_destination(
         StagedTree(root=source, files=(), transforms=()),
@@ -215,10 +215,10 @@ def test_prepare_destination_checks_out_existing_branch(
         assert url == "ssh://example.com/repo.git"
         return cache
 
-    monkeypatch.setattr(git_module, "_ensure_local_remote", skip_local_remote)
-    monkeypatch.setattr(git_module, "_sync_cached_bare_repo", sync_cache)
-    monkeypatch.setattr(git_module, "_remote_branch_exists", remote_branch_exists)
-    monkeypatch.setattr(git_module, "_git", fake_git)
+    monkeypatch.setattr(git, "_ensure_local_remote", skip_local_remote)
+    monkeypatch.setattr(git, "_sync_cached_bare_repo", sync_cache)
+    monkeypatch.setattr(git, "_remote_branch_exists", remote_branch_exists)
+    monkeypatch.setattr(git, "_git", fake_git)
 
     _prepare_destination(
         GitDestination(url="ssh://example.com/repo.git", branch="main"),
@@ -268,10 +268,10 @@ def test_prepare_destination_creates_orphan_branch(
         assert worktree == tmp_path / "worktree"
         return False
 
-    monkeypatch.setattr(git_module, "_ensure_local_remote", skip_local_remote)
-    monkeypatch.setattr(git_module, "_sync_cached_bare_repo", sync_cache)
-    monkeypatch.setattr(git_module, "_remote_branch_exists", missing_branch)
-    monkeypatch.setattr(git_module, "_git", fake_git)
+    monkeypatch.setattr(git, "_ensure_local_remote", skip_local_remote)
+    monkeypatch.setattr(git, "_sync_cached_bare_repo", sync_cache)
+    monkeypatch.setattr(git, "_remote_branch_exists", missing_branch)
+    monkeypatch.setattr(git, "_git", fake_git)
 
     _prepare_destination(
         GitDestination(url="ssh://example.com/repo.git", branch="main"),
@@ -293,7 +293,7 @@ def test_ensure_local_remote_initializes_empty_path(
         calls.append(args)
         return CommandResult(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_module, "_git", fake_git)
+    monkeypatch.setattr(git, "_git", fake_git)
 
     _ensure_local_remote(remote.as_posix())
 
@@ -327,7 +327,7 @@ def test_sync_cached_bare_repo_clones_missing_cache(
         calls.append(args)
         return CommandResult(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_module, "_git", fake_git)
+    monkeypatch.setattr(git, "_git", fake_git)
 
     cache = _sync_cached_bare_repo(
         "ssh://example.com/repo.git",
@@ -351,7 +351,7 @@ def test_sync_cached_bare_repo_fetches_existing_cache(
         calls.append(args)
         return CommandResult(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_module, "_git", fake_git)
+    monkeypatch.setattr(git, "_git", fake_git)
 
     assert (
         _sync_cached_bare_repo(
@@ -445,8 +445,8 @@ def test_commit_and_push_uses_configured_identity(
         assert worktree == tmp_path
         return True
 
-    monkeypatch.setattr(git_module, "_git", fake_git)
-    monkeypatch.setattr(git_module, "_has_staged_changes", has_staged_changes)
+    monkeypatch.setattr(git, "_git", fake_git)
+    monkeypatch.setattr(git, "_has_staged_changes", has_staged_changes)
 
     commit = _commit_and_push(
         GitDestination(
@@ -493,8 +493,8 @@ def test_commit_and_push_returns_noop_without_staged_changes(
         assert worktree == tmp_path
         return False
 
-    monkeypatch.setattr(git_module, "_git", fake_git)
-    monkeypatch.setattr(git_module, "_has_staged_changes", has_staged_changes)
+    monkeypatch.setattr(git, "_git", fake_git)
+    monkeypatch.setattr(git, "_has_staged_changes", has_staged_changes)
 
     assert (
         _commit_and_push(
@@ -515,7 +515,7 @@ def test_verify_user_info_configured_rejects_missing_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(
-        git_module,
+        git,
         "_git",
         _empty_git_config,
     )
@@ -538,7 +538,9 @@ def _empty_git_config(*_args: str, runtime: GitRuntime | None = None) -> Command
 @dataclass(slots=True, kw_only=True)
 class _FakeCommands:
     result: CommandResult
+
     calls: list[list[str]] = field(default_factory=list)
+
     checks: list[bool] = field(default_factory=list)
 
     def run(self, argv: list[str], *, check: bool = True) -> CommandResult:
@@ -557,3 +559,9 @@ def _workflow_config(*, git: GitDestination) -> WorkflowConfig:
         folder=FolderDestination(),
         git=git,
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

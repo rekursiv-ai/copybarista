@@ -32,3 +32,9 @@ def test_file_entry_hashes_symlink_target_text(tmp_path: Path):
 
     assert entry.size == len(link_data)
     assert entry.sha256 == hashlib.sha256(link_data).hexdigest()
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

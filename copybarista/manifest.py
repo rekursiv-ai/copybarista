@@ -14,8 +14,11 @@ class ManifestEntry:
     """Source-to-destination mapping and stable identity for one exported file."""
 
     source: str
+
     destination: str
+
     size: int
+
     sha256: str
 
 
@@ -24,7 +27,9 @@ class TransformFileReport:
     """Per-file transform change report for manifest consumers."""
 
     source: str
+
     destination: str
+
     count: int
 
 
@@ -38,10 +43,15 @@ class TransformReport:
     """
 
     id: str
+
     type: str
+
     path: str
+
     changed: int
+
     count: int
+
     files: tuple[TransformFileReport, ...]
 
 
@@ -54,18 +64,35 @@ class ExportManifest:
     """
 
     files: tuple[ManifestEntry, ...]
+
     transforms: tuple[TransformReport, ...]
+
     elapsed_sec: float
 
     def to_json(self) -> str:
-        """Serialize manifest as deterministic JSON."""
+        """Serialize manifest as deterministic JSON.
+
+        Returns:
+          result: The str.
+
+        """
         data = asdict(self)
         del data["elapsed_sec"]
         return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
 def file_entry(source: str, destination: str, path: Path) -> ManifestEntry:
-    """Build a manifest entry for a copied file or symlink."""
+    """Build a manifest entry for a copied file or symlink.
+
+    Args:
+      source: Source.
+      destination: Destination.
+      path: Path.
+
+    Returns:
+      result: The ManifestEntry.
+
+    """
     data = _manifest_bytes(path)
     return ManifestEntry(
         source=source,
@@ -75,13 +102,11 @@ def file_entry(source: str, destination: str, path: Path) -> ManifestEntry:
     )
 
 
+# Symlink manifests hash the link target rather than the linked file. That matches the
+# exported tree shape and prevents a symlink from depending on machine-local target
+# contents.
 def _manifest_bytes(path: Path) -> bytes:
-    """Return bytes used for deterministic file identity.
-
-    Symlink manifests hash the link target rather than the linked file. That
-    matches the exported tree shape and prevents a symlink from depending on
-    machine-local target contents.
-    """
+    """Return bytes used for deterministic file identity."""
     if path.is_symlink():
         return path.readlink().as_posix().encode()
     return path.read_bytes()

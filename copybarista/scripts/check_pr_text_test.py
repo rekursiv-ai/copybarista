@@ -90,3 +90,9 @@ class TestScan:
         )
         terms = {term for _field, term, _text in _scan(message)}
         assert {"loop.", "loop/", "LOOP_"} <= terms
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

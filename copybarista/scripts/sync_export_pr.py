@@ -66,12 +66,25 @@ PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 
 def main() -> int:
-    """The main function. Return the process exit code."""
+    """Run the program; return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     return run()
 
 
 def run(argv: list[str] | None = None) -> int:
-    """Run source-to-public export validation and PR creation."""
+    """Run source-to-public export validation and PR creation.
+
+    Args:
+      argv: Argv.
+
+    Returns:
+      result: The int.
+
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _apply_project_discovery(argv)
     args = _parser().parse_args(argv)
@@ -139,35 +152,78 @@ def run(argv: list[str] | None = None) -> int:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PrReplaySettings:
+    """Settings that control public PR metadata replay."""
+
+    scope: str
+
+    default_title: str
+
+    default_body: str
+
+    require_metadata: bool
+
+    bootstrap_base: str
+
+    publish_source_rev: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ExportRequest:
     """Typed namespace for one export sync run."""
 
     source_dir: Path
+
     project_path: Path
+
     public_dir: Path
+
     target_repo: str
+
     base_branch: str
+
     source_sha: str
+
     branch: str
+
     sync_label: str
+
     sync_user_name: str
+
     sync_user_email: str
+
     pr_title: str
+
     pr_body: str
+
     manual_pr_title: str
+
     manual_pr_body: str
+
     replay_settings: PrReplaySettings
+
     forbidden_pr_text: tuple[str, ...]
+
     auto_merge: bool
+
     refresh_public_lockfile: bool
+
     skip_source_validation: bool
+
     runner_temp: Path
+
     release_check_script: Path | None
+
     type_check_targets: tuple[str, ...]
+
     smoke_import: str
+
     validation_commands: tuple[str, ...]
+
     dry_run: bool
+
     import_branch_prefix: str = ""
+
     source_repo: str = ""
 
 
@@ -176,19 +232,8 @@ class ExportPrText:
     """Resolved public PR title and body text."""
 
     title: str
+
     body: str
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class PrReplaySettings:
-    """Settings that control public PR metadata replay."""
-
-    scope: str
-    default_title: str
-    default_body: str
-    require_metadata: bool
-    bootstrap_base: str
-    publish_source_rev: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -196,6 +241,7 @@ class SourceAuthor:
     """One git source author used for generated commit attribution."""
 
     name: str
+
     email: str
 
 
@@ -204,10 +250,15 @@ class PrMetadataPatch:
     """One source commit's public PR metadata."""
 
     commit_sha: str
+
     scope: str
+
     title: str
+
     author: SourceAuthor
+
     body: str
+
     body_mode: str
 
 
@@ -216,6 +267,7 @@ class PrBodyEntry:
     """One appended public PR body entry."""
 
     commit_sha: str
+
     text: str
 
 
@@ -224,11 +276,17 @@ class PrReplayState:
     """Rendered public PR state after replaying source commit metadata."""
 
     title: str
+
     authors: tuple[SourceAuthor, ...]
+
     body_intro: str
+
     body_entries: tuple[PrBodyEntry, ...]
+
     applied_source_rev: str
+
     applied_source_digest: str
+
     metadata_count: int
 
 
@@ -237,8 +295,11 @@ class CurrentPr:
     """Open generated public PR state."""
 
     title: str
+
     body: str
+
     number: int
+
     url: str
 
 
@@ -247,7 +308,9 @@ class BranchMarkers:
     """Machine markers read from the current generated branch commit."""
 
     source_digest: str
+
     replay_base_digest: str
+
     exists: bool
 
 
@@ -256,9 +319,13 @@ class PrReplayPlan:
     """Resolved PR replay result for one export run."""
 
     state: PrReplayState
+
     body: str
+
     replay_base: str
+
     replay_base_digest: str
+
     current_pr: CurrentPr | None
 
 
@@ -283,6 +350,10 @@ def run_export_sync(request: ExportRequest) -> None:
     change -- the public commit stays in history but its content is gone.
     Skipping leaves the public repo stale instead, which the next export
     fixes on its own.
+
+    Args:
+      request: Request.
+
     """
     if request.import_branch_prefix and request.source_repo:
         pending = _pending_import_prs(
@@ -335,6 +406,377 @@ def run_export_sync(request: ExportRequest) -> None:
     finally:
         if dry_public_dir is not None:
             _delete_path(dry_public_dir)
+
+
+def export_pr_text(
+    *,
+    title: str,
+    body: str,
+    source_message: str,
+    use_source_message: bool,
+    forbidden_text: tuple[str, ...],
+    default_title: str = DEFAULT_EXPORT_TITLE,
+    default_body: str = DEFAULT_EXPORT_DESCRIPTION,
+) -> ExportPrText:
+    """Return public export PR text from manual inputs, commit text, or defaults.
+
+    Args:
+      title: Title.
+      body: Body.
+      source_message: Source message.
+      use_source_message: Use source message.
+      forbidden_text: Forbidden text.
+      default_title: Default title.
+      default_body: Default body.
+
+    Returns:
+      result: The ExportPrText.
+
+    """
+    message_title = ""
+    message_body = ""
+    if use_source_message and (not title.strip() or not body.strip()):
+        message_title, message_body = _split_commit_message(source_message)
+    resolved_title = title.strip() or message_title or default_title
+    resolved_body = body.strip() or message_body or default_body
+    return ExportPrText(
+        title=_public_pr_text(
+            value=resolved_title,
+            name="--pr-title",
+            forbidden_text=forbidden_text,
+        ),
+        body=_public_pr_text(
+            value=resolved_body,
+            name="--pr-body",
+            forbidden_text=forbidden_text,
+        ),
+    )
+
+
+def replay_pr_metadata(
+    *, base: PrReplayState, patches: tuple[PrMetadataPatch, ...]
+) -> PrReplayState:
+    """Apply source commit PR metadata patches in chronological order.
+
+    Args:
+      base: Base.
+      patches: Patches.
+
+    Returns:
+      state: The PrReplayState.
+
+    """
+    state = base
+    seen: set[tuple[str, str]] = {
+        (entry.commit_sha, entry.text)
+        for entry in state.body_entries
+        if entry.commit_sha
+    }
+    for patch in patches:
+        entries = state.body_entries
+        body_intro = state.body_intro
+        authors = state.authors
+        if patch.body_mode == "replace" and patch.body:
+            body_intro = patch.body
+            entries = ()
+            seen = set[tuple[str, str]]()
+        elif patch.body and (patch.commit_sha, patch.body) not in seen:
+            entries = (
+                *entries,
+                PrBodyEntry(commit_sha=patch.commit_sha, text=patch.body),
+            )
+            seen.add((patch.commit_sha, patch.body))
+        authors = _append_source_author(authors=authors, author=patch.author)
+        state = PrReplayState(
+            title=patch.title or state.title,
+            authors=authors,
+            body_intro=body_intro,
+            body_entries=entries,
+            applied_source_rev=state.applied_source_rev,
+            applied_source_digest=state.applied_source_digest,
+            metadata_count=state.metadata_count + 1,
+        )
+    return state
+
+
+def export_branch_name(
+    *, explicit: str, source_branch: str, source_sha: str, prefix: str
+) -> str:
+    """Return the source-to-public sync branch name.
+
+    Args:
+      explicit: Explicit.
+      source_branch: Source branch.
+      source_sha: Source sha.
+      prefix: Prefix.
+
+    Returns:
+      result: The str.
+
+    """
+    if explicit.strip():
+        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
+    if source_branch.strip():
+        branch = f"{prefix}{_branch_component(source_branch)}"
+    else:
+        if source_sha == "manual":
+            sys.stderr.write(
+                "--branch or --source-branch is required for manual runs.\n"
+            )
+            raise SystemExit(2)
+        branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix=prefix)
+
+
+def _commit_author(name: str, email: str) -> str:
+    """Return the Git author identity for a generated sync commit."""
+    return f"{name} <{email}>"
+
+
+def _generated_commit_author(
+    *, authors: tuple[SourceAuthor, ...], fallback_name: str, fallback_email: str
+) -> str:
+    """Return the primary generated commit author identity."""
+    if authors:
+        return _commit_author(authors[0].name, authors[0].email)
+    return _commit_author(fallback_name, fallback_email)
+
+
+def _git_has_changes(path: Path) -> bool:
+    """Return whether a checkout has pending Git changes."""
+    result = _run(["git", "status", "--porcelain"], cwd=path, check=False, capture=True)
+    return bool(result.stdout.strip())
+
+
+def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+    """Return whether GitHub has an open PR for a branch."""
+    result = _run_gh(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
+        cwd=cwd,
+        capture=True,
+    )
+    parsed = _json_from_gh(result.stdout, context=f"GitHub PR list for branch {branch}")
+    return bool(parsed)
+
+
+def _json_from_gh(output: str, *, context: str) -> object:
+    """Parse GitHub CLI JSON output with context."""
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as err:
+        raise PrReplayError(f"{context} was not valid JSON.") from err
+
+
+def _fetch_branch(*, branch: str, cwd: Path) -> None:
+    """Fetch a remote branch if it exists without failing on first export."""
+    _run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        ],
+        cwd=cwd,
+        check=False,
+    )
+
+
+def _delete_path(path: Path) -> None:
+    """Delete one checkout entry before copying the export over it."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _required_text(value: str, name: str) -> str:
+    """Return stripped text or exit with a CLI usage error."""
+    if value.strip():
+        return value.strip()
+    sys.stderr.write(f"{name} is required.\n")
+    raise SystemExit(2)
+
+
+def _public_pr_text(*, value: str, name: str, forbidden_text: tuple[str, ...]) -> str:
+    """Validate PR text before it is sent to a public repository."""
+    text = _required_text(value, name)
+    lowered = text.casefold()
+    if any(term.casefold() in lowered for term in forbidden_text):
+        sys.stderr.write(f"{name} contains restricted source-specific text.\n")
+        raise SystemExit(2)
+    return text
+
+
+def _split_forbidden_text(values: list[str]) -> tuple[str, ...]:
+    """Split repeated comma- or newline-delimited forbidden text inputs."""
+    terms: list[str] = []
+    for value in values:
+        for line in value.splitlines():
+            terms.extend(part.strip() for part in line.split(",") if part.strip())
+    return tuple(terms)
+
+
+def _env_bool(name: str) -> bool:
+    """Return whether an environment variable is truthy."""
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _string_bool(value: str) -> bool:
+    """Return whether a CLI or environment string is truthy."""
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _branch_component(value: str) -> str:
+    """Sanitize arbitrary run metadata for use in a Git branch name."""
+    return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
+
+
+def _validated_generated_branch(*, branch: str, prefix: str) -> str:
+    """Return a safe generated branch name or exit with a usage error."""
+    if not branch.startswith(prefix):
+        sys.stderr.write(f"Branch must start with {prefix}\n")
+        raise SystemExit(2)
+    if not _valid_git_branch_name(branch):
+        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
+        raise SystemExit(2)
+    return branch
+
+
+def _valid_git_branch_name(branch: str) -> bool:
+    """Return whether a branch name is safe for force-updated sync branches."""
+    if branch in {"main", "master"} or branch.startswith(("-", "/")):
+        return False
+    if branch.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in branch or "//" in branch or "@{" in branch:
+        return False
+    if any(
+        component.startswith(".") or component.endswith(".lock")
+        for component in branch.split("/")
+    ):
+        return False
+    forbidden = set(" ~^:?*[\\")
+    return not any(
+        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
+    )
+
+
+# Every command here runs through ``uv``, which re-derives the environment from the
+# target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the operator's
+# activated loop venv) only triggers uv's "does not match the project environment"
+# warning, so drop it for a clean run.
+def _child_env() -> dict[str, str]:
+    """Return the parent env without ``VIRTUAL_ENV``."""
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def _run(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    stdout: TextIO | int | None = None,
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess while streaming commands for Action logs."""
+    _log("+ " + shlex.join(argv))
+    # The caller provides an argument vector, not a shell string.
+    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE if capture else stdout,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+        env=_child_env(),
+    )
+    if check and result.returncode != 0:
+        _write_process_output(result)
+        raise SystemExit(result.returncode)
+    return result
+
+
+# With ``check=False`` a non-retryable failure is returned to the caller instead of
+# raising ``SystemExit``, so the caller can inspect stderr and recover (e.g. fall back
+# when auto-merge is unavailable).
+def _run_gh(
+    argv: list[str],
+    *,
+    cwd: Path,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a GitHub CLI command with retries for transient API failures."""
+    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
+        result = _run(argv, cwd=cwd, check=False, capture=True)
+        if result.returncode == 0:
+            if not capture:
+                _write_process_output(result)
+            return result
+        if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
+            if not check:
+                return result
+            _write_process_output(result)
+            raise SystemExit(result.returncode)
+        _log(
+            "GitHub CLI command failed with a transient API error; "
+            f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
+            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
+        )
+        time.sleep(GITHUB_RETRY_DELAY_SEC)
+    raise AssertionError("unreachable")
+
+
+def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether a GitHub CLI failure is likely transient."""
+    output = f"{result.stdout}\n{result.stderr}".casefold()
+    return any(
+        token in output
+        for token in (
+            "http 5",
+            "timeout",
+            "timed out",
+            "try resubmitting",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
+    """Replay captured process output to the workflow log."""
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+
+
+def _log(message: str) -> None:
+    """Write one flushed workflow log line."""
+    sys.stdout.write(f"{message}\n")
+    sys.stdout.flush()
+
+
+# A skipped export exits green, so without an annotation a project can stall
+# indefinitely with every run reporting success. ``::warning::`` surfaces the skip on
+# the run summary and in the Actions UI without failing the job -- the skip itself is
+# correct, its invisibility was not.
+def _warn(message: str) -> None:
+    """Log a message and raise a GitHub workflow annotation for it."""
+    _log(f"::warning::{message}")
 
 
 def _run_export_sync(request: ExportRequest) -> None:
@@ -674,13 +1116,11 @@ def _uv_project_run(project: Path) -> list[str]:
     return ["uv", "--quiet", "--project", str(project), "run"]
 
 
+# These run before the export+leak-check so a lint/format failure surfaces immediately,
+# and before the slow type/test checks so the leak-check (run during export) fails fast
+# ahead of them.
 def _preleakcheck_validation(*, project: Path) -> None:
-    """Run the cheap source checks that gate the export.
-
-    These run before the export+leak-check so a lint/format failure
-    surfaces immediately, and before the slow type/test checks so the
-    leak-check (run during export) fails fast ahead of them.
-    """
+    """Run the cheap source checks that gate the export."""
     uv_run = _uv_project_run(project)
     _run(["uv", "--quiet", "--project", str(project), "sync", "--all-groups"])
     _run(
@@ -761,12 +1201,10 @@ def _copy_validation_tree(*, source: Path, destination: Path) -> None:
             shutil.copy2(path, target, follow_symlinks=False)
 
 
+# When ``public_dir`` is not a Git checkout, initialize an empty public repository so
+# dry-run still exercises the export pipeline without one.
 def _clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
-    """Clone the public checkout locally for strict dry-run mutations.
-
-    When ``public_dir`` is not a Git checkout, initialize an empty public
-    repository so dry-run still exercises the export pipeline without one.
-    """
+    """Clone the public checkout locally for strict dry-run mutations."""
     dry_public_dir = Path(tempfile.mkdtemp(prefix="copybarista-dry-public-"))
     _delete_path(dry_public_dir)
     if _is_git_checkout(public_dir):
@@ -817,25 +1255,14 @@ def _refresh_public_lockfile(*, public_dir: Path) -> None:
     )
 
 
+# A ``[tool.uv.sources]`` entry naming a ``branch`` means "track that branch", but plain
+# ``uv lock`` honors the SHA already in the lockfile and only re-resolves what changed.
+# The export would then validate -- and publish -- against a sibling's stale commit
+# indefinitely, since ``uv sync --frozen`` installs exactly the locked SHA. ``--upgrade-
+# package`` is the documented opt-out (``uv lock --help``: "ignoring pinned versions in
+# any existing output file"), so name every branch-tracking dependency on each export.
 def _git_branch_upgrades(pyproject: Path) -> list[str]:
-    """Return ``--upgrade-package`` flags for every git-branch dependency.
-
-    A ``[tool.uv.sources]`` entry naming a ``branch`` means "track that branch",
-    but plain ``uv lock`` honors the SHA already in the lockfile and only
-    re-resolves what changed. The export would then validate -- and publish --
-    against a sibling's stale commit indefinitely, since ``uv sync --frozen``
-    installs exactly the locked SHA. ``--upgrade-package`` is the documented
-    opt-out (``uv lock --help``: "ignoring pinned versions in any existing
-    output file"), so name every branch-tracking dependency on each export.
-
-    Args:
-      pyproject: The exported public ``pyproject.toml``.
-
-    Returns:
-      flags: Interleaved ``--upgrade-package NAME`` arguments, empty when the
-        package tracks no git branch.
-
-    """
+    """Return ``--upgrade-package`` flags for every git-branch dependency."""
     table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     for key in ("tool", "uv", "sources"):
         if not isinstance(table, dict):
@@ -851,28 +1278,25 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
     ]
 
 
+# ``validation_commands`` is the single source of truth (``copybarista.sync.toml``
+# ``sync.validation_commands``) that also drives the public repository's ``package-
+# validation.yml``. Running the exact same shell commands here makes the export PR gate
+# and the public repo's own CI verify byte-identical checks -- a change to the command
+# set can never leave one behind. Each command runs through ``bash -c`` in the public
+# checkout, so it self-contains its ``uv sync`` and may use shell features (pipes,
+# ``||``, subshells) the same way the workflow does.
+#
+# The tree is initialized as a git repository first. ``_copy_validation_tree``
+# deliberately omits ``.git``, but the validation set now runs ``pre-commit``, which
+# refuses to operate outside a repository ("git failed. Is it installed, and are you in
+# a Git repository directory?") -- and pre-commit only sees TRACKED files, so an
+# uncommitted tree would validate nothing at all.
 def _validate_public(
     *,
     public_dir: Path,
     validation_commands: tuple[str, ...],
 ) -> None:
-    """Validate the exported public checkout with the shared command set.
-
-    ``validation_commands`` is the single source of truth
-    (``copybarista.sync.toml`` ``sync.validation_commands``) that also drives the
-    public repository's ``package-validation.yml``. Running the exact same shell
-    commands here makes the export PR gate and the public repo's own CI verify
-    byte-identical checks -- a change to the command set can never leave one
-    behind. Each command runs through ``bash -c`` in the public checkout, so it
-    self-contains its ``uv sync`` and may use shell features (pipes, ``||``,
-    subshells) the same way the workflow does.
-
-    The tree is initialized as a git repository first. ``_copy_validation_tree``
-    deliberately omits ``.git``, but the validation set now runs ``pre-commit``,
-    which refuses to operate outside a repository ("git failed. Is it installed,
-    and are you in a Git repository directory?") -- and pre-commit only sees
-    TRACKED files, so an uncommitted tree would validate nothing at all.
-    """
+    """Validate the exported public checkout with the shared command set."""
     _init_validation_repo(public_dir)
     for command in validation_commands:
         _run(["bash", "-c", command], cwd=public_dir)
@@ -1000,6 +1424,10 @@ def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
     raise PrReplayError("Cannot resolve current source revision from source checkout.")
 
 
+# The source records each landed import's public SHA in that commit's subject, so its
+# history is the source of truth for what it has absorbed. A public head that is neither
+# that SHA nor an ancestor of it is a change the source never received -- force-writing
+# the export over it would destroy it.
 def _public_head_unimported(
     *,
     public_dir: Path,
@@ -1008,26 +1436,7 @@ def _public_head_unimported(
     base_branch: str,
     sync_user_email: str,
 ) -> str:
-    """The public head SHA when the source has not imported it, else ``""``.
-
-    The source records each landed import's public SHA in that commit's
-    subject, so its history is the source of truth for what it has absorbed.
-    A public head that is neither that SHA nor an ancestor of it is a change
-    the source never received -- force-writing the export over it would
-    destroy it.
-
-    Args:
-      public_dir: The public checkout.
-      source_dir: The source checkout.
-      sync_label: Import label scoping the commit search, e.g. ``Sagent``.
-      base_branch: Source branch carrying the landed imports.
-      sync_user_email: The export bot's author email. Commits it wrote are
-        renders of this source, so they carry nothing to preserve.
-
-    Returns:
-      sha: The unimported public head, or ``""`` when the source is current.
-
-    """
+    """Return the public head SHA when the source has not imported it, else ``""``."""
     head = _public_head_sha(cwd=public_dir)
     if not head:
         return ""
@@ -1059,7 +1468,7 @@ def _public_head_unimported(
 
 
 def _git_empty_tree(*, cwd: Path) -> str:
-    """The empty-tree object, usable as a base to walk a repo's whole history."""
+    """Return the empty-tree object, usable as a base to walk a repo's whole history."""
     result = _run(
         ["git", "hash-object", "-t", "tree", "/dev/null"],
         cwd=cwd,
@@ -1078,7 +1487,7 @@ def _public_head_sha(*, cwd: Path) -> str:
 def _last_synced_public_sha(
     *, target_dir: Path, sync_label: str, base_branch: str
 ) -> str:
-    """The newest public SHA the source has imported, or ``""`` when none."""
+    """Return the newest public SHA the source has imported, or ``""`` when none."""
     try:
         return last_synced_public_sha(
             target_dir=target_dir,
@@ -1103,20 +1512,7 @@ def _last_synced_public_sha(
 def _foreign_commits_since(
     *, base: str, head: str, author_email: str, cwd: Path
 ) -> tuple[str, ...]:
-    """Commits in ``base..head`` not authored by the export bot.
-
-    Args:
-      base: The last public SHA the source imported.
-      head: The public head.
-      author_email: The export bot's author email; its own commits are
-        renders of this source and carry nothing to preserve.
-      cwd: The public checkout.
-
-    Returns:
-      commits: ``<sha> <subject>`` per foreign commit; empty when the span is
-        entirely export-authored.
-
-    """
+    """Return commits in ``base..head`` not authored by the export bot."""
     # Filter by author in Python rather than with ``--author``: git has no
     # negated-author flag (``--invert-grep`` inverts ``--grep``, not
     # ``--author``, and silently returns the bot's own commits instead).
@@ -1142,17 +1538,7 @@ def _foreign_commits_since(
 
 
 def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]:
-    """Open import PRs for this project, as ``#<n> <branch>`` strings.
-
-    Args:
-      prefix: This project's import-branch prefix (``<project>/import/``).
-      repo: The source repository the import PRs are opened against.
-      cwd: Directory to run the GitHub CLI from.
-
-    Returns:
-      pending: One entry per open import PR; empty when the source is current.
-
-    """
+    """Open import PRs for this project, as ``#<n> <branch>`` strings."""
     result = _run_gh(
         [
             "gh",
@@ -1279,19 +1665,16 @@ def _resolved_replay_base(
     return _source_parent(source_dir=request.source_dir, rev=current_source_rev)
 
 
+# ``replay_bootstrap_base`` is documented as "skip commits at or before this revision":
+# a one-time floor past historical commits whose ``Copybarista-PR-Body``/``-Title``
+# trailers embed forbidden monorepo text. A PR or branch marker can legitimately resolve
+# to a commit OLDER than the bootstrap base (the marker reflects the last landed export,
+# which may predate the floor). Scanning ``marker..HEAD`` would then re-read the
+# poisoned trailers and hard-fail the export forever. Flooring to the bootstrap base
+# when the resolved base is its ancestor skips exactly those commits while leaving
+# already-published PR entries (recovered from the PR body) intact.
 def _floor_replay_base(*, source_dir: Path, base: str, bootstrap_base: str) -> str:
-    """Advance a resolved replay base to the bootstrap base when it predates it.
-
-    ``replay_bootstrap_base`` is documented as "skip commits at or before this
-    revision": a one-time floor past historical commits whose
-    ``Copybarista-PR-Body``/``-Title`` trailers embed forbidden monorepo text.
-    A PR or branch marker can legitimately resolve to a commit OLDER than the
-    bootstrap base (the marker reflects the last landed export, which may predate
-    the floor). Scanning ``marker..HEAD`` would then re-read the poisoned
-    trailers and hard-fail the export forever. Flooring to the bootstrap base
-    when the resolved base is its ancestor skips exactly those commits while
-    leaving already-published PR entries (recovered from the PR body) intact.
-    """
+    """Advance a resolved replay base to the bootstrap base when it predates it."""
     if not bootstrap_base or not base:
         return base
     if _is_source_ancestor(source_dir=source_dir, ancestor=base, rev=bootstrap_base):
@@ -1411,14 +1794,7 @@ def _base_pr_state(
 
 
 def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) -> bool:
-    """Commit exported changes and create or update the public PR.
-
-    Returns:
-      pr_open: True if a public PR exists after this call (created, updated, or
-        already open) and is therefore mergeable; False when the export was a
-        no-op with no existing PR, so there is nothing for auto-merge to act on.
-
-    """
+    """Commit exported changes and create or update the public PR."""
     if not _git_has_changes(request.public_dir):
         if pr_plan.current_pr and (
             pr_plan.current_pr.title != pr_plan.state.title
@@ -1512,15 +1888,13 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
     return True
 
 
+# ``gh pr merge --auto`` only works when the merge can be *deferred* (branch protection
+# or pending required checks). On a repo with neither, an immediately-mergeable PR makes
+# ``--auto`` fail with "Protected branch rules not configured". In that case fall back
+# to a direct (immediate) squash merge, which is the same end state auto-merge would
+# reach once checks pass.
 def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> None:
-    """Merge the generated public export PR, preferring auto-merge.
-
-    ``gh pr merge --auto`` only works when the merge can be *deferred* (branch
-    protection or pending required checks). On a repo with neither, an
-    immediately-mergeable PR makes ``--auto`` fail with "Protected branch rules
-    not configured". In that case fall back to a direct (immediate) squash merge,
-    which is the same end state auto-merge would reach once checks pass.
-    """
+    """Merge the generated public export PR, preferring auto-merge."""
     merge_argv = [
         "gh",
         "pr",
@@ -1557,37 +1931,6 @@ def _auto_merge_unavailable(result: subprocess.CompletedProcess[str]) -> bool:
     return (
         "protected branch rules not configured" in output
         or "enablepullrequestautomerge" in output
-    )
-
-
-def export_pr_text(
-    *,
-    title: str,
-    body: str,
-    source_message: str,
-    use_source_message: bool,
-    forbidden_text: tuple[str, ...],
-    default_title: str = DEFAULT_EXPORT_TITLE,
-    default_body: str = DEFAULT_EXPORT_DESCRIPTION,
-) -> ExportPrText:
-    """Return public export PR text from manual inputs, commit text, or defaults."""
-    message_title = ""
-    message_body = ""
-    if use_source_message and (not title.strip() or not body.strip()):
-        message_title, message_body = _split_commit_message(source_message)
-    resolved_title = title.strip() or message_title or default_title
-    resolved_body = body.strip() or message_body or default_body
-    return ExportPrText(
-        title=_public_pr_text(
-            value=resolved_title,
-            name="--pr-title",
-            forbidden_text=forbidden_text,
-        ),
-        body=_public_pr_text(
-            value=resolved_body,
-            name="--pr-body",
-            forbidden_text=forbidden_text,
-        ),
     )
 
 
@@ -1773,20 +2116,17 @@ def _patch_from_metadata_block(
     )
 
 
+# The body is a trailer-like value: a single contiguous paragraph. It terminates at the
+# next ``Copybarista-PR-Scope:`` (which opens a new scoped block) or at the first blank
+# line. Blank-line termination is what keeps squash-merged commit messages honest:
+# squash concatenates every squashed commit's message into one commit body, so an
+# earlier ``Copybarista-PR-Body:`` is followed by a blank line and then the next
+# commit's ordinary prose. Without the blank-line stop the body would greedily absorb
+# that unrelated prose (and leak-check it).
 def _body_lines_until_next_scope(
     lines: list[str], *, start: int
 ) -> tuple[list[str], int]:
-    """Return body lines up to the next scoped block or blank separator.
-
-    The body is a trailer-like value: a single contiguous paragraph. It
-    terminates at the next ``Copybarista-PR-Scope:`` (which opens a new
-    scoped block) or at the first blank line. Blank-line termination is
-    what keeps squash-merged commit messages honest: squash concatenates
-    every squashed commit's message into one commit body, so an earlier
-    ``Copybarista-PR-Body:`` is followed by a blank line and then the
-    next commit's ordinary prose. Without the blank-line stop the body
-    would greedily absorb that unrelated prose (and leak-check it).
-    """
+    """Return body lines up to the next scoped block or blank separator."""
     body_lines: list[str] = []
     idx = start
     while idx < len(lines):
@@ -1883,43 +2223,6 @@ def _source_author(
 def _normalized_scope(scope: str) -> str:
     """Return a normalized metadata scope label."""
     return scope.strip().casefold()
-
-
-def replay_pr_metadata(
-    *, base: PrReplayState, patches: tuple[PrMetadataPatch, ...]
-) -> PrReplayState:
-    """Apply source commit PR metadata patches in chronological order."""
-    state = base
-    seen: set[tuple[str, str]] = {
-        (entry.commit_sha, entry.text)
-        for entry in state.body_entries
-        if entry.commit_sha
-    }
-    for patch in patches:
-        entries = state.body_entries
-        body_intro = state.body_intro
-        authors = state.authors
-        if patch.body_mode == "replace" and patch.body:
-            body_intro = patch.body
-            entries = ()
-            seen = set[tuple[str, str]]()
-        elif patch.body and (patch.commit_sha, patch.body) not in seen:
-            entries = (
-                *entries,
-                PrBodyEntry(commit_sha=patch.commit_sha, text=patch.body),
-            )
-            seen.add((patch.commit_sha, patch.body))
-        authors = _append_source_author(authors=authors, author=patch.author)
-        state = PrReplayState(
-            title=patch.title or state.title,
-            authors=authors,
-            body_intro=body_intro,
-            body_entries=entries,
-            applied_source_rev=state.applied_source_rev,
-            applied_source_digest=state.applied_source_digest,
-            metadata_count=state.metadata_count + 1,
-        )
-    return state
 
 
 def _append_source_author(
@@ -2219,33 +2522,28 @@ def _metadata_error(commit_sha: str, field: str, reason: str) -> PrMetadataError
     )
 
 
+# The same ``copy.barista.toml`` ``[[transform]] type = "replace"`` rules that rewrite
+# exported file CONTENTS (a private module namespace to its public package name) also
+# apply to a commit's ``Copybarista-PR-Title``/``-Body``: an author naturally references
+# source paths there, and those must be rewritten to their public form -- not hand-
+# scrubbed per commit -- before the leak check runs. A missing or unparseable config
+# yields no transforms (the leak check still guards).
 def _load_pr_text_transforms(
     *, source_dir: Path, project_path: Path
 ) -> tuple[Transform, ...]:
-    """Load the project's ``replace`` transforms for rewriting PR metadata text.
-
-    The same ``copy.barista.toml`` ``[[transform]] type = "replace"`` rules that
-    rewrite exported file CONTENTS (a private module namespace to its public
-    package name) also apply to a commit's ``Copybarista-PR-Title``/``-Body``: an
-    author naturally references source paths there, and those must be rewritten
-    to their public form -- not hand-scrubbed per commit -- before the leak check
-    runs. A missing or unparseable config yields no transforms (the leak check
-    still guards).
-    """
+    """Load the project's ``replace`` transforms for rewriting PR metadata text."""
     config_path = source_dir / project_path / "copy.barista.toml"
     if not config_path.is_file():
         return ()
     return tuple(t for t in load_config(config_path).transforms if t.type == "replace")
 
 
+# Path scoping is intentionally ignored: PR metadata is prose, not a file, so every
+# ``replace`` rule whose ``before`` token appears is applied. Mirrors
+# ``transforms._replace``'s core (regex-group template or literal), minus the
+# filesystem.
 def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
-    """Apply each ``replace`` transform to ``value`` as the export does to files.
-
-    Path scoping is intentionally ignored: PR metadata is prose, not a file, so
-    every ``replace`` rule whose ``before`` token appears is applied. Mirrors
-    ``transforms._replace``'s core (regex-group template or literal), minus the
-    filesystem.
-    """
+    """Apply each ``replace`` transform to ``value`` as the export does to files."""
     for transform in transforms:
         if not transform.before:
             continue
@@ -2261,17 +2559,14 @@ def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
     return value
 
 
+# Runs AFTER the export's replace-transforms, so a dotted source reference is already
+# rewritten to its public form. What reaches here is text no transform covers --
+# typically a slash path -- which cannot be published and cannot be edited (the commit
+# is pushed). Dropping it loses a description; raising loses every subsequent export.
 def _scrubbed_or_dropped(
     *, commit_sha: str, field: str, value: str, forbidden_text: tuple[str, ...]
 ) -> str:
-    """Return ``value``, or ``""`` when it still carries a forbidden term.
-
-    Runs AFTER the export's replace-transforms, so a dotted source reference is
-    already rewritten to its public form. What reaches here is text no
-    transform covers -- typically a slash path -- which cannot be published and
-    cannot be edited (the commit is pushed). Dropping it loses a description;
-    raising loses every subsequent export.
-    """
+    """Return ``value``, or ``""`` when it still carries a forbidden term."""
     if not value:
         return value
     lowered = value.casefold()
@@ -2302,22 +2597,19 @@ def _validate_metadata_text(
         )
 
 
+# Terms ending in a dotted/path separator (``package.`` / ``package/``) are import or
+# path prefixes. They must match a real reference -- ``package.module``,
+# ``package/lib``, even a dotfile path ``package/.github`` -- but not the English word
+# "package" ending a sentence or clause. The discriminator is what follows the
+# separator: an import/path continues with a non-whitespace token character, whereas
+# prose has whitespace, end-of-string, or a closing quote/backtick/paren after it.
+#
+# Erring toward catching: only an unambiguous prose boundary (whitespace, EOS, or a
+# closing delimiter) is treated as safe; any other trailing character keeps the match,
+# so a real leak is never silently allowed. Terms without a trailing separator keep
+# plain substring matching.
 def _forbidden_term_present(term: str, text: str) -> bool:
-    """Whether ``term`` occurs in ``text`` as a monorepo identifier, not prose.
-
-    Terms ending in a dotted/path separator (``package.`` / ``package/``) are
-    import or path prefixes. They must match a real reference --
-    ``package.module``, ``package/lib``, even a dotfile path
-    ``package/.github`` -- but not the English word "package" ending a sentence
-    or clause. The discriminator is what follows the separator: an import/path
-    continues with a non-whitespace token character, whereas prose has
-    whitespace, end-of-string, or a closing quote/backtick/paren after it.
-
-    Erring toward catching: only an unambiguous prose boundary (whitespace,
-    EOS, or a closing delimiter) is treated as safe; any other trailing
-    character keeps the match, so a real leak is never silently allowed. Terms
-    without a trailing separator keep plain substring matching.
-    """
+    """Whether ``term`` occurs in ``text`` as a monorepo identifier, not prose."""
     if not term.endswith((".", "/")):
         return term in text
     # Match the prefix unless it is immediately followed by a prose boundary:
@@ -2391,7 +2683,7 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
         elif stripped.startswith("- "):
             if current_marker is None:
                 continue
-            marker = current_marker if not current_lines else ""
+            marker = "" if current_lines else current_marker
             _append_parsed_body_entry(
                 entries=entries,
                 commit_sha=current_marker,
@@ -2513,281 +2805,6 @@ def _split_commit_message(message: str) -> tuple[str, str]:
     if not title.strip():
         raise SystemExit("--source-message or --pr-title is required.\n")
     return title.strip(), description.strip() if separator else ""
-
-
-def export_branch_name(
-    *, explicit: str, source_branch: str, source_sha: str, prefix: str
-) -> str:
-    """Return the source-to-public sync branch name."""
-    if explicit.strip():
-        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
-    if source_branch.strip():
-        branch = f"{prefix}{_branch_component(source_branch)}"
-    else:
-        if source_sha == "manual":
-            sys.stderr.write(
-                "--branch or --source-branch is required for manual runs.\n"
-            )
-            raise SystemExit(2)
-        branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix=prefix)
-
-
-def _commit_author(name: str, email: str) -> str:
-    """Return the Git author identity for a generated sync commit."""
-    return f"{name} <{email}>"
-
-
-def _generated_commit_author(
-    *, authors: tuple[SourceAuthor, ...], fallback_name: str, fallback_email: str
-) -> str:
-    """Return the primary generated commit author identity."""
-    if authors:
-        return _commit_author(authors[0].name, authors[0].email)
-    return _commit_author(fallback_name, fallback_email)
-
-
-def _git_has_changes(path: Path) -> bool:
-    """Return whether a checkout has pending Git changes."""
-    result = _run(["git", "status", "--porcelain"], cwd=path, check=False, capture=True)
-    return bool(result.stdout.strip())
-
-
-def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
-    """Return whether GitHub has an open PR for a branch."""
-    result = _run_gh(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--head",
-            branch,
-            "--json",
-            "number",
-        ],
-        cwd=cwd,
-        capture=True,
-    )
-    parsed = _json_from_gh(result.stdout, context=f"GitHub PR list for branch {branch}")
-    return bool(parsed)
-
-
-def _json_from_gh(output: str, *, context: str) -> object:
-    """Parse GitHub CLI JSON output with context."""
-    try:
-        return json.loads(output)
-    except json.JSONDecodeError as err:
-        raise PrReplayError(f"{context} was not valid JSON.") from err
-
-
-def _fetch_branch(*, branch: str, cwd: Path) -> None:
-    """Fetch a remote branch if it exists without failing on first export."""
-    _run(
-        [
-            "git",
-            "fetch",
-            "origin",
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-        ],
-        cwd=cwd,
-        check=False,
-    )
-
-
-def _delete_path(path: Path) -> None:
-    """Delete one checkout entry before copying the export over it."""
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
-def _required_text(value: str, name: str) -> str:
-    """Return stripped text or exit with a CLI usage error."""
-    if value.strip():
-        return value.strip()
-    sys.stderr.write(f"{name} is required.\n")
-    raise SystemExit(2)
-
-
-def _public_pr_text(*, value: str, name: str, forbidden_text: tuple[str, ...]) -> str:
-    """Validate PR text before it is sent to a public repository."""
-    text = _required_text(value, name)
-    lowered = text.casefold()
-    if any(term.casefold() in lowered for term in forbidden_text):
-        sys.stderr.write(f"{name} contains restricted source-specific text.\n")
-        raise SystemExit(2)
-    return text
-
-
-def _split_forbidden_text(values: list[str]) -> tuple[str, ...]:
-    """Split repeated comma- or newline-delimited forbidden text inputs."""
-    terms: list[str] = []
-    for value in values:
-        for line in value.splitlines():
-            terms.extend(part.strip() for part in line.split(",") if part.strip())
-    return tuple(terms)
-
-
-def _env_bool(name: str) -> bool:
-    """Return whether an environment variable is truthy."""
-    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
-
-
-def _string_bool(value: str) -> bool:
-    """Return whether a CLI or environment string is truthy."""
-    return value.strip().casefold() in {"1", "true", "yes", "on"}
-
-
-def _branch_component(value: str) -> str:
-    """Sanitize arbitrary run metadata for use in a Git branch name."""
-    return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
-
-
-def _validated_generated_branch(*, branch: str, prefix: str) -> str:
-    """Return a safe generated branch name or exit with a usage error."""
-    if not branch.startswith(prefix):
-        sys.stderr.write(f"Branch must start with {prefix}\n")
-        raise SystemExit(2)
-    if not _valid_git_branch_name(branch):
-        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
-        raise SystemExit(2)
-    return branch
-
-
-def _valid_git_branch_name(branch: str) -> bool:
-    """Return whether a branch name is safe for force-updated sync branches."""
-    if branch in {"main", "master"} or branch.startswith(("-", "/")):
-        return False
-    if branch.endswith(("/", ".", ".lock")):
-        return False
-    if ".." in branch or "//" in branch or "@{" in branch:
-        return False
-    if any(
-        component.startswith(".") or component.endswith(".lock")
-        for component in branch.split("/")
-    ):
-        return False
-    forbidden = set(" ~^:?*[\\")
-    return not any(
-        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
-    )
-
-
-def _child_env() -> dict[str, str]:
-    """Return the parent env without ``VIRTUAL_ENV``.
-
-    Every command here runs through ``uv``, which re-derives the environment
-    from the target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the
-    operator's activated loop venv) only triggers uv's "does not match the
-    project environment" warning, so drop it for a clean run.
-    """
-    env = dict(os.environ)
-    env.pop("VIRTUAL_ENV", None)
-    return env
-
-
-def _run(
-    argv: list[str],
-    *,
-    cwd: Path | None = None,
-    stdout: TextIO | int | None = None,
-    check: bool = True,
-    capture: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess while streaming commands for Action logs."""
-    _log("+ " + shlex.join(argv))
-    # The caller provides an argument vector, not a shell string.
-    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
-        argv,
-        cwd=cwd,
-        check=False,
-        stdout=subprocess.PIPE if capture else stdout,
-        stderr=subprocess.PIPE if capture else None,
-        text=True,
-        env=_child_env(),
-    )
-    if check and result.returncode != 0:
-        _write_process_output(result)
-        raise SystemExit(result.returncode)
-    return result
-
-
-def _run_gh(
-    argv: list[str],
-    *,
-    cwd: Path,
-    capture: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    """Run a GitHub CLI command with retries for transient API failures.
-
-    With ``check=False`` a non-retryable failure is returned to the caller
-    instead of raising ``SystemExit``, so the caller can inspect stderr and
-    recover (e.g. fall back when auto-merge is unavailable).
-    """
-    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
-        result = _run(argv, cwd=cwd, check=False, capture=True)
-        if result.returncode == 0:
-            if not capture:
-                _write_process_output(result)
-            return result
-        if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
-            if not check:
-                return result
-            _write_process_output(result)
-            raise SystemExit(result.returncode)
-        _log(
-            "GitHub CLI command failed with a transient API error; "
-            f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
-            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
-        )
-        time.sleep(GITHUB_RETRY_DELAY_SEC)
-    raise AssertionError("unreachable")
-
-
-def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return whether a GitHub CLI failure is likely transient."""
-    output = f"{result.stdout}\n{result.stderr}".casefold()
-    return any(
-        token in output
-        for token in (
-            "http 5",
-            "timeout",
-            "timed out",
-            "try resubmitting",
-            "temporarily unavailable",
-        )
-    )
-
-
-def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
-    """Replay captured process output to the workflow log."""
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-
-
-def _log(message: str) -> None:
-    """Write one flushed workflow log line."""
-    sys.stdout.write(f"{message}\n")
-    sys.stdout.flush()
-
-
-def _warn(message: str) -> None:
-    """Log a message and raise a GitHub workflow annotation for it.
-
-    A skipped export exits green, so without an annotation a project can stall
-    indefinitely with every run reporting success. ``::warning::`` surfaces the
-    skip on the run summary and in the Actions UI without failing the job --
-    the skip itself is correct, its invisibility was not.
-    """
-    _log(f"::warning::{message}")
 
 
 if __name__ == "__main__":

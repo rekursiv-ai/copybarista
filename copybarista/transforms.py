@@ -165,8 +165,232 @@ class _TransformResult:
     """Internal transform outcome before adding config identity fields."""
 
     changed: int
+
     count: int
+
     files: tuple[TransformFileReport, ...]
+
+
+def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
+    """Uncomment single-line markers and block-delimited regions.
+
+    Public so the importer can reverse an ``uncomment`` by locating each source
+    block's exported form; a second copy of this walk would drift from it.
+
+    Args:
+      text: Text.
+      transform: Transform.
+
+    Returns:
+      result: The tuple[str, int].
+
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+        trailing_newline = True
+    else:
+        trailing_newline = False
+    result: list[str] = []
+    i = 0
+    count = 0
+    while i < len(lines):
+        if transform.end and transform.start in lines[i]:
+            end_idx = None
+            for j in range(i + 1, len(lines)):
+                if transform.end in lines[j]:
+                    end_idx = j
+                    break
+            if end_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' did not find end marker"
+                )
+            result.extend(_uncomment_line(line) for line in lines[i + 1 : end_idx])
+            i = end_idx + 1
+            count += 1
+        elif line_has_marker_token(lines[i], transform.start):
+            # Inline marker (no block ``end``): uncomment the code before the
+            # marker and drop the marker itself. ``line_has_marker_token`` rejects
+            # a marker immediately followed by ``:`` so the inline
+            # ``# copybarista:external`` never claims a block ``:external:start``/
+            # ``:end`` line (whose prefix it shares); those belong to the paired
+            # block ``uncomment`` transform above.
+            uncommented = lines[i].split(transform.start)[0].rstrip()
+            result.append(_uncomment_line(uncommented))
+            count += 1
+            i += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    final = "\n".join(result)
+    if trailing_newline:
+        final += "\n"
+    return final, count
+
+
+def line_has_marker_token(line: str, marker: str) -> bool:
+    """Return whether ``line`` carries the inline ``marker`` as a whole token.
+
+    A bare substring test would misfire when one marker is a prefix of another --
+    the per-line ``# copybarista:internal`` / ``# copybarista:external`` markers
+    are prefixes of the block markers ``# copybarista:internal:start`` / ``:end``
+    (and the ``:external`` equivalents). Matching the marker only when it is NOT
+    immediately followed by ``:`` keeps the line marker from claiming a block
+    marker's line (which belongs to a separate ``strip_block`` / block
+    ``uncomment`` transform). On export the two never collide because the block
+    transform runs first; on reverse-import they can, so this disambiguation is
+    load-bearing.
+
+    Args:
+      line: Line.
+      marker: Marker.
+
+    Returns:
+      result: The bool.
+
+    """
+    index = line.find(marker)
+    while index != -1:
+        after = index + len(marker)
+        if after >= len(line) or line[after] != ":":
+            return True
+        index = line.find(marker, index + 1)
+    return False
+
+
+def strip_source_text(text: str, transform: Transform) -> str:
+    """Return the exported form of one text for a strip transform.
+
+    The single source of truth for how ``strip_block`` and ``internal_lines``
+    remove content on export, factored out of the file-walking transforms so the
+    reverse-import path can derive removed regions from the *actual* export
+    result rather than re-deriving marker semantics by hand. Keeping one
+    definition means inclusive/exclusive/else and future tweaks stay consistent
+    across export and import automatically.
+
+    Args:
+      text: Text.
+      transform: Transform.
+
+    Returns:
+      result: The str.
+
+    """
+    return strip_source_regions(text, transform)[0]
+
+
+def strip_source_regions(
+    text: str, transform: Transform
+) -> tuple[str, tuple[tuple[int, str], ...]]:
+    """Return the exported text and the source-only regions it removed.
+
+    Companion to ``strip_source_text`` that also reports each removed region as
+    ``(offset_in_stripped, removed_text)``: the offset the region occupied in the
+    *stripped* (exported) form and the exact bytes deleted. The reverse-import
+    path re-inserts these verbatim, so deriving them from the SAME traversal the
+    export uses keeps them exact for every block shape -- there is no second,
+    drift-prone re-derivation of marker semantics.
+
+    A transform that rewrites rather than deletes (``strip_block`` with an
+    ``else`` branch uncomments and keeps the else lines) has no verbatim removed
+    region to report and cannot be reversed by re-insertion; callers that need
+    regions must reject it first. This returns no regions for the ``else`` case
+    rather than fabricate one.
+
+    Args:
+      text: Text.
+      transform: Transform.
+
+    Returns:
+      result: The tuple[str, tuple[tuple[int, str], ...]].
+
+    """
+    if transform.type == "strip_block":
+        if transform.else_marker:
+            return _strip_blocks_with_else(text, transform)[0], ()
+        return _strip_blocks_regions(text, transform)
+    if transform.type == "internal_lines":
+        marker = transform.start
+        kept: list[str] = []
+        regions: list[tuple[int, str]] = []
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            if line_has_marker_token(line, marker):
+                regions.append((offset, line))
+            else:
+                kept.append(line)
+                offset += len(line)
+        return "".join(kept), tuple(regions)
+    raise TransformError(
+        f"strip_source_text does not support transform type {transform.type!r}"
+    )
+
+
+# Mirrors ``_strip_blocks`` exactly (same marker walk, same inclusive gap collapse) so
+# the removed spans are the ground truth for reverse re-insertion. ``updated`` is edited
+# in place and re-searched from the cut point, so ``start_idx`` is already an offset in
+# the partially-stripped text -- i.e. the final stripped-form offset of that region.
+def _strip_blocks_regions(
+    text: str, transform: Transform
+) -> tuple[str, tuple[tuple[int, str], ...]]:
+    """Strip marker-delimited blocks, reporting each removed region."""
+    if not transform.start or not transform.end:
+        raise TransformError(
+            f"Transformation '{transform.id}' markers must be non-empty"
+        )
+    updated = text
+    search_from = 0
+    regions: list[tuple[int, str]] = []
+    while True:
+        start_idx = updated.find(transform.start, search_from)
+        if start_idx < 0:
+            return updated, tuple(regions)
+        first_end_idx = updated.find(transform.end, search_from)
+        if 0 <= first_end_idx < start_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found end marker before start marker"
+            )
+        end_idx = updated.find(transform.end, start_idx + len(transform.start))
+        if end_idx < 0:
+            raise TransformError(
+                f"Transformation '{transform.id}' did not find end marker"
+            )
+        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
+        if 0 <= next_start_idx < end_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found nested start marker"
+            )
+        if transform.inclusive:
+            end_idx += len(transform.end)
+            # Mirror ``_strip_blocks``: the cut starts at the marker's own line
+            # start so an indented block leaves no whitespace stub.
+            line_start = updated.rfind("\n", 0, start_idx) + 1
+            if not updated[line_start:start_idx].strip():
+                start_idx = line_start
+            removed = updated[start_idx:end_idx]
+            after = updated[end_idx:]
+            # Match _collapse_removed_block_gap: when kept text before the block
+            # ends in a newline and the text after begins with newline(s), those
+            # leading newlines are collapsed into the cut, so they are part of
+            # the removed region (``after.lstrip("\n")``).
+            if updated[:start_idx].endswith("\n") and after.startswith("\n"):
+                stripped_after = after.lstrip("\n")
+                removed += after[: len(after) - len(stripped_after)]
+                after = stripped_after
+            updated = updated[:start_idx] + after
+            search_from = start_idx
+        else:
+            removed = updated[start_idx:end_idx]
+            updated = updated[:start_idx] + updated[end_idx:]
+            search_from = start_idx + len(transform.end)
+        regions.append((start_idx, removed))
+
+
+def _collapse_removed_block_gap(before: str, after: str) -> str:
+    """Avoid creating extra blank lines around an inclusive stripped block."""
+    if before.endswith("\n") and after.startswith("\n"):
+        return before + after.lstrip("\n")
+    return before + after
 
 
 def _replace(
@@ -357,55 +581,6 @@ def _uncomment(
             raise TransformError(f"Transformation '{transform.id}' did not find marker")
         raise TransformError(f"Transformation '{transform.id}' matched no files")
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
-
-
-def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
-    """Uncomment single-line markers and block-delimited regions.
-
-    Public so the importer can reverse an ``uncomment`` by locating each source
-    block's exported form; a second copy of this walk would drift from it.
-    """
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-        trailing_newline = True
-    else:
-        trailing_newline = False
-    result: list[str] = []
-    i = 0
-    count = 0
-    while i < len(lines):
-        if transform.end and transform.start in lines[i]:
-            end_idx = None
-            for j in range(i + 1, len(lines)):
-                if transform.end in lines[j]:
-                    end_idx = j
-                    break
-            if end_idx is None:
-                raise TransformError(
-                    f"Transformation '{transform.id}' did not find end marker"
-                )
-            result.extend(_uncomment_line(line) for line in lines[i + 1 : end_idx])
-            i = end_idx + 1
-            count += 1
-        elif line_has_marker_token(lines[i], transform.start):
-            # Inline marker (no block ``end``): uncomment the code before the
-            # marker and drop the marker itself. ``line_has_marker_token`` rejects
-            # a marker immediately followed by ``:`` so the inline
-            # ``# copybarista:external`` never claims a block ``:external:start``/
-            # ``:end`` line (whose prefix it shares); those belong to the paired
-            # block ``uncomment`` transform above.
-            uncommented = lines[i].split(transform.start)[0].rstrip()
-            result.append(_uncomment_line(uncommented))
-            count += 1
-            i += 1
-        else:
-            result.append(lines[i])
-            i += 1
-    final = "\n".join(result)
-    if trailing_newline:
-        final += "\n"
-    return final, count
 
 
 def _uncomment_line(line: str) -> str:
@@ -618,17 +793,14 @@ def _file_report(
     )
 
 
+# ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``: the pathlib
+# spelling builds a ``Path`` per entry and then reparses it, and exporting priml called
+# ``relative_to`` 108,615 times across 17 patterns, 2.6s of a 7.5s export. Walked once
+# per ``apply_transforms`` (0.015s over 4,785 files) rather than once per transform
+# (0.32s for the 17 priml text transforms); a ``move`` is the only transform that
+# changes the set, and the caller re-walks after one.
 def _list_staged_files(root: Path) -> tuple[str, ...]:
-    """Return every staged non-directory entry as a root-relative POSIX path.
-
-    ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``: the
-    pathlib spelling builds a ``Path`` per entry and then reparses it, and
-    exporting priml called ``relative_to`` 108,615 times across 17 patterns,
-    2.6s of a 7.5s export. Walked once per ``apply_transforms`` (0.015s over
-    4,785 files) rather than once per transform (0.32s for the 17 priml text
-    transforms); a ``move`` is the only transform that changes the set, and the
-    caller re-walks after one.
-    """
+    """Return every staged non-directory entry as a root-relative POSIX path."""
     prefix = len(str(root)) + 1
     rel_paths: list[str] = []
     for directory, _, names in os.walk(root):
@@ -639,12 +811,10 @@ def _list_staged_files(root: Path) -> tuple[str, ...]:
     return tuple(_sorted_by_segments(rel_paths))
 
 
+# ``Path`` compares by path segments, so ``a/b`` sorts before ``a-b``; a plain string
+# sort puts ``-`` before ``/`` and would reorder manifests and reports.
 def _sorted_by_segments(rel_paths: Iterable[str]) -> list[str]:
-    """Sort relative POSIX paths the way ``sorted()`` orders ``Path`` objects.
-
-    ``Path`` compares by path segments, so ``a/b`` sorts before ``a-b``; a plain
-    string sort puts ``-`` before ``/`` and would reorder manifests and reports.
-    """
+    """Sort relative POSIX paths the way ``sorted()`` orders ``Path`` objects."""
     return sorted(rel_paths, key=_path_segments)
 
 
@@ -668,18 +838,15 @@ def _read_text(path: Path) -> str:
         raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
 
 
+# Not the bytes: reading every staged file twice cost 0.36s of a priml export. A same-
+# length rewrite is still caught because ruff runs as a subprocess whose startup exceeds
+# the filesystem timestamp tick, so any file it writes carries a later ``mtime_ns`` than
+# the snapshot taken before it was spawned.
+#
+# ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``: the two
+# snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s as strings.
 def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, int]]:
-    """Return ``(size, mtime_ns)`` per staged regular file, keyed by relative path.
-
-    Not the bytes: reading every staged file twice cost 0.36s of a priml export.
-    A same-length rewrite is still caught because ruff runs as a subprocess whose
-    startup exceeds the filesystem timestamp tick, so any file it writes carries
-    a later ``mtime_ns`` than the snapshot taken before it was spawned.
-
-    ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``:
-    the two snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s
-    as strings.
-    """
+    """Return ``(size, mtime_ns)`` per staged regular file, keyed by relative path."""
     prefix = len(str(root)) + 1
     if target.is_file():
         candidates = [str(target)]
@@ -696,147 +863,3 @@ def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, in
             rel = full[prefix:].replace(os.sep, "/")
             snapshot[rel] = (status.st_size, status.st_mtime_ns)
     return snapshot
-
-
-def line_has_marker_token(line: str, marker: str) -> bool:
-    """Return whether ``line`` carries the inline ``marker`` as a whole token.
-
-    A bare substring test would misfire when one marker is a prefix of another --
-    the per-line ``# copybarista:internal`` / ``# copybarista:external`` markers
-    are prefixes of the block markers ``# copybarista:internal:start`` / ``:end``
-    (and the ``:external`` equivalents). Matching the marker only when it is NOT
-    immediately followed by ``:`` keeps the line marker from claiming a block
-    marker's line (which belongs to a separate ``strip_block`` / block
-    ``uncomment`` transform). On export the two never collide because the block
-    transform runs first; on reverse-import they can, so this disambiguation is
-    load-bearing.
-    """
-    index = line.find(marker)
-    while index != -1:
-        after = index + len(marker)
-        if after >= len(line) or line[after] != ":":
-            return True
-        index = line.find(marker, index + 1)
-    return False
-
-
-def strip_source_text(text: str, transform: Transform) -> str:
-    """Return the exported form of one text for a strip transform.
-
-    The single source of truth for how ``strip_block`` and ``internal_lines``
-    remove content on export, factored out of the file-walking transforms so the
-    reverse-import path can derive removed regions from the *actual* export
-    result rather than re-deriving marker semantics by hand. Keeping one
-    definition means inclusive/exclusive/else and future tweaks stay consistent
-    across export and import automatically.
-    """
-    return strip_source_regions(text, transform)[0]
-
-
-def strip_source_regions(
-    text: str, transform: Transform
-) -> tuple[str, tuple[tuple[int, str], ...]]:
-    """Return the exported text and the source-only regions it removed.
-
-    Companion to ``strip_source_text`` that also reports each removed region as
-    ``(offset_in_stripped, removed_text)``: the offset the region occupied in the
-    *stripped* (exported) form and the exact bytes deleted. The reverse-import
-    path re-inserts these verbatim, so deriving them from the SAME traversal the
-    export uses keeps them exact for every block shape -- there is no second,
-    drift-prone re-derivation of marker semantics.
-
-    A transform that rewrites rather than deletes (``strip_block`` with an
-    ``else`` branch uncomments and keeps the else lines) has no verbatim removed
-    region to report and cannot be reversed by re-insertion; callers that need
-    regions must reject it first. This returns no regions for the ``else`` case
-    rather than fabricate one.
-    """
-    if transform.type == "strip_block":
-        if transform.else_marker:
-            return _strip_blocks_with_else(text, transform)[0], ()
-        return _strip_blocks_regions(text, transform)
-    if transform.type == "internal_lines":
-        marker = transform.start
-        kept: list[str] = []
-        regions: list[tuple[int, str]] = []
-        offset = 0
-        for line in text.splitlines(keepends=True):
-            if line_has_marker_token(line, marker):
-                regions.append((offset, line))
-            else:
-                kept.append(line)
-                offset += len(line)
-        return "".join(kept), tuple(regions)
-    raise TransformError(
-        f"strip_source_text does not support transform type {transform.type!r}"
-    )
-
-
-def _strip_blocks_regions(
-    text: str, transform: Transform
-) -> tuple[str, tuple[tuple[int, str], ...]]:
-    """Strip marker-delimited blocks, reporting each removed region.
-
-    Mirrors ``_strip_blocks`` exactly (same marker walk, same inclusive gap
-    collapse) so the removed spans are the ground truth for reverse re-insertion.
-    ``updated`` is edited in place and re-searched from the cut point, so
-    ``start_idx`` is already an offset in the partially-stripped text -- i.e. the
-    final stripped-form offset of that region.
-    """
-    if not transform.start or not transform.end:
-        raise TransformError(
-            f"Transformation '{transform.id}' markers must be non-empty"
-        )
-    updated = text
-    search_from = 0
-    regions: list[tuple[int, str]] = []
-    while True:
-        start_idx = updated.find(transform.start, search_from)
-        if start_idx < 0:
-            return updated, tuple(regions)
-        first_end_idx = updated.find(transform.end, search_from)
-        if 0 <= first_end_idx < start_idx:
-            raise TransformError(
-                f"Transformation '{transform.id}' found end marker before start marker"
-            )
-        end_idx = updated.find(transform.end, start_idx + len(transform.start))
-        if end_idx < 0:
-            raise TransformError(
-                f"Transformation '{transform.id}' did not find end marker"
-            )
-        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
-        if 0 <= next_start_idx < end_idx:
-            raise TransformError(
-                f"Transformation '{transform.id}' found nested start marker"
-            )
-        if transform.inclusive:
-            end_idx += len(transform.end)
-            # Mirror ``_strip_blocks``: the cut starts at the marker's own line
-            # start so an indented block leaves no whitespace stub.
-            line_start = updated.rfind("\n", 0, start_idx) + 1
-            if not updated[line_start:start_idx].strip():
-                start_idx = line_start
-            removed = updated[start_idx:end_idx]
-            after = updated[end_idx:]
-            # Match _collapse_removed_block_gap: when kept text before the block
-            # ends in a newline and the text after begins with newline(s), those
-            # leading newlines are collapsed into the cut, so they are part of
-            # the removed region (``after.lstrip("\n")``).
-            if updated[:start_idx].endswith("\n") and after.startswith("\n"):
-                stripped_after = after.lstrip("\n")
-                removed += after[: len(after) - len(stripped_after)]
-                after = stripped_after
-            updated = updated[:start_idx] + after
-            search_from = start_idx
-        else:
-            removed = updated[start_idx:end_idx]
-            updated = updated[:start_idx] + updated[end_idx:]
-            search_from = start_idx + len(transform.end)
-        regions.append((start_idx, removed))
-
-
-def _collapse_removed_block_gap(before: str, after: str) -> str:
-    """Avoid creating extra blank lines around an inclusive stripped block."""
-    if before.endswith("\n") and after.startswith("\n"):
-        return before + after.lstrip("\n")
-    return before + after

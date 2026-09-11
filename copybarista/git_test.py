@@ -137,3 +137,9 @@ def _git(remote: Path, *args: str) -> str:
         [result, "--git-dir", str(remote), *args],
     )
     return completed.stdout
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

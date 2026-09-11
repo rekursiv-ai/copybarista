@@ -57,7 +57,9 @@ class TreeEntry:
     """
 
     kind: EntryKind
+
     data: bytes
+
     executable: bool = False
 
 
@@ -72,6 +74,7 @@ class TreeChange:
     """
 
     path: str
+
     action: ChangeAction
 
 
@@ -83,6 +86,32 @@ class TreeDiff:
     """
 
     changes: tuple[TreeChange, ...]
+
+
+def _tree_symlink(path: Path) -> TreeEntry:
+    """Build a deterministic snapshot entry for one symlink."""
+    return TreeEntry(kind="symlink", data=path.readlink().as_posix().encode())
+
+
+def _tree_file(path: Path) -> TreeEntry:
+    """Build a deterministic snapshot entry for one regular file."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    executable = bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    return TreeEntry(
+        kind="file",
+        data=path.read_bytes(),
+        executable=executable,
+    )
+
+
+def _is_metadata_path(public_path: str) -> bool:
+    """Return whether a path belongs to VCS or Copybarista metadata."""
+    parts = Path(public_path).parts
+    return (
+        bool(VCS_DIRS.intersection(parts))
+        or public_path == ".copybarista"
+        or public_path.startswith(".copybarista/")
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -136,7 +165,15 @@ class TreeSnapshot:
         return cls(entries=entries)
 
     def diff(self, other: TreeSnapshot) -> TreeDiff:
-        """Return created, deleted, modified, and type-changed paths."""
+        """Return created, deleted, modified, and type-changed paths.
+
+        Args:
+          other: Other.
+
+        Returns:
+          result: The TreeDiff.
+
+        """
         changes: list[TreeChange] = []
         for path in sorted(set(self.entries) | set(other.entries)):
             before = self.entries.get(path)
@@ -161,6 +198,7 @@ class PathMapper:
     """
 
     config: WorkflowConfig
+
     matcher: GlobSet = field(init=False)
 
     def __post_init__(self) -> None:
@@ -302,17 +340,15 @@ class PathMapper:
             )
         return ""
 
+    # A path the ``[[files.moves]]`` sequence placed (whether under the package prefix
+    # or kept at the public root by a back-move) belongs to the source-root selection:
+    # reversing the moves yields its source-relative path and the caller re-roots it
+    # under ``source_root``. A path no move touched is under no relocation rule at all;
+    # ``None`` signals the caller to keep it at its identical path (Copybara's
+    # unmatched-``core.move`` behavior) rather than raise or wrongly re-root it under
+    # ``source_root``.
     def _moved_source_relative_path(self, public_path: str) -> str | None:
-        """Return the source-root-relative path, or ``None`` if unrelocated.
-
-        A path the ``[[files.moves]]`` sequence placed (whether under the package
-        prefix or kept at the public root by a back-move) belongs to the
-        source-root selection: reversing the moves yields its source-relative
-        path and the caller re-roots it under ``source_root``. A path no move
-        touched is under no relocation rule at all; ``None`` signals the caller
-        to keep it at its identical path (Copybara's unmatched-``core.move``
-        behavior) rather than raise or wrongly re-root it under ``source_root``.
-        """
+        """Return the source-root-relative path, or ``None`` if unrelocated."""
         if not self.config.files.moves:
             return public_path
         reversed_path, moved = _reverse_file_moves(public_path, self.config.files.moves)
@@ -335,9 +371,13 @@ class ImportChange:
     """
 
     public: str
+
     source: str
+
     action: ChangeAction
+
     transforms: tuple[str, ...] = ()
+
     outcome: ChangeOutcome = "applied"
 
 
@@ -362,7 +402,12 @@ class ImportResult:
     changes: tuple[ImportChange, ...]
 
     def to_dict(self) -> dict[str, object]:
-        """Return a JSON-serializable report."""
+        """Return a JSON-serializable report.
+
+        Returns:
+          result: The dict[str, object].
+
+        """
         return {
             "changes": [
                 {
@@ -395,15 +440,26 @@ class ChangeRequestImporter:
     """
 
     config: WorkflowConfig
+
     public_base: Path
+
     public_head: Path
+
     source_base: Path
+
     destination: Path
+
     verify: bool = True
+
     merge_import: bool = False
 
     def plan(self) -> ImportPlan:
-        """Build and validate the import plan."""
+        """Build and validate the import plan.
+
+        Returns:
+          result: The ImportPlan.
+
+        """
         _validate_import_destination(self.destination)
         if self.verify and not self.merge_import:
             self._check_public_base()
@@ -423,7 +479,12 @@ class ChangeRequestImporter:
         return ImportPlan(changes=changes)
 
     def import_changes(self) -> ImportResult:
-        """Apply the public diff to the destination checkout."""
+        """Apply the public diff to the destination checkout.
+
+        Returns:
+          result: The ImportResult.
+
+        """
         plan = self.plan()
         originals = _capture_originals(
             destination=self.destination,
@@ -481,26 +542,22 @@ class ChangeRequestImporter:
         self._reformat_imported_source(change=change, target=target)
         return change
 
+    # ``ruff_format`` has no content inverse, so ``_reverse_content`` skips it on
+    # import. But a namespace ``replace`` reverses by pure text substitution that
+    # preserves physical line order: a public file whose imports are sorted under the
+    # *public* namespace can land unsorted under the *source* namespace whenever the two
+    # namespaces sort their import groups differently. Re-applying ruff (isort + format)
+    # forward on the written file restores source-namespace order, so importing never
+    # pollutes the source tree with lint violations.
+    #
+    # Runs with ``cwd=self.destination`` so ruff discovers the source tree's own config
+    # (e.g. ``known-first-party``), and only when a ``ruff_format`` transform's glob
+    # matches this change's public path. A whole-tree ``ruff_format`` (``path = "."`` /
+    # ``""``, the shape every shipped config uses) formats the entire staged tree on
+    # export, so it matches every reversed file here -- a literal ``.`` glob would match
+    # nothing and the reformat would silently never run (leaving isort-dirty imports).
     def _reformat_imported_source(self, *, change: ImportChange, target: Path) -> None:
-        """Re-run ``ruff_format`` forward on a freshly reversed source file.
-
-        ``ruff_format`` has no content inverse, so ``_reverse_content`` skips it
-        on import. But a namespace ``replace`` reverses by pure text
-        substitution that preserves physical line order: a public file whose
-        imports are sorted under the *public* namespace can land unsorted under
-        the *source* namespace whenever the two namespaces sort their import
-        groups differently. Re-applying ruff (isort + format) forward on the
-        written file restores source-namespace order, so importing never
-        pollutes the source tree with lint violations.
-
-        Runs with ``cwd=self.destination`` so ruff discovers the source tree's
-        own config (e.g. ``known-first-party``), and only when a ``ruff_format``
-        transform's glob matches this change's public path. A whole-tree
-        ``ruff_format`` (``path = "."`` / ``""``, the shape every shipped config
-        uses) formats the entire staged tree on export, so it matches every
-        reversed file here -- a literal ``.`` glob would match nothing and the
-        reformat would silently never run (leaving isort-dirty imports).
-        """
+        """Re-run ``ruff_format`` forward on a freshly reversed source file."""
         if not any(
             transform.type == "ruff_format"
             and _ruff_format_matches(transform, change.public)
@@ -529,18 +586,15 @@ class ChangeRequestImporter:
             cwd=self.destination,
         )
 
+    # Merges happen in PUBLIC space: the current source is exported once, then each file
+    # is merged as ``diff3(source_export, public_base, public_head)`` and the result
+    # reversed back to source form. Merging publicly keeps the non-reversible direction
+    # (e.g. ``strip_block``) out of the common already-applied path -- a file whose
+    # export already equals the public head needs no reversal at all.
     def _merge_changes(
         self, changes: tuple[ImportChange, ...]
     ) -> tuple[ImportChange, ...]:
-        """Reconcile every change by three-way merge, raising on conflicts.
-
-        Merges happen in PUBLIC space: the current source is exported once, then
-        each file is merged as ``diff3(source_export, public_base, public_head)``
-        and the result reversed back to source form. Merging publicly keeps the
-        non-reversible direction (e.g. ``strip_block``) out of the common
-        already-applied path -- a file whose export already equals the public
-        head needs no reversal at all.
-        """
+        """Reconcile every change by three-way merge, raising on conflicts."""
         with tempfile.TemporaryDirectory(prefix="copybarista-import-merge-") as tmp:
             source_export = Path(tmp) / "source-export"
             export_folder(
@@ -564,17 +618,15 @@ class ChangeRequestImporter:
             )
         return tuple(applied)
 
+    # Normally the source's exported form at the public path (Copybara reads the origin
+    # workdir; we read a single re-export as its equivalent). But a path under no
+    # relocation rule is NOT shipped by the export -- it lives at its identical path in
+    # the source tree and is absent from the export. For such an identity path
+    # (``change.source == change.public``) fall back to the source file directly, so the
+    # merge sees the real local side rather than an empty string that would spuriously
+    # conflict with the incoming public edit.
     def _ours_public_bytes(self, *, change: ImportChange, source_export: Path) -> bytes:
-        """Return the source's public-space bytes for the merge 'ours' side.
-
-        Normally the source's exported form at the public path (Copybara reads the
-        origin workdir; we read a single re-export as its equivalent). But a path
-        under no relocation rule is NOT shipped by the export -- it lives at its
-        identical path in the source tree and is absent from the export. For such
-        an identity path (``change.source == change.public``) fall back to the
-        source file directly, so the merge sees the real local side rather than an
-        empty string that would spuriously conflict with the incoming public edit.
-        """
+        """Return the source's public-space bytes for the merge 'ours' side."""
         exported = source_export / change.public
         if exported.is_file():
             return exported.read_bytes()
@@ -591,6 +643,12 @@ class ChangeRequestImporter:
             return base_path.read_bytes()
         return b""
 
+    # A namespace-collapse reverse is a guess: once the internal prefix is gone, public
+    # text cannot distinguish a module reference from a path segment or prose. Where the
+    # source still holds the real text, use it.
+    #
+    # Whole-document, not per line: ``strip_block`` and ``internal_lines`` reinsert
+    # multi-line regions.
     def _reverse_changed_lines(
         self,
         *,
@@ -598,24 +656,7 @@ class ChangeRequestImporter:
         merged_public: bytes,
         ours_public: bytes,
     ) -> bytes:
-        """Reverse the public text, then restore lines the edit never touched.
-
-        A namespace-collapse reverse is a guess: once the internal prefix is
-        gone, public text cannot distinguish a module reference from a path
-        segment or prose. Where the source still holds the real text, use it.
-
-        Whole-document, not per line: ``strip_block`` and ``internal_lines``
-        reinsert multi-line regions.
-
-        Args:
-          public_path: Public repository path being imported.
-          merged_public: Public-space bytes to reverse.
-          ours_public: The source's own export, i.e. public text before the edit.
-
-        Returns:
-          source_bytes: Reversed content, with mis-guessed lines corrected.
-
-        """
+        """Reverse the public text, then restore lines the edit never touched."""
         reversed_whole = self._reverse_content(
             public_path=public_path, data=merged_public
         )
@@ -652,26 +693,17 @@ class ChangeRequestImporter:
             source_lines=source_lines,
         ).encode()
 
+    # Mirrors Copybara's ``MergeImportTool``: the public head is the incoming change,
+    # the public base is the merge baseline, and the source's exported form is the local
+    # side. A source already at head is a no-op (``skipped``); independent text drift
+    # merges cleanly (``merged``); overlapping edits record a conflict for the caller to
+    # surface. Deletions, symlinks, and directory changes are not text-mergeable: they
+    # are force-propagated from the public head via ``_apply_change`` (matching
+    # Copybara, which propagates origin deletions regardless of destination drift).
     def _merge_change(
         self, *, change: ImportChange, source_export: Path
     ) -> tuple[ImportChange, bool]:
-        """Reconcile one change by three-way merge in public space.
-
-        Mirrors Copybara's ``MergeImportTool``: the public head is the incoming
-        change, the public base is the merge baseline, and the source's exported
-        form is the local side. A source already at head is a no-op
-        (``skipped``); independent text drift merges cleanly (``merged``);
-        overlapping edits record a conflict for the caller to surface. Deletions,
-        symlinks, and directory changes are not text-mergeable: they are
-        force-propagated from the public head via ``_apply_change`` (matching
-        Copybara, which propagates origin deletions regardless of destination
-        drift).
-
-        Returns:
-          resolved: The change annotated with its merge outcome.
-          conflicted: Whether the three-way merge produced conflict markers.
-
-        """
+        """Reconcile one change by three-way merge in public space."""
         target = _validated_target(
             destination=self.destination, relative_path=change.source
         )
@@ -724,17 +756,14 @@ class ChangeRequestImporter:
         self._reformat_imported_source(change=change, target=target)
         return _with_outcome(change, "merged"), conflicted
 
+    # Reversible ``replace`` transforms are applied in one SIMULTANEOUS pass per
+    # contiguous run (see ``_reverse_replace_all``): applying them sequentially double-
+    # rewrites text whenever two forward transforms have overlapping ``after`` strings
+    # (the wesearch bare/dotted namespace pair). A ``strip_block`` / ``internal_lines``
+    # reversal breaks a run because it re-inserts source-only regions between replace
+    # groups; those runs are fused separately, preserving each strip's exact position.
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
-        """Undo supported content transforms for one public file.
-
-        Reversible ``replace`` transforms are applied in one SIMULTANEOUS pass
-        per contiguous run (see ``_reverse_replace_all``): applying them
-        sequentially double-rewrites text whenever two forward transforms have
-        overlapping ``after`` strings (the wesearch bare/dotted namespace pair).
-        A ``strip_block`` / ``internal_lines`` reversal breaks a run because it
-        re-inserts source-only regions between replace groups; those runs are
-        fused separately, preserving each strip's exact position.
-        """
+        """Undo supported content transforms for one public file."""
         content = data
         match_path = _reverse_move_transforms(
             public_path=public_path,
@@ -873,13 +902,11 @@ class ChangeRequestImporter:
                 f"'{transform.id}': {public_path}"
             )
 
+    # In merge mode a non-reversible match is not fatal here: a file whose export
+    # already matches the public head is reconciled without any reversal, so the
+    # decision is deferred to ``_reverse_content``.
     def _reverse_transform_ids(self, public_path: str) -> tuple[str, ...]:
-        """Return reversible transform IDs that affect a public path.
-
-        In merge mode a non-reversible match is not fatal here: a file whose
-        export already matches the public head is reconciled without any
-        reversal, so the decision is deferred to ``_reverse_content``.
-        """
+        """Return reversible transform IDs that affect a public path."""
         ids: list[str] = []
         match_path = _reverse_move_transforms(
             public_path=public_path,
@@ -898,22 +925,20 @@ class ChangeRequestImporter:
                 ids.append(transform.id)
         return tuple(ids)
 
+    # Export replaces each marked block with its uncommented body, so the public text
+    # holds a TRANSFORMED form rather than a subset -- the same shape as an
+    # ``else``-branch ``strip_block``, and reversed the same way: locate each source
+    # block's exported form and substitute the source block back. Left to the
+    # ``replace`` bucket it reversed as a no-op in merge mode (its ``before``/``after``
+    # are empty) and destroyed the markers.
+    #
+    # A block the public edit rewrote is re-commented in place, markers and all:
+    # skipping it wrote the uncommented body straight to source, which re-exports to the
+    # same public text and so is caught by nothing.
     def _recomment_source_blocks(
         self, *, public_path: str, transform: Transform, content: bytes
     ) -> bytes:
-        """Restore an ``uncomment`` transform's commented source form.
-
-        Export replaces each marked block with its uncommented body, so the
-        public text holds a TRANSFORMED form rather than a subset -- the same
-        shape as an ``else``-branch ``strip_block``, and reversed the same way:
-        locate each source block's exported form and substitute the source block
-        back. Left to the ``replace`` bucket it reversed as a no-op in merge mode
-        (its ``before``/``after`` are empty) and destroyed the markers.
-
-        A block the public edit rewrote is re-commented in place, markers and
-        all: skipping it wrote the uncommented body straight to source, which
-        re-exports to the same public text and so is caught by nothing.
-        """
+        """Restore an ``uncomment`` transform's commented source form."""
         source_path = self.source_base / _source_path(
             config=self.config, public_path=public_path
         )
@@ -962,29 +987,25 @@ class ChangeRequestImporter:
                 result, search_from = replaced
         return result.encode()
 
+    # ``strip_block`` and ``internal_lines`` both delete source-only content on export
+    # (a marker-delimited block, or each line carrying the marker), which the public
+    # tree cannot reconstruct. On import we splice the source's removed region(s) back
+    # verbatim at their original position: the source file is the local side, and the
+    # incoming public edits apply to the regions *around* them.
+    #
+    # Re-inserting is exact only when the incoming public text still contains the
+    # exported context around each region. A public edit that rewrote that context can
+    # displace a region so the rebuilt source no longer strips back to the incoming
+    # public text. We verify that round-trip here -- re-strip the rebuilt source and
+    # require it to reproduce ``public_text`` -- so a displaced re-insertion fails loud
+    # (in both strict and merge modes) rather than silently writing a source tree whose
+    # export has drifted. The strict path's ``_check_public_head`` is a whole-tree
+    # backstop; merge mode folds in source drift and has no such tree-level check, so
+    # this per-file gate is its safety net.
     def _reinsert_source_only_regions(
         self, *, public_path: str, transform: Transform, content: bytes
     ) -> bytes:
-        """Re-insert a transform's source-only regions into reversed content.
-
-        ``strip_block`` and ``internal_lines`` both delete source-only content
-        on export (a marker-delimited block, or each line carrying the marker),
-        which the public tree cannot reconstruct. On import we splice the
-        source's removed region(s) back verbatim at their original position: the
-        source file is the local side, and the incoming public edits apply to the
-        regions *around* them.
-
-        Re-inserting is exact only when the incoming public text still contains
-        the exported context around each region. A public edit that rewrote that
-        context can displace a region so the rebuilt source no longer strips back
-        to the incoming public text. We verify that round-trip here -- re-strip
-        the rebuilt source and require it to reproduce ``public_text`` -- so a
-        displaced re-insertion fails loud (in both strict and merge modes) rather
-        than silently writing a source tree whose export has drifted. The strict
-        path's ``_check_public_head`` is a whole-tree backstop; merge mode folds
-        in source drift and has no such tree-level check, so this per-file gate is
-        its safety net.
-        """
+        """Re-insert a transform's source-only regions into reversed content."""
         source_path = self.source_base / _source_path(
             config=self.config, public_path=public_path
         )
@@ -1115,16 +1136,30 @@ class ImportRequest:
     """Inputs for a local-checkout change-request import."""
 
     config: WorkflowConfig
+
     public_base: Path
+
     public_head: Path
+
     source_base: Path
+
     destination: Path
+
     verify: bool = True
+
     merge_import: bool = False
 
 
 def import_change_request(request: ImportRequest) -> ImportResult:
-    """Import a public change request into a source-of-truth checkout."""
+    """Import a public change request into a source-of-truth checkout.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ImportResult.
+
+    """
     return ChangeRequestImporter(
         config=request.config,
         public_base=request.public_base,
@@ -1134,22 +1169,6 @@ def import_change_request(request: ImportRequest) -> ImportResult:
         verify=request.verify,
         merge_import=request.merge_import,
     ).import_changes()
-
-
-def _tree_symlink(path: Path) -> TreeEntry:
-    """Build a deterministic snapshot entry for one symlink."""
-    return TreeEntry(kind="symlink", data=path.readlink().as_posix().encode())
-
-
-def _tree_file(path: Path) -> TreeEntry:
-    """Build a deterministic snapshot entry for one regular file."""
-    mode = stat.S_IMODE(path.stat().st_mode)
-    executable = bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-    return TreeEntry(
-        kind="file",
-        data=path.read_bytes(),
-        executable=executable,
-    )
 
 
 def _reverse_move_transforms(
@@ -1168,25 +1187,17 @@ def _reverse_move_transforms(
     return path.as_posix()
 
 
+# Applies each move in REVERSE order, inverting each: a public path under a move's
+# ``destination`` is rewritten back to its ``path``-space. Reports whether any move
+# matched, so the caller can distinguish a path the selection placed (return the
+# reversed source-relative path) from an identity path no move touched (leave it alone).
+# Exact inverse of ``workflow.MoveSequence.destination_path``: the config parser
+# enforces injectivity at load (``config._validate_moves_injective``), so the reverse-
+# order first match is unambiguous for every admitted sequence.
 def _reverse_file_moves(
     public_path: str, moves: tuple[FileMove, ...]
 ) -> tuple[str, bool]:
-    """Invert the ordered ``files.moves`` placement for one public path.
-
-    Applies each move in REVERSE order, inverting each: a public path under a
-    move's ``destination`` is rewritten back to its ``path``-space. Reports
-    whether any move matched, so the caller can distinguish a path the selection
-    placed (return the reversed source-relative path) from an identity path no
-    move touched (leave it alone). Exact inverse of
-    ``workflow.MoveSequence.destination_path``: the config parser enforces
-    injectivity at load (``config._validate_moves_injective``), so the
-    reverse-order first match is unambiguous for every admitted sequence.
-
-    Returns:
-      source_relative: The path reversed back through the move sequence.
-      moved: Whether any move in the sequence matched ``public_path``.
-
-    """
+    """Invert the ordered ``files.moves`` placement for one public path."""
     path = public_path
     moved = False
     for move in reversed(moves):
@@ -1199,13 +1210,11 @@ def _reverse_file_moves(
     return path, moved
 
 
+# Inverse of ``workflow._relocate_path``: a path equal to ``destination`` or under
+# ``destination/`` is rewritten back under ``source``; a path matching neither returns
+# ``None`` to signal the move did not place it.
 def _reverse_relocation(path: str, *, source: str, destination: str) -> str | None:
-    """Return ``path`` reversed from ``destination``-space to ``source``-space.
-
-    Inverse of ``workflow._relocate_path``: a path equal to ``destination`` or
-    under ``destination/`` is rewritten back under ``source``; a path matching
-    neither returns ``None`` to signal the move did not place it.
-    """
+    """Return ``path`` reversed from ``destination``-space to ``source``-space."""
     if path == destination:
         return source
     prefix = f"{destination}/"
@@ -1222,17 +1231,15 @@ def _matches_transform(
     return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
 
 
+# Forward, ``ruff_format`` targets ``root / transform.path`` and formats that whole
+# SUBTREE (``transforms._ruff_format``): ``path = "pkg"`` formats every file under
+# ``pkg/``, and ``path = "."`` / ``""`` formats the entire tree. So the import-side
+# match must be a subtree test, not a literal glob match -- a glob on ``"pkg"`` matches
+# only the path ``"pkg"`` itself, never ``pkg/foo.py`` (and a glob on ``"."`` matches
+# nothing), which would silently skip the post-import reformat for every file under the
+# target.
 def _ruff_format_matches(transform: Transform, public_path: str) -> bool:
-    """Return whether a ``ruff_format`` transform reformats a public path.
-
-    Forward, ``ruff_format`` targets ``root / transform.path`` and formats that
-    whole SUBTREE (``transforms._ruff_format``): ``path = "pkg"`` formats every
-    file under ``pkg/``, and ``path = "."`` / ``""`` formats the entire tree. So
-    the import-side match must be a subtree test, not a literal glob match -- a
-    glob on ``"pkg"`` matches only the path ``"pkg"`` itself, never ``pkg/foo.py``
-    (and a glob on ``"."`` matches nothing), which would silently skip the
-    post-import reformat for every file under the target.
-    """
+    """Return whether a ``ruff_format`` transform reformats a public path."""
     path = transform.path
     if path in (".", "", "./"):
         return True
@@ -1245,14 +1252,12 @@ def _has_explicit_reversal(transform: Transform) -> bool:
     return bool(transform.reverse_before or transform.reverse_after)
 
 
+# A ``regex_groups`` template is counted through its compiled pattern, so the declared
+# boundary anchors apply. Counting the raw string instead treats ``${b}`` as literal and
+# finds nothing, which silently retires the guard for exactly the rules whose anchors it
+# needs to respect.
 def _match_count(transform: Transform, template: str, text: str) -> int:
-    """Count occurrences of one side of a transform in ``text``.
-
-    A ``regex_groups`` template is counted through its compiled pattern, so the
-    declared boundary anchors apply. Counting the raw string instead treats
-    ``${b}`` as literal and finds nothing, which silently retires the guard for
-    exactly the rules whose anchors it needs to respect.
-    """
+    """Count occurrences of one side of a transform in ``text``."""
     if not transform.regex_groups:
         return text.count(template)
     return compile_replace(
@@ -1274,25 +1279,15 @@ def _reverse_after(transform: Transform) -> str:
     return transform.before
 
 
+# A ``regex_groups`` transform reverses by swapping its ``before`` and ``after``
+# templates and re-running the same compiled-template machinery (Copybara
+# ``Replace.reverse()``). The boundary anchors declared in the groups therefore apply
+# symmetrically, so a non-injective literal token (a short public package name) is
+# reversed only where the anchors say it is a real module reference -- never inside an
+# identifier (``pkg_x``) or dotfile (``.pkg``). A plain literal transform falls back to
+# ``str.replace``.
 def _reverse_replace(*, transform: Transform, text: str) -> str:
-    """Apply one transform's reverse replacement to public text.
-
-    A ``regex_groups`` transform reverses by swapping its ``before`` and
-    ``after`` templates and re-running the same compiled-template machinery
-    (Copybara ``Replace.reverse()``). The boundary anchors declared in the
-    groups therefore apply symmetrically, so a non-injective literal token (a
-    short public package name) is reversed only where the anchors say it is a
-    real module reference -- never inside an identifier (``pkg_x``) or dotfile
-    (``.pkg``). A plain literal transform falls back to ``str.replace``.
-
-    Args:
-      transform: Transform whose reverse replacement to apply.
-      text: Public-side text to reverse.
-
-    Returns:
-      reversed_text: ``text`` with the reverse replacement applied.
-
-    """
+    """Apply one transform's reverse replacement to public text."""
     reverse_before = _reverse_before(transform)
     reverse_after = _reverse_after(transform)
     if transform.regex_groups:
@@ -1304,32 +1299,29 @@ def _reverse_replace(*, transform: Transform, text: str) -> str:
     return text.replace(reverse_before, reverse_after)
 
 
+# Applying reverse replacements one after another (each fed the previous one's output)
+# is wrong whenever two forward transforms have overlapping ``after`` strings. Forward,
+# a later transform only mops up text an earlier one did not consume; reversed, the
+# earlier transform's reverse output becomes visible to the later transform's reverse,
+# which re-matches it and doubles the rewrite. A namespace-rewrite pair is the canonical
+# case: a bare package name mapped from its internal prefix, plus the dotted submodule
+# form of the same rule. Sequentially, the bare reverse re-prefixes the token, and the
+# dotted reverse then matches inside its own output and prefixes it a second time -- the
+# doubled-prefix import that shipped.
+#
+# A single pass fixes this: scan the ORIGINAL public text once and, at each position,
+# take the longest reverse-``before`` match among all transforms, emit its
+# reverse-``after``, and advance past the consumed span. No transform ever sees
+# another's output, so each public token is rewritten exactly once. Longest-match-wins
+# makes the dotted rule (``wesearch.${s}``, which consumes the following identifier
+# char) win over the bare rule (``wesearch``) at a shared start, reproducing the forward
+# pipeline's precedence in reverse.
+#
+# ``transforms`` are the reversible ``replace`` transforms in reversed (public-to-
+# source) order; ties at equal length break toward the earlier one in that order,
+# matching the sequential precedence this replaces.
 def _reverse_replace_all(*, transforms: tuple[Transform, ...], text: str) -> str:
-    """Apply several reverse replacements in ONE simultaneous left-to-right pass.
-
-    Applying reverse replacements one after another (each fed the previous one's
-    output) is wrong whenever two forward transforms have overlapping ``after``
-    strings. Forward, a later transform only mops up text an earlier one did not
-    consume; reversed, the earlier transform's reverse output becomes visible to
-    the later transform's reverse, which re-matches it and doubles the rewrite.
-    A namespace-rewrite pair is the canonical case: a bare package name mapped
-    from its internal prefix, plus the dotted submodule form of the same rule.
-    Sequentially, the bare reverse re-prefixes the token, and the dotted reverse
-    then matches inside its own output and prefixes it a second time -- the
-    doubled-prefix import that shipped.
-
-    A single pass fixes this: scan the ORIGINAL public text once and, at each
-    position, take the longest reverse-``before`` match among all transforms,
-    emit its reverse-``after``, and advance past the consumed span. No transform
-    ever sees another's output, so each public token is rewritten exactly once.
-    Longest-match-wins makes the dotted rule (``wesearch.${s}``, which consumes
-    the following identifier char) win over the bare rule (``wesearch``) at a
-    shared start, reproducing the forward pipeline's precedence in reverse.
-
-    ``transforms`` are the reversible ``replace`` transforms in reversed
-    (public-to-source) order; ties at equal length break toward the earlier one
-    in that order, matching the sequential precedence this replaces.
-    """
+    """Apply several reverse replacements in ONE simultaneous left-to-right pass."""
     if not transforms:
         return text
     if len(transforms) == 1:
@@ -1370,12 +1362,22 @@ class _ReverseMatcher:
     """One reverse ``replace`` rule compiled once for the simultaneous pass."""
 
     pattern: re.Pattern[str]
+
     template: ReplaceTemplate | None
+
     literal_after: str
 
     @classmethod
     def build(cls, transform: Transform) -> _ReverseMatcher:
-        """Compile a transform's reverse rule for repeated position matching."""
+        """Compile a transform's reverse rule for repeated position matching.
+
+        Args:
+          transform: Transform.
+
+        Returns:
+          result: The _ReverseMatcher.
+
+        """
         reverse_before = _reverse_before(transform)
         if transform.regex_groups:
             template = compile_replace(
@@ -1391,7 +1393,15 @@ class _ReverseMatcher:
         )
 
     def render(self, match: re.Match[str]) -> str:
-        """Render this rule's reverse output for one match."""
+        """Render this rule's reverse output for one match.
+
+        Args:
+          match: Match.
+
+        Returns:
+          result: The str.
+
+        """
         if self.template is None:
             return self.literal_after
         return "".join(
@@ -1400,28 +1410,24 @@ class _ReverseMatcher:
         )
 
 
+# Each entry is ``(offset_in_stripped, verbatim_text)``: the region's exact removed text
+# and the offset it occupied within the *stripped* (exported) form. Derived from the
+# SAME marker walk the export uses (``strip_source_regions``), so offsets and text agree
+# with the real transform for every block shape -- inclusive and exclusive markers, mid-
+# line markers, gap-collapsed blank lines -- with no second, drift-prone re-derivation.
+#
+# A strip transform that *rewrites* rather than deletes (``strip_block`` with an
+# ``else`` branch uncomments and keeps the else lines) has no verbatim source-only
+# region to re-insert: its exported bytes are a transformed form absent from source.
+# Such a transform cannot be reversed by re-insertion, so this raises rather than
+# fabricate a bogus region -- but only when the source file actually contains the block.
+# A transform whose glob matches a file that carries no marker is a no-op on that file
+# (nothing was rewritten), so it reverses trivially to zero regions; rejecting it would
+# wrongly block importing an unrelated edit to any file the glob happens to match.
 def _removed_regions(
     *, source_text: str, transform: Transform
 ) -> list[tuple[int, str]]:
-    """Return each source-only region a strip transform removes on export.
-
-    Each entry is ``(offset_in_stripped, verbatim_text)``: the region's exact
-    removed text and the offset it occupied within the *stripped* (exported)
-    form. Derived from the SAME marker walk the export uses
-    (``strip_source_regions``), so offsets and text agree with the real transform
-    for every block shape -- inclusive and exclusive markers, mid-line markers,
-    gap-collapsed blank lines -- with no second, drift-prone re-derivation.
-
-    A strip transform that *rewrites* rather than deletes (``strip_block`` with
-    an ``else`` branch uncomments and keeps the else lines) has no verbatim
-    source-only region to re-insert: its exported bytes are a transformed form
-    absent from source. Such a transform cannot be reversed by re-insertion, so
-    this raises rather than fabricate a bogus region -- but only when the source
-    file actually contains the block. A transform whose glob matches a file that
-    carries no marker is a no-op on that file (nothing was rewritten), so it
-    reverses trivially to zero regions; rejecting it would wrongly block importing
-    an unrelated edit to any file the glob happens to match.
-    """
+    """Return each source-only region a strip transform removes on export."""
     if transform.else_marker and transform.start and transform.start in source_text:
         raise ImportRequestError(
             f"Transform '{transform.id}' has an else branch and rewrites content "
@@ -1430,19 +1436,16 @@ def _removed_regions(
     return list(strip_source_regions(source_text, transform)[1])
 
 
+# Reverses ``strip_block`` / ``internal_lines`` by inserting each removed source region
+# (block or line) back into ``public_text`` at the offset it held in the stripped
+# (exported) form, right to left so earlier offsets stay valid. When public edits did
+# not disturb the text around a region the offset lands exactly; when they did, the
+# region is still restored (possibly displaced) and the import PR's CI is the human-
+# review gate. Re-export removes the regions again, reproducing the public head.
 def _splice_source_only_regions(
     *, source_text: str, public_text: str, transform: Transform
 ) -> str:
-    """Re-insert a strip transform's source-only regions into reversed text.
-
-    Reverses ``strip_block`` / ``internal_lines`` by inserting each removed
-    source region (block or line) back into ``public_text`` at the offset it
-    held in the stripped (exported) form, right to left so earlier offsets stay
-    valid. When public edits did not disturb the text around a region the offset
-    lands exactly; when they did, the region is still restored (possibly
-    displaced) and the import PR's CI is the human-review gate. Re-export removes
-    the regions again, reproducing the public head.
-    """
+    """Re-insert a strip transform's source-only regions into reversed text."""
     regions = _removed_regions(source_text=source_text, transform=transform)
     if not regions:
         return public_text
@@ -1453,25 +1456,22 @@ def _splice_source_only_regions(
     return result
 
 
+# An else-branch ``strip_block`` does not delete a region: on export it REPLACES the
+# whole ``start .. else .. end`` block with the else branch, uncommented
+# (``_strip_blocks_with_else``). To reverse, each such block's exported form (its
+# uncommented else lines) is located in the public text and replaced with the full
+# source block verbatim -- restoring the internal branch and the markers. Re-export
+# replays the same substitution, reproducing the public head.
+#
+# When a block's exported form is not found (the public edit rewrote it) the
+# substitution is skipped for that block: the internal branch cannot be re-derived, so
+# the import carries the public edit forward and the missing internal branch is a human-
+# review item -- never a silently corrupted tree, because the caller's re-strip gate
+# then rejects a source that no longer reproduces public.
 def _reverse_else_blocks(
     *, source_text: str, public_text: str, transform: Transform
 ) -> str:
-    """Reverse an ``if internal / else / endif`` strip block into ``public_text``.
-
-    An else-branch ``strip_block`` does not delete a region: on export it REPLACES
-    the whole ``start .. else .. end`` block with the else branch, uncommented
-    (``_strip_blocks_with_else``). To reverse, each such block's exported form (its
-    uncommented else lines) is located in the public text and replaced with the
-    full source block verbatim -- restoring the internal branch and the markers.
-    Re-export replays the same substitution, reproducing the public head.
-
-    When a block's exported form is not found (the public edit rewrote it) the
-    substitution is skipped for that block: the internal branch cannot be
-    re-derived, so the import carries the public edit forward and the missing
-    internal branch is a human-review item -- never a silently corrupted tree,
-    because the caller's re-strip gate then rejects a source that no longer
-    reproduces public.
-    """
+    """Reverse an ``if internal / else / endif`` strip block into ``public_text``."""
     result = public_text
     for source_block in _else_source_blocks(source_text, transform):
         exported = _strip_blocks_with_else_text(source_block, transform)
@@ -1480,19 +1480,17 @@ def _reverse_else_blocks(
     return result
 
 
+# A bare ``str.replace`` matched the exported body anywhere, including as the suffix of
+# an unrelated line -- splicing a block's markers into the middle of that line and
+# producing a tree that no longer exports.
+#
+# Returns the new text and the line index just past the replacement, so a caller
+# restoring several blocks with IDENTICAL bodies advances past each and does not resolve
+# them all to the first occurrence.
 def _replace_whole_lines(
     *, text: str, needle: str, replacement: str, search_from: int = 0
 ) -> tuple[str, int] | None:
-    """Replace ``needle`` where it occupies whole lines at/after ``search_from``.
-
-    A bare ``str.replace`` matched the exported body anywhere, including as the
-    suffix of an unrelated line -- splicing a block's markers into the middle of
-    that line and producing a tree that no longer exports.
-
-    Returns the new text and the line index just past the replacement, so a
-    caller restoring several blocks with IDENTICAL bodies advances past each and
-    does not resolve them all to the first occurrence.
-    """
+    """Replace ``needle`` where it occupies whole lines at/after ``search_from``."""
     needle_lines = needle.splitlines(keepends=True)
     if not needle_lines:
         return None
@@ -1505,17 +1503,15 @@ def _replace_whole_lines(
     return None
 
 
+# Located by ALIGNING the original export against the incoming text, not by requiring
+# the surrounding lines to be byte-identical: an edit anywhere else in the file -- or an
+# earlier block already restored into ``result`` -- would otherwise disable
+# reconstruction and write the uncommented body to source.
+#
+# Returns ``None`` when the lines bracketing the block were themselves rewritten,
+# leaving no determined position.
 def _edited_block_body(*, result: str, exported: str, whole_export: str) -> str | None:
-    """Return the public text now occupying an ``uncomment`` block's position.
-
-    Located by ALIGNING the original export against the incoming text, not by
-    requiring the surrounding lines to be byte-identical: an edit anywhere else
-    in the file -- or an earlier block already restored into ``result`` -- would
-    otherwise disable reconstruction and write the uncommented body to source.
-
-    Returns ``None`` when the lines bracketing the block were themselves
-    rewritten, leaving no determined position.
-    """
+    """Return the public text now occupying an ``uncomment`` block's position."""
     export_lines = whole_export.splitlines(keepends=True)
     block_lines = exported.splitlines(keepends=True)
     start = next(
@@ -1541,13 +1537,11 @@ def _edited_block_body(*, result: str, exported: str, whole_export: str) -> str 
     return "".join(result_lines[lower:upper])
 
 
+# The inline form is ONE line carrying both the body and a trailing marker, so it is
+# rebuilt rather than bracketed: prepending the source line would keep the pre-edit body
+# and append the edit beneath it, discarding the change.
 def _recomment_block(edited_body: str, source_block: str, transform: Transform) -> str:
-    """Wrap an edited public body back in its source markers, commented.
-
-    The inline form is ONE line carrying both the body and a trailing marker, so
-    it is rebuilt rather than bracketed: prepending the source line would keep
-    the pre-edit body and append the edit beneath it, discarding the change.
-    """
+    """Wrap an edited public body back in its source markers, commented."""
     marker_lines = source_block.splitlines(keepends=True)
     start_line = marker_lines[0] if marker_lines else ""
     if transform.start not in start_line:
@@ -1575,20 +1569,18 @@ def _comment_line(line: str) -> str:
     return f"{indent}# {stripped}"
 
 
+# Source is the base, not the reversal: a reversal is a guess wherever a transform is
+# not injective, and it has already lost any source line the export dropped. Diffing the
+# pre-edit reversal against the post-edit one isolates what the contributor actually
+# changed; each such hunk is mapped onto source through a second alignment and spliced
+# there.
 def _splice_public_edits(
     *,
     reversed_ours_lines: list[str],
     reversed_lines: list[str],
     source_lines: list[str],
 ) -> str:
-    """Return source with only the public edit's hunks applied.
-
-    Source is the base, not the reversal: a reversal is a guess wherever a
-    transform is not injective, and it has already lost any source line the
-    export dropped. Diffing the pre-edit reversal against the post-edit one
-    isolates what the contributor actually changed; each such hunk is mapped
-    onto source through a second alignment and spliced there.
-    """
+    """Return source with only the public edit's hunks applied."""
     edit = difflib.SequenceMatcher(
         a=reversed_ours_lines, b=reversed_lines, autojunk=False
     )
@@ -1638,12 +1630,10 @@ def _splice_public_edits(
     return "".join(result)
 
 
+# A block form spans ``start``..``end``; the inline form is the single line carrying the
+# marker.
 def _uncomment_source_blocks(source_text: str, transform: Transform) -> list[str]:
-    """Return each verbatim source region an ``uncomment`` transform rewrites.
-
-    A block form spans ``start``..``end``; the inline form is the single line
-    carrying the marker.
-    """
+    """Return each verbatim source region an ``uncomment`` transform rewrites."""
     start = transform.start
     if not start:
         return []
@@ -1683,7 +1673,7 @@ def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
             while index < total and end not in lines[index]:
                 index += 1
             if index < total:
-                index += 1  # include the end-marker line
+                index += 1  # include the end-marker line.
                 blocks.append("".join(lines[block_start:index]))
             continue
         index += 1
@@ -1695,24 +1685,21 @@ def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
     return _strip_blocks_with_else(block_text, transform)[0]
 
 
+# No guessing: the source-only lines are exactly those ``strip_source_text`` removes, so
+# the KEPT source lines are the source's own exported form. Diffing that exported form
+# against the incoming public text (a real line alignment, which absorbs reflow via its
+# matching blocks) says, for every kept source line, which public line it became. Each
+# source-only run sits immediately after a kept source line; the run is re-inserted
+# right after that line's ALIGNED public position. The correctness contract is then
+# verified by the caller: re-stripping the result must reproduce public exactly.
+#
+# A run whose preceding kept line did not align to any public line (its context was
+# deleted/rewritten past recognition) has no determined position -- this returns
+# ``None`` so the caller rejects rather than guess.
 def _anchor_source_only_regions(
     *, source_text: str, public_text: str, transform: Transform
 ) -> str | None:
-    """Re-insert source-only regions by aligning the source's export with public.
-
-    No guessing: the source-only lines are exactly those ``strip_source_text``
-    removes, so the KEPT source lines are the source's own exported form. Diffing
-    that exported form against the incoming public text (a real line alignment,
-    which absorbs reflow via its matching blocks) says, for every kept source
-    line, which public line it became. Each source-only run sits immediately after
-    a kept source line; the run is re-inserted right after that line's ALIGNED
-    public position. The correctness contract is then verified by the caller:
-    re-stripping the result must reproduce public exactly.
-
-    A run whose preceding kept line did not align to any public line (its context
-    was deleted/rewritten past recognition) has no determined position -- this
-    returns ``None`` so the caller rejects rather than guess.
-    """
+    """Re-insert source-only regions by aligning the source's export with public."""
     source_lines = source_text.splitlines(keepends=True)
     marks = _source_only_line_mask(source_lines=source_lines, transform=transform)
     if not any(marks):
@@ -1778,6 +1765,19 @@ def _anchor_source_only_regions(
     return "".join(result)
 
 
+# ``before_index`` / ``after_index`` are the kept-line indices immediately before and
+# after the run. Placement is decided by alignment only:
+#
+# - Immediate before-neighbor aligns: insert right after its public line. When the
+# immediate after-neighbor ALSO aligns, its public position must be at or after the
+# before-neighbor's -- an inverted slot (public reordered the two past each other) has
+# no determined position and is rejected, so a run is never detached from its neighbors.
+# - Else the run's preceding context was rewritten; anchor FORWARD to the nearest
+# aligned kept line at/after the run and insert right before it, so the run lands at the
+# tail of the rewritten span it belonged to. Forward-only avoids jumping BACKWARD across
+# a rewritten region into an earlier, unrelated scope (a mis-placement the re-strip gate
+# cannot catch). - No aligned line before or forward: the run is trailing (nothing
+# survived after it), so append at end -- an unambiguous position.
 def _placement_index(
     *,
     kept_to_public: list[int | None],
@@ -1785,24 +1785,7 @@ def _placement_index(
     after_index: int,
     public_line_count: int,
 ) -> int | None:
-    """Return the public insert index for a source-only run, or ``None`` to reject.
-
-    ``before_index`` / ``after_index`` are the kept-line indices immediately
-    before and after the run. Placement is decided by alignment only:
-
-    - Immediate before-neighbor aligns: insert right after its public line. When
-      the immediate after-neighbor ALSO aligns, its public position must be at or
-      after the before-neighbor's -- an inverted slot (public reordered the two
-      past each other) has no determined position and is rejected, so a run is
-      never detached from its neighbors.
-    - Else the run's preceding context was rewritten; anchor FORWARD to the
-      nearest aligned kept line at/after the run and insert right before it, so
-      the run lands at the tail of the rewritten span it belonged to. Forward-only
-      avoids jumping BACKWARD across a rewritten region into an earlier, unrelated
-      scope (a mis-placement the re-strip gate cannot catch).
-    - No aligned line before or forward: the run is trailing (nothing survived
-      after it), so append at end -- an unambiguous position.
-    """
+    """Return the public insert index for a source-only run, or ``None`` to reject."""
     # The run must land in the public gap bracketed by its context: strictly after
     # every kept line BEFORE it that aligns, and at/before every kept line AFTER it
     # that aligns. If any following kept line aligns to a position <= a preceding
@@ -1838,16 +1821,13 @@ def _min_aligned(kept_to_public: list[int | None], start: int, stop: int) -> int
     return min(values) if values else None
 
 
+# Uses ``difflib.SequenceMatcher`` matching blocks: lines in an 'equal' block map one-
+# to-one to their public counterparts. A kept line inside a 'replace' or 'delete' block
+# (its public counterpart was rewritten or removed) maps to ``None``.
 def _align_kept_to_public(
     kept_lines: list[str], public_lines: list[str]
 ) -> list[int | None]:
-    """Return, per kept-source line, the aligned public line index or ``None``.
-
-    Uses ``difflib.SequenceMatcher`` matching blocks: lines in an 'equal' block
-    map one-to-one to their public counterparts. A kept line inside a 'replace' or
-    'delete' block (its public counterpart was rewritten or removed) maps to
-    ``None``.
-    """
+    """Return, per kept-source line, the aligned public line index or ``None``."""
     matcher = difflib.SequenceMatcher(a=kept_lines, b=public_lines, autojunk=False)
     aligned: list[int | None] = [None] * len(kept_lines)
     for a_start, b_start, size in matcher.get_matching_blocks():
@@ -1888,24 +1868,17 @@ def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
     return replace(change, outcome=outcome)
 
 
+# Shells to ``git merge-file``, the diff3 engine Copybara's ``MergeImportTool`` uses.
+# The argument orientation matches Copybara exactly: it runs ``diff3 -m origin baseline
+# destination`` (``CommandLineDiffUtil.merge``), treating the incoming source-of-truth
+# change as the primary (``ours``) side and the local checkout as ``theirs``. Here
+# ``incoming`` is the public head (the SoT change) and ``current`` is the local source,
+# so ``incoming`` is passed first. Conflicting hunks keep both sides wrapped in conflict
+# markers.
 def _three_way_merge(
     *, current: bytes, base: bytes, incoming: bytes
 ) -> tuple[bytes, bool]:
-    """Three-way merge ``incoming`` onto ``current`` relative to ``base``.
-
-    Shells to ``git merge-file``, the diff3 engine Copybara's ``MergeImportTool``
-    uses. The argument orientation matches Copybara exactly: it runs
-    ``diff3 -m origin baseline destination`` (``CommandLineDiffUtil.merge``),
-    treating the incoming source-of-truth change as the primary (``ours``) side
-    and the local checkout as ``theirs``. Here ``incoming`` is the public head
-    (the SoT change) and ``current`` is the local source, so ``incoming`` is
-    passed first. Conflicting hunks keep both sides wrapped in conflict markers.
-
-    Returns:
-      merged: The merged file content, including conflict markers on overlap.
-      conflicted: Whether the merge left unresolved conflict markers.
-
-    """
+    """Three-way merge ``incoming`` onto ``current`` relative to ``base``."""
     git = shutil.which("git")
     if git is None:
         raise ImportRequestError("Three-way merge requires git on PATH.")
@@ -1938,7 +1911,7 @@ def _three_way_merge(
             capture_output=True,
             check=False,
         )
-        # git merge-file returns the capped conflict count (0-127); a clean merge
+        # ``git`` merge-file returns the capped conflict count (0-127); a clean merge
         # is 0. Values >=128 signal a fatal error (e.g. a binary file it cannot
         # merge), so the count can never collide with the error range.
         if result.returncode >= 128:
@@ -1960,16 +1933,6 @@ def _read_import_text(*, path: Path, label: str) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as err:
         raise ImportRequestError(label) from err
-
-
-def _is_metadata_path(public_path: str) -> bool:
-    """Return whether a path belongs to VCS or Copybarista metadata."""
-    parts = Path(public_path).parts
-    return (
-        bool(VCS_DIRS.intersection(parts))
-        or public_path == ".copybarista"
-        or public_path.startswith(".copybarista/")
-    )
 
 
 def _delete_path(path: Path) -> None:
@@ -2010,6 +1973,7 @@ class _OriginalPath:
     """Original destination path state captured for import rollback."""
 
     path: Path
+
     backup: Path | None
 
 
@@ -2059,13 +2023,10 @@ def _discard_backups(originals: tuple[_OriginalPath, ...]) -> None:
         shutil.rmtree(parent, ignore_errors=True)
 
 
+# Imports mutate an existing checkout, so the root must already be a real directory and
+# must not be a symlink, filesystem root, home directory, or VCS metadata path.
 def _validate_import_destination(destination: Path) -> None:
-    """Reject destination roots where import writes would be unsafe.
-
-    Imports mutate an existing checkout, so the root must already be a real
-    directory and must not be a symlink, filesystem root, home directory, or VCS
-    metadata path.
-    """
+    """Reject destination roots where import writes would be unsafe."""
     if destination.is_symlink():
         raise ImportRequestError(f"Refusing symlink destination: {destination}")
     if not destination.is_dir():
@@ -2078,13 +2039,11 @@ def _validate_import_destination(destination: Path) -> None:
         raise ImportRequestError(f"Refusing VCS metadata destination: {destination}")
 
 
+# This guards every write/delete target: public paths may not be metadata, absolute,
+# contain `..`, pass through symlink ancestors, or resolve outside the destination
+# checkout.
 def _validated_target(*, destination: Path, relative_path: str) -> Path:
-    """Return a destination target after escape and metadata checks.
-
-    This guards every write/delete target: public paths may not be metadata,
-    absolute, contain `..`, pass through symlink ancestors, or resolve outside
-    the destination checkout.
-    """
+    """Return a destination target after escape and metadata checks."""
     if _is_metadata_path(relative_path):
         raise ImportRequestError(
             f"Public path is excluded or unmapped: {relative_path}"

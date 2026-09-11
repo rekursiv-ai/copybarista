@@ -33,6 +33,7 @@ class GlobSpec:
     """A parsed `glob(...)` include/exclude expression."""
 
     include: tuple[str, ...]
+
     exclude: tuple[str, ...] = ()
 
 
@@ -41,7 +42,9 @@ class DestinationSpec:
     """A parsed destination expression."""
 
     kind: str
+
     url: str = ""
+
     branch: str = DEFAULT_GIT_BRANCH
 
 
@@ -50,6 +53,7 @@ class AuthorSpec:
     """A parsed authoring expression."""
 
     name: str
+
     email: str
 
 
@@ -58,6 +62,7 @@ class MoveSpec:
     """A parsed `core.move` transform."""
 
     source: str
+
     destination: str
 
 
@@ -71,50 +76,12 @@ class CopySpec:
     """
 
     source: str
+
     destination: str
+
     include: tuple[str, ...] = ("**",)
+
     relocate: bool = False
-
-
-def _transform_to_raw(transform: Transform) -> dict[str, object]:
-    """Serialize a typed transform into the raw config parser shape."""
-    raw: dict[str, object] = {
-        "type": transform.type,
-        "path": transform.path,
-    }
-    if transform.id:
-        raw["id"] = transform.id
-    if not transform.required:
-        raw["required"] = False
-    if transform.type == "replace":
-        raw["before"] = transform.before
-        raw["after"] = transform.after
-        if not transform.reversible:
-            raw["reversible"] = False
-        if transform.regex_groups:
-            raw["regex_groups"] = dict(transform.regex_groups)
-        if transform.reverse_before or transform.reverse_after:
-            raw["reverse_before"] = transform.reverse_before
-            raw["reverse_after"] = transform.reverse_after
-    elif transform.type == "move":
-        raw["destination"] = transform.destination
-    elif transform.type == "strip_block":
-        raw["start"] = transform.start
-        raw["end"] = transform.end
-        raw["inclusive"] = transform.inclusive
-        if transform.else_marker:
-            raw["else"] = transform.else_marker
-    elif transform.type == "uncomment":
-        raw["start"] = transform.start
-        if transform.end:
-            raw["end"] = transform.end
-    elif transform.type == "internal_lines":
-        raw["start"] = transform.start
-    # ``ruff_format`` carries no fields beyond type/path/required. Emitting the
-    # marker keys for every non-replace type wrote start/end/inclusive onto it,
-    # which its own ``_check_keys`` rejects -- so the round trip raised rather
-    # than losing data quietly. Each branch mirrors one parser's accepted keys.
-    return raw
 
 
 def translate_copy_bara_sky_to_toml(
@@ -163,21 +130,38 @@ class TranslatedWorkflow:
     """A workflow translated from `copy.bara.sky` syntax."""
 
     name: str
+
     mode: str
+
     source_root: str
+
     include: tuple[str, ...]
+
     exclude: tuple[str, ...]
+
     transforms: tuple[Transform, ...]
+
     moves: tuple[FileMove, ...] = ()
+
     copies: tuple[FileCopy, ...] = ()
+
     folder_path: str = ""
+
     git_url: str = ""
+
     git_branch: str = DEFAULT_GIT_BRANCH
+
     git_committer_name: str = ""
+
     git_committer_email: str = ""
 
     def to_raw_config(self) -> dict[str, object]:
-        """Return a raw config dictionary accepted by `parse_config`."""
+        """Return a raw config dictionary accepted by `parse_config`.
+
+        Returns:
+          raw: The dict[str, object].
+
+        """
         raw: dict[str, object] = {
             "workflow": {
                 "name": self.name,
@@ -220,6 +204,47 @@ class TranslatedWorkflow:
         return raw
 
 
+def _transform_to_raw(transform: Transform) -> dict[str, object]:
+    """Serialize a typed transform into the raw config parser shape."""
+    raw: dict[str, object] = {
+        "type": transform.type,
+        "path": transform.path,
+    }
+    if transform.id:
+        raw["id"] = transform.id
+    if not transform.required:
+        raw["required"] = False
+    if transform.type == "replace":
+        raw["before"] = transform.before
+        raw["after"] = transform.after
+        if not transform.reversible:
+            raw["reversible"] = False
+        if transform.regex_groups:
+            raw["regex_groups"] = dict(transform.regex_groups)
+        if transform.reverse_before or transform.reverse_after:
+            raw["reverse_before"] = transform.reverse_before
+            raw["reverse_after"] = transform.reverse_after
+    elif transform.type == "move":
+        raw["destination"] = transform.destination
+    elif transform.type == "strip_block":
+        raw["start"] = transform.start
+        raw["end"] = transform.end
+        raw["inclusive"] = transform.inclusive
+        if transform.else_marker:
+            raw["else"] = transform.else_marker
+    elif transform.type == "uncomment":
+        raw["start"] = transform.start
+        if transform.end:
+            raw["end"] = transform.end
+    elif transform.type == "internal_lines":
+        raw["start"] = transform.start
+    # ``ruff_format`` carries no fields beyond type/path/required. Emitting the
+    # marker keys for every non-replace type wrote start/end/inclusive onto it,
+    # which its own ``_check_keys`` rejects -- so the round trip raised rather
+    # than losing data quietly. Each branch mirrors one parser's accepted keys.
+    return raw
+
+
 def _load_translated_workflow(
     path: Path, *, workflow_name: str = "export"
 ) -> TranslatedWorkflow:
@@ -251,7 +276,12 @@ class _CopyBaraSkyParser:
         self.functions: dict[str, ast.FunctionDef] = {}
 
     def parse_workflows(self) -> list[TranslatedWorkflow]:
-        """Return all supported workflows defined by the config."""
+        """Return all supported workflows defined by the config.
+
+        Returns:
+          workflows: The list[TranslatedWorkflow].
+
+        """
         workflows: list[TranslatedWorkflow] = []
         for statement in self.module.body:
             if isinstance(statement, ast.Assign):
@@ -442,6 +472,14 @@ class _CopyBaraSkyParser:
             git_committer_email=git_committer_email,
         )
 
+    # A ``core.move(SOURCE, DEST)`` whose SOURCE is the origin-files root is the source-
+    # root move: DEST empty flattens the package to the public root, and a non-empty
+    # DEST ships it under that prefix (the whole-tree ``[[files.moves]]`` entry). A move
+    # OUT of that prefix back to the root (``core.move("<prefix>/x", "x")``) keeps ``x``
+    # at the public root and is preserved verbatim as an ordered ``[[files.moves]]``
+    # back-move. A move of an in-package subtree to the root
+    # (``core.move("<root>/.export", "")``) maps to a ``[[files.copy]]`` to ``.`` (a
+    # verbatim-ship staging dir). Any other move is a per-file move transform.
     def _parse_transformations(
         self,
         transformations: list[object],
@@ -454,18 +492,7 @@ class _CopyBaraSkyParser:
         tuple[FileCopy, ...],
         tuple[str, ...],
     ]:
-        """Parse supported workflow transforms.
-
-        A ``core.move(SOURCE, DEST)`` whose SOURCE is the origin-files root is the
-        source-root move: DEST empty flattens the package to the public root, and
-        a non-empty DEST ships it under that prefix (the whole-tree
-        ``[[files.moves]]`` entry). A move OUT of that prefix back to the root
-        (``core.move("<prefix>/x", "x")``) keeps ``x`` at the public root and is
-        preserved verbatim as an ordered ``[[files.moves]]`` back-move. A move of
-        an in-package subtree to the root (``core.move("<root>/.export", "")``)
-        maps to a ``[[files.copy]]`` to ``.`` (a verbatim-ship staging dir). Any
-        other move is a per-file move transform.
-        """
+        """Parse supported workflow transforms."""
         # Pass 1: locate the source-root move so its prefix/root is known before
         # classifying the other moves, which may appear before or after it.
         source_root_move = self._source_root_move(transformations, origin_roots)
@@ -557,21 +584,17 @@ class _CopyBaraSkyParser:
             tuple(sweep_excludes),
         )
 
+    # The source-root move relocates the whole package, so its source is an origin-files
+    # root. That alone does not identify it: ``origin_files`` may name several roots --
+    # the package plus vendored trees like ``typings/cloudpickle`` -- and treating every
+    # root-sourced move as a candidate fails the config as a duplicate when the second
+    # one is merely renamed. The package's move is the one whose DESTINATION the other
+    # moves are expressed relative to; a vendored tree's rename has no such dependents.
+    # A whole-tree selection names no root, so an empty source stands in for it.
     def _source_root_move(
         self, transformations: list[object], origin_roots: frozenset[str]
     ) -> MoveSpec | None:
-        """Return the single source-root move, or None; reject duplicates.
-
-        The source-root move relocates the whole package, so its source is an
-        origin-files root. That alone does not identify it: ``origin_files`` may
-        name several roots -- the package plus vendored trees like
-        ``typings/cloudpickle`` -- and treating every root-sourced move as a
-        candidate fails the config as a duplicate when the second one is merely
-        renamed. The package's move is the one whose DESTINATION the other moves
-        are expressed relative to; a vendored tree's rename has no such
-        dependents. A whole-tree selection names no root, so an empty source
-        stands in for it.
-        """
+        """Return the single source-root move, or None; reject duplicates."""
         moves = [item for item in transformations if isinstance(item, MoveSpec)]
         candidates = [
             move
@@ -696,16 +719,14 @@ class _CopyBaraSkyParser:
             ),
         )
 
+    # A plain ``core.move(source, destination)`` is a whole-path move. A glob-scoped
+    # ``core.move(source, destination, paths=glob([...]))`` RELOCATES only the matched
+    # files, mapping to a copy-with-include plus a sweep-exclude (CopySpec with
+    # ``relocate=True``).
     def _move_from_call(
         self, call: ast.Call, env: dict[str, object]
     ) -> MoveSpec | CopySpec:
-        """Evaluate a supported `core.move(...)` call.
-
-        A plain ``core.move(source, destination)`` is a whole-path move. A
-        glob-scoped ``core.move(source, destination, paths=glob([...]))``
-        RELOCATES only the matched files, mapping to a copy-with-include plus a
-        sweep-exclude (CopySpec with ``relocate=True``).
-        """
+        """Evaluate a supported `core.move(...)` call."""
         if len(call.args) != 2:
             raise ConfigError("core.move requires source and destination args")
         source = _require_string(self._eval(call.args[0], env), "core.move source")
@@ -974,15 +995,13 @@ class _CopyBaraSkyParser:
         return values
 
 
+# A ``core.move("<prefix>/x", "x")`` moves ``x`` out of the destination prefix back to
+# the public root. It is preserved verbatim (prefix-space source, root destination) as
+# an ordered ``[[files.moves]]`` entry, structurally mirroring the .sky move. Recognized
+# only when a prefix exists and the destination is exactly the source with the
+# ``<prefix>/`` stripped.
 def _prefix_back_move(move: MoveSpec, prefix: str) -> FileMove | None:
-    """Return the ordered back-move that keeps a subtree at root, or None.
-
-    A ``core.move("<prefix>/x", "x")`` moves ``x`` out of the destination prefix
-    back to the public root. It is preserved verbatim (prefix-space source, root
-    destination) as an ordered ``[[files.moves]]`` entry, structurally mirroring
-    the .sky move. Recognized only when a prefix exists and the destination is
-    exactly the source with the ``<prefix>/`` stripped.
-    """
+    """Return the ordered back-move that keeps a subtree at root, or None."""
     if not prefix:
         return None
     prefix_slash = f"{prefix}/"
@@ -998,30 +1017,25 @@ def _is_subpath_of_any(path: str, roots: frozenset[str]) -> bool:
     return any(path.startswith(f"{root}/") for root in roots)
 
 
+# ``core.move("<root>/.export", "")`` moves a verbatim-ship staging dir that lives
+# inside the source root to the public root; it maps to a copy to ``.``.
 def _is_subtree_to_root_move(move: MoveSpec, root: str) -> bool:
-    """Return whether a move ships an in-package subtree to the export root.
-
-    ``core.move("<root>/.export", "")`` moves a verbatim-ship staging dir that
-    lives inside the source root to the public root; it maps to a copy to ``.``.
-    """
+    """Return whether a move ships an in-package subtree to the export root."""
     return bool(root) and not move.destination and move.source.startswith(f"{root}/")
 
 
+# ``copy_source`` is the full monorepo path of the copy's source; when it lies under
+# ``source_root`` the excludes are emitted source-root-relative. A whole-subtree copy
+# (include ``("**",)``, e.g. ``<root>/.export``) excludes the subtree (``.export/**``);
+# a relocate of a glob subset from the root itself (e.g. ``*_test.py``) excludes exactly
+# that glob so no original remains under the prefix.
 def _add_sweep_exclude(
     excludes: list[str],
     copy_source: str,
     source_root: str,
     include: tuple[str, ...],
 ) -> None:
-    """Add main-sweep excludes for a copy whose files must not also be swept.
-
-    ``copy_source`` is the full monorepo path of the copy's source; when it lies
-    under ``source_root`` the excludes are emitted source-root-relative. A
-    whole-subtree copy (include ``("**",)``, e.g. ``<root>/.export``) excludes the
-    subtree (``.export/**``); a relocate of a glob subset from the root itself
-    (e.g. ``*_test.py``) excludes exactly that glob so no original remains under
-    the prefix.
-    """
+    """Add main-sweep excludes for a copy whose files must not also be swept."""
     prefix = f"{source_root.rstrip('/')}/" if source_root else ""
     if source_root and copy_source == source_root:
         # Relocate of a glob subset from the package root: exclude the glob(s).
@@ -1036,15 +1050,12 @@ def _add_sweep_exclude(
         excludes.extend(f"{rel}/{pattern}" for pattern in include)
 
 
+# A ``core.move(ROOT, PREFIX)`` names its source as the package root that origin_files
+# selects via ``ROOT + "/**"``. Collecting those roots lets the transform parser
+# recognize a source-root move (which carries the ``destination_prefix``) even when its
+# destination is a non-empty prefix rather than the empty root.
 def _origin_move_roots(include: tuple[str, ...]) -> frozenset[str]:
-    """Return candidate source-root paths from origin_files include patterns.
-
-    A ``core.move(ROOT, PREFIX)`` names its source as the package root that
-    origin_files selects via ``ROOT + "/**"``. Collecting those roots lets the
-    transform parser recognize a source-root move (which carries the
-    ``destination_prefix``) even when its destination is a non-empty prefix
-    rather than the empty root.
-    """
+    """Return candidate source-root paths from origin_files include patterns."""
     roots: set[str] = set()
     for pattern in include:
         if pattern.endswith("/**"):
@@ -1052,26 +1063,23 @@ def _origin_move_roots(include: tuple[str, ...]) -> frozenset[str]:
     return frozenset(roots)
 
 
+# One rule, two ways to break it. A flatten lifts ``SRC`` to the export root, so the
+# selection has to explain what ``SRC`` is:
+#
+# - Under a whole-tree selection (``**`` naming no root) a strict subtree flatten leaves
+# every sibling at its identity location, which real Copybara produces but copybarista's
+# single ``source_root``/``destination_prefix`` model cannot represent. - Under a rooted
+# selection, a source neither in nor under any root -- and not named individually, the
+# way a shared ``ops/github/shared/LICENSE`` is -- selects nothing, so the export would
+# silently ship an empty tree.
+#
+# Checked against the SELECTION rather than the classified moves: the flattening move is
+# never recognized as the source-root move in either case, so a guard reading the
+# classification would never see one.
 def _reject_unrepresentable_flatten(
     *, moves: list[MoveSpec], origin_include: tuple[str, ...]
 ) -> None:
-    """Reject a ``core.move(SRC, "")`` the selection cannot account for.
-
-    One rule, two ways to break it. A flatten lifts ``SRC`` to the export root,
-    so the selection has to explain what ``SRC`` is:
-
-    - Under a whole-tree selection (``**`` naming no root) a strict subtree
-      flatten leaves every sibling at its identity location, which real Copybara
-      produces but copybarista's single ``source_root``/``destination_prefix``
-      model cannot represent.
-    - Under a rooted selection, a source neither in nor under any root -- and
-      not named individually, the way a shared ``ops/github/shared/LICENSE``
-      is -- selects nothing, so the export would silently ship an empty tree.
-
-    Checked against the SELECTION rather than the classified moves: the
-    flattening move is never recognized as the source-root move in either case,
-    so a guard reading the classification would never see one.
-    """
+    """Reject a ``core.move(SRC, "")`` the selection cannot account for."""
     roots = _origin_move_roots(origin_include)
     selected = set(origin_include)
     for move in moves:
@@ -1276,18 +1284,16 @@ def _strip_prefixes_and_file_copies(
     return tuple(stripped), tuple(copies)
 
 
+# An ``origin_files`` entry outside the source root becomes an identity copy, and
+# Copybara names its public path with a following ``core.move``. Kept as two steps the
+# copy materializes the file under its SOURCE directories and the move then relocates
+# only the file, leaving that directory chain behind as empty dirs the export ships.
+# Copybara emits none, because its move relocates the selection itself rather than a
+# staged copy.
 def _fuse_renamed_origin_copies(
     *, copies: tuple[FileCopy, ...], transforms: list[Transform]
 ) -> tuple[tuple[FileCopy, ...], list[Transform]]:
-    """Fold a ``move`` that renames an origin copy into the copy's destination.
-
-    An ``origin_files`` entry outside the source root becomes an identity copy,
-    and Copybara names its public path with a following ``core.move``. Kept as
-    two steps the copy materializes the file under its SOURCE directories and
-    the move then relocates only the file, leaving that directory chain behind
-    as empty dirs the export ships. Copybara emits none, because its move
-    relocates the selection itself rather than a staged copy.
-    """
+    """Fold a ``move`` that renames an origin copy into the copy's destination."""
     renames = {
         transform.path: transform.destination
         for transform in transforms
@@ -1389,6 +1395,14 @@ def _marker_kind(line: str) -> str:
     return kind.split(":")[0]
 
 
+# The marker namespace -- not the mere presence of a marker -- decides the semantics,
+# and getting that wrong DELETES content the export must ship: ``uncomment_kind`` marks
+# lines to UNCOMMENT for the public tree and ``conditional_kinds`` keeps the else
+# branch, but both were recovered as ``strip_block``, which removes the region instead.
+#
+# ``after`` is the second half of the signal: an uncomment re-emits its capture (non-
+# empty ``after``), a strip does not. An unknown marker returns ``None`` and stays a
+# literal replace rather than defaulting to a delete.
 def _marker_transform(
     *,
     before: str,
@@ -1396,18 +1410,7 @@ def _marker_transform(
     uncomment_kind: str = "external",
     conditional_kinds: tuple[str, str, str] = ("if", "else", "endif"),
 ) -> Transform | None:
-    """Return the native transform a marker replacement means, or ``None``.
-
-    The marker namespace -- not the mere presence of a marker -- decides the
-    semantics, and getting that wrong DELETES content the export must ship:
-    ``uncomment_kind`` marks lines to UNCOMMENT for the public tree and
-    ``conditional_kinds`` keeps the else branch, but both were recovered as
-    ``strip_block``, which removes the region instead.
-
-    ``after`` is the second half of the signal: an uncomment re-emits its capture
-    (non-empty ``after``), a strip does not. An unknown marker returns ``None``
-    and stays a literal replace rather than defaulting to a delete.
-    """
+    """Return the native transform a marker replacement means, or ``None``."""
     markers = _marker_lines(before)
     if not markers:
         return None
@@ -1494,26 +1497,22 @@ def _conditional_transform(
     )
 
 
+# Real Copybara cannot express a whole-line delete as a literal ``core.replace``: the
+# literal consumes the marker AND its newline, welding the next line onto the previous
+# one. Only the interpolated form -- where the groups absorb the rest of the physical
+# line -- removes the line cleanly, and Copybara further requires ``reversal = []`` for
+# it because a group replace is not automatically reversible.
+#
+# Copybarista must accept that spelling but must NOT keep it as a ``replace``: an empty
+# ``after`` cannot re-derive the removed text on import, which is exactly why
+# ``internal_lines`` / ``strip_block`` exist (they re-insert the source's removed region
+# instead). Stripping the interpolations off the marker text recovers the native type,
+# so one ``.sky`` drives both tools and the reversal stays intact.
+#
+# Returns ``None`` when the replacement is not a marker strip, leaving the general
+# ``regex_groups`` replace path untouched.
 def _marker_strip_from_regex_groups(*, before: str, after: str) -> Transform | None:
-    """Recover the native marker transform from Copybara's group spelling.
-
-    Real Copybara cannot express a whole-line delete as a literal
-    ``core.replace``: the literal consumes the marker AND its newline, welding
-    the next line onto the previous one. Only the interpolated form -- where the
-    groups absorb the rest of the physical line -- removes the line cleanly, and
-    Copybara further requires ``reversal = []`` for it because a group replace is
-    not automatically reversible.
-
-    Copybarista must accept that spelling but must NOT keep it as a ``replace``:
-    an empty ``after`` cannot re-derive the removed text on import, which is
-    exactly why ``internal_lines`` / ``strip_block`` exist (they re-insert the
-    source's removed region instead). Stripping the interpolations off the
-    marker text recovers the native type, so one ``.sky`` drives both tools and
-    the reversal stays intact.
-
-    Returns ``None`` when the replacement is not a marker strip, leaving the
-    general ``regex_groups`` replace path untouched.
-    """
+    """Recover the native marker transform from Copybara's group spelling."""
     # Split ON the interpolations rather than deleting them: a block spells its
     # markers as ``<start>${block}<end>``, so removing the group would join the
     # two markers into one line and the pair would read as a single per-line

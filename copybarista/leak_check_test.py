@@ -119,3 +119,9 @@ def test_text_leak_check_skips_symlink_contents(tmp_path: Path):
         )
         == ()
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

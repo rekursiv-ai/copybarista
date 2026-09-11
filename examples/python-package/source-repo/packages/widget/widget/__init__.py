@@ -4,5 +4,10 @@ NAME = "widget"
 
 
 def label() -> str:
-    """Return the public package label."""
+    """Return the public package label.
+
+    Returns:
+      NAME: The str.
+
+    """
     return NAME

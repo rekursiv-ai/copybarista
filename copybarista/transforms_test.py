@@ -1146,3 +1146,9 @@ def _entry(source: str, destination: str) -> ManifestEntry:
         size=0,
         sha256="",
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

@@ -38,9 +38,14 @@ import sys
 
 
 def main() -> int:
-    """The main function. Return the process exit code."""
+    """Run the program; return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
-    parser.add_argument("message_file", help="Path to the commit message file.")
+    _add_arguments(parser)
     args = parser.parse_args()
     message = Path(args.message_file).read_text(encoding="utf-8")
     violations = _scan(message)
@@ -55,6 +60,11 @@ def main() -> int:
     )
     sys.stderr.write("\n".join(lines) + "\n")
     return 1
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register flags on ``parser``."""
+    parser.add_argument("message_file", help="Path to the commit message file.")
 
 
 def _scan(
@@ -98,12 +108,10 @@ def _pr_field_values(message: str) -> list[tuple[str, str]]:
     return values
 
 
+# The body runs until the next ``Copybarista-PR-Scope`` field or a blank line, matching
+# the export parser's contiguous-paragraph framing.
 def _body_block(lines: list[str], *, start: int) -> tuple[list[str], int]:
-    """Return the body lines from ``start`` and the index after the block.
-
-    The body runs until the next ``Copybarista-PR-Scope`` field or a blank line,
-    matching the export parser's contiguous-paragraph framing.
-    """
+    """Return the body lines from ``start`` and the index after the block."""
     body: list[str] = []
     idx = start
     while idx < len(lines):

@@ -58,3 +58,9 @@ def test_resolve_executable_keeps_unknown_names():
     assert resolve_executable("definitely-not-copybarista-tool") == (
         "definitely-not-copybarista-tool"
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

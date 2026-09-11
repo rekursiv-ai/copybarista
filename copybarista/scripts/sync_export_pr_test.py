@@ -729,13 +729,13 @@ def test_prefix_matcher_catches_real_references(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "reimplementing the walk loop.",  # sentence-final period
-        "the walk loop. Eliminates bugs",  # period + space
-        "uses loop/ style prose",  # slash + space
-        "the event loop",  # no separator at all
-        "backtick ``loop.``",  # separator then closing backtick
-        "(see the loop.)",  # separator then closing paren
-        "the loop/",  # slash at end-of-string
+        "reimplementing the walk loop.",  # sentence-final period.
+        "the walk loop. Eliminates bugs",  # period + space.
+        "uses loop/ style prose",  # slash + space.
+        "the event loop",  # no separator at all.
+        "backtick ``loop.``",  # separator then closing backtick.
+        "(see the loop.)",  # separator then closing paren.
+        "the loop/",  # slash at end-of-string.
     ],
 )
 def test_prefix_matcher_allows_prose(text: str) -> None:
@@ -1906,8 +1906,8 @@ def test_gh_pr_exists_retries_transient_github_failures(
             )
         return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
 
-    def no_sleep(_seconds: float) -> None:
-        return None
+    def no_sleep(seconds: float) -> None:
+        del seconds
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
@@ -1936,8 +1936,8 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
             stderr="HTTP 504: try resubmitting your request",
         )
 
-    def no_sleep(_seconds: float) -> None:
-        return None
+    def no_sleep(seconds: float) -> None:
+        del seconds
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
@@ -2156,7 +2156,7 @@ def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
     sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
 
     merge_calls = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
-    assert len(merge_calls) == 2  # the --auto attempt, then the direct fallback
+    assert len(merge_calls) == 2  # the --auto attempt, then the direct fallback.
     assert "--auto" in merge_calls[0]
     assert "--auto" not in merge_calls[1]
 
@@ -3092,3 +3092,9 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
         )
         == ""
     ), "a landed import must unblock the export it imported"
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

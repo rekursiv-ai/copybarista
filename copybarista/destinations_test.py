@@ -169,3 +169,9 @@ def test_folder_destination_rejects_paths_inside_home(
             source_root=source_root,
             replace_existing=True,
         )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

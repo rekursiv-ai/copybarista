@@ -1045,3 +1045,9 @@ def test_rejects_move_empty_destination(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="non-empty"):
         load_config(config_path)
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

