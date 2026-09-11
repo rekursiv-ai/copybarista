@@ -110,7 +110,7 @@ def _validate_destination(
     replacing_existing: bool,
 ) -> None:
     """Reject destination paths where full-tree replacement would be unsafe."""
-    home = Path.home().resolve()
+    home = Path.home().resolve()  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- safety check against deleting $HOME itself, not a path we own
     dangerous = {Path("/").resolve(), home, source_ref, source_root}
     if destination in dangerous:
         raise ExportError(f"Refusing to replace dangerous destination: {destination}")

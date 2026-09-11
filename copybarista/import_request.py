@@ -2009,7 +2009,7 @@ def _validate_import_destination(destination: Path) -> None:
     if not destination.is_dir():
         raise ImportRequestError(f"Import destination must exist: {destination}")
     resolved = destination.resolve()
-    home = Path.home().resolve()
+    home = Path.home().resolve()  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- safety check against deleting $HOME itself, not a path we own
     if resolved in {Path("/").resolve(), home}:
         raise ImportRequestError(f"Refusing dangerous destination: {destination}")
     if VCS_DIRS.intersection(resolved.parts):
