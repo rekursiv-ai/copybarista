@@ -16,9 +16,7 @@ class CommandResult:
     """Completed command data used by destination implementations."""
 
     returncode: int
-
     stdout: str
-
     stderr: str
 
 
@@ -65,13 +63,5 @@ class CommandRunner:
 
 
 def resolve_executable(name: str) -> str:
-    """Resolve an executable name to an absolute path when possible.
-
-    Args:
-      name: Name.
-
-    Returns:
-      result: The str.
-
-    """
+    """Resolve an executable name to an absolute path when possible."""
     return shutil.which(name) or name

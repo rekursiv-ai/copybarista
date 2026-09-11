@@ -47,15 +47,10 @@ class GlobSet:
     """
 
     include: tuple[str, ...]
-
     exclude: tuple[str, ...] = ()
-
     globstar: Globstar = "one_or_more"
-
     min_brace_choices: int = 2
-
     _include_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
-
     _exclude_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -80,15 +75,7 @@ class GlobSet:
         )
 
     def matches(self, path: str) -> bool:
-        """Return whether a path is included and not excluded.
-
-        Args:
-          path: Path.
-
-        Returns:
-          result: The bool.
-
-        """
+        """Return whether a path is included and not excluded."""
         normalized = path.replace("\\", "/").strip("/")
         return any(r.fullmatch(normalized) for r in self._include_regex) and not any(
             r.fullmatch(normalized) for r in self._exclude_regex
@@ -102,10 +89,10 @@ class GlobSet:
         the config explicitly suppresses.
 
         Args:
-          path: Path.
+          path: File path to test (forward slashes, relative).
 
         Returns:
-          result: The bool.
+          is_excluded: True if path matches any exclude regex.
 
         """
         normalized = path.replace("\\", "/").strip("/")
@@ -119,10 +106,10 @@ def validate_pattern(pattern: str) -> str:
     them as literals and exporting the wrong file set.
 
     Args:
-      pattern: Pattern.
+      pattern: Glob pattern to validate.
 
     Returns:
-      result: The str.
+      normalized: Pattern with leading/trailing slashes stripped.
 
     """
     if not pattern:

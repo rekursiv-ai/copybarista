@@ -48,10 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     """Run the Copybarista CLI. Return the process exit code.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments; defaults to sys.argv[1:].
 
     Returns:
-      result: The int.
+      exit_code: 0 on success, non-zero on CopybaristaError or command failure.
 
     """
     parser = _parser()

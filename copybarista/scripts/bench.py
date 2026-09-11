@@ -34,11 +34,8 @@ class BenchmarkSample:
     """One timed benchmark run."""
 
     total_sec: float
-
     phases_sec: dict[str, float]
-
     file_count: int
-
     byte_count: int
 
 
@@ -47,23 +44,14 @@ class BenchmarkResult:
     """Timing summary for one benchmark target."""
 
     name: str
-
     runs: tuple[float, ...]
-
     median_sec: float
-
     samples: tuple[BenchmarkSample, ...] = ()
-
     phase_medians_sec: dict[str, float] = field(default_factory=dict)
-
     file_count: int = 0
-
     byte_count: int = 0
-
     destination_mode: str = "cold"
-
     platform: str = field(default_factory=platform_lib.platform)
-
     python: str = field(default_factory=platform_lib.python_version)
 
 
@@ -74,12 +62,7 @@ class BenchmarkReport:
     copybarista: BenchmarkResult
 
     def to_json(self) -> str:
-        """Serialize the benchmark report as deterministic JSON.
-
-        Returns:
-          result: The str.
-
-        """
+        """Serialize the benchmark report as deterministic JSON."""
         return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
 
 
@@ -92,12 +75,12 @@ def run_copybarista_benchmark(
     """Run repeated Copybarista folder exports and return elapsed times.
 
     Args:
-      config_path: Config path.
-      source_ref: Source ref.
-      runs: Runs.
+      config_path: Path to copy.barista.toml config file.
+      source_ref: Path to source repository root.
+      runs: Number of export iterations to time.
 
     Returns:
-      result: The BenchmarkResult.
+      result: BenchmarkResult with timings and file counts.
 
     """
     samples: list[BenchmarkSample] = []
@@ -124,12 +107,12 @@ def build_report(
     """Build a benchmark report for Copybarista.
 
     Args:
-      config_path: Config path.
-      source_ref: Source ref.
-      runs: Runs.
+      config_path: Path to copy.barista.toml config file.
+      source_ref: Path to source repository root.
+      runs: Number of export iterations to time.
 
     Returns:
-      result: The BenchmarkReport.
+      report: BenchmarkReport with Copybarista result and metadata.
 
     """
     copybarista = run_copybarista_benchmark(
@@ -144,7 +127,7 @@ def main() -> int:
     """Run the benchmark helper CLI. Return the process exit code.
 
     Returns:
-      result: The int.
+      exit_code: 0 on success.
 
     """
     args = _parser().parse_args()
@@ -239,13 +222,7 @@ def _run_copybarista_sample(
     destination = root / f"copybarista-{run_id}"
 
     def record_stage_phase(phase: str, elapsed_sec: float) -> None:
-        """Record staged workflow sub-phases in the sample phase map.
-
-        Args:
-          phase: Phase.
-          elapsed_sec: Elapsed sec.
-
-        """
+        """Record staged workflow sub-phases in the sample phase map."""
         phases[f"stage.{phase}"] = elapsed_sec
 
     stage_started = time.perf_counter()

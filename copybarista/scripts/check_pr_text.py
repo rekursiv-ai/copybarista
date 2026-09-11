@@ -41,7 +41,7 @@ def main() -> int:
     """Run the program; return the process exit code.
 
     Returns:
-      result: The int.
+      exit_code: 0 if no violations, 1 if monorepo references found.
 
     """
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])

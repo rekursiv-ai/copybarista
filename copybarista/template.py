@@ -31,7 +31,6 @@ class _Token:
     """One literal or interpolation segment of a template."""
 
     value: str
-
     is_group: bool
 
 
@@ -46,31 +45,14 @@ class ReplaceTemplate:
     """
 
     pattern: re.Pattern[str]
-
     after_tokens: tuple[_Token, ...]
 
     def apply(self, text: str) -> str:
-        """Return ``text`` with every ``before`` match rendered as ``after``.
-
-        Args:
-          text: Text.
-
-        Returns:
-          result: The str.
-
-        """
+        """Return ``text`` with every ``before`` match rendered as ``after``."""
         return self.pattern.sub(self._render, text)
 
     def count(self, text: str) -> int:
-        """Return how many non-overlapping ``before`` matches occur in ``text``.
-
-        Args:
-          text: Text.
-
-        Returns:
-          result: The int.
-
-        """
+        """Return how many non-overlapping ``before`` matches occur in ``text``."""
         return sum(1 for _ in self.pattern.finditer(text))
 
     def _render(self, match: re.Match[str]) -> str:
@@ -139,11 +121,11 @@ def literal_segments(template: str, *, separator: str) -> str:
     agreeing the moment the grammar here changed.
 
     Args:
-      template: Template.
-      separator: Separator.
+      template: Template string with ${name} interpolations.
+      separator: String to replace each interpolation with.
 
     Returns:
-      result: The str.
+      skeleton: Literal segments joined by separator (no interpolation groups).
 
     """
     return separator.join(

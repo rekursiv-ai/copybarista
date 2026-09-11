@@ -25,7 +25,6 @@ class DestinationResult:
     """Summary of one destination write."""
 
     status: DestinationStatus
-
     ref: str = ""
 
 
@@ -89,7 +88,7 @@ def validate_staged_symlinks(root: Path) -> None:
     """Reject staged symlinks that point outside the staged tree.
 
     Args:
-      root: Root.
+      root: Staged tree root directory to scan for symlinks.
 
     """
     resolved_root = root.resolve()

@@ -538,9 +538,7 @@ def _empty_git_config(*_args: str, runtime: GitRuntime | None = None) -> Command
 @dataclass(slots=True, kw_only=True)
 class _FakeCommands:
     result: CommandResult
-
     calls: list[list[str]] = field(default_factory=list)
-
     checks: list[bool] = field(default_factory=list)
 
     def run(self, argv: list[str], *, check: bool = True) -> CommandResult:

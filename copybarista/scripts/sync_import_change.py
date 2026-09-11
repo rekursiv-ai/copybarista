@@ -39,12 +39,7 @@ GITHUB_RETRY_DELAY_SEC: Final = 2
 
 
 def main() -> int:
-    """Run the program; return the process exit code.
-
-    Returns:
-      result: The int.
-
-    """
+    """Run the program; return the process exit code."""
     return run()
 
 
@@ -52,10 +47,10 @@ def run(argv: list[str] | None = None) -> int:
     """Run public-to-source import validation and optional PR creation.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments; None for sys.argv[1:].
 
     Returns:
-      result: The int.
+      exit_code: 0 on success, nonzero if import/validation/PR fails.
 
     """
     args = _parser().parse_args(argv)
@@ -114,45 +109,25 @@ class ImportRequest:
     """Typed namespace for one import sync run."""
 
     public_base: Path
-
     public_head: Path
-
     target_dir: Path
-
     target_repo: str
-
     project_path: Path
-
     base_branch: str
-
     public_repo: str
-
     public_sha: str
-
     public_base_ref: str
-
     public_head_ref: str
-
     branch: str
-
     sync_label: str
-
     sync_user_name: str
-
     sync_user_email: str
-
     report: Path
-
     open_pr: bool
-
     open_pr_only: bool
-
     auto_merge: bool = True
-
     runner_temp: Path
-
     validation_commands: tuple[str, ...]
-
     refresh_public_lockfile: bool
 
 
@@ -160,7 +135,7 @@ def run_import_sync(request: ImportRequest) -> None:
     """Import public changes into source, validate, and optionally open a PR.
 
     Args:
-      request: Request.
+      request: ImportRequest with paths, refs, and sync settings.
 
     """
     project = request.target_dir / request.project_path
@@ -212,15 +187,15 @@ def import_change_pr_body(
     """Return the target import-change PR body.
 
     Args:
-      public_repo: Public repo.
-      public_sha: Public sha.
-      public_base_ref: Public base ref.
-      public_head_ref: Public head ref.
-      source_base_ref: Source base ref.
-      sync_label: Sync label.
+      public_repo: Public repository URL or name.
+      public_sha: Full 40-character SHA being imported.
+      public_base_ref: Public merge base branch/ref.
+      public_head_ref: Public source branch/ref.
+      source_base_ref: Target merge base branch.
+      sync_label: Sync label (Copybarista, Wesearch, etc.).
 
     Returns:
-      result: The str.
+      pr_body: Markdown PR description with import metadata.
 
     """
     return (
@@ -237,17 +212,7 @@ def import_change_pr_body(
 
 
 def import_branch_name(*, explicit: str, public_sha: str, prefix: str) -> str:
-    """Return the public-to-source sync branch name.
-
-    Args:
-      explicit: Explicit.
-      public_sha: Public sha.
-      prefix: Prefix.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the public-to-source sync branch name."""
     if explicit.strip():
         return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
     branch = f"{prefix}sha-{_branch_component(public_sha[:12])}"
@@ -259,15 +224,7 @@ class ImportBaseError(RuntimeError):
 
 
 def import_commit_subject_prefix(sync_label: str) -> str:
-    """Return the fixed prefix of a landed import's commit subject.
-
-    Args:
-      sync_label: Sync label.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the fixed prefix of a landed import's commit subject."""
     return f"Import {sync_label} public changes "
 
 

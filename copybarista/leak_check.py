@@ -28,20 +28,12 @@ class LeakViolation:
     """One leak-check policy violation."""
 
     rule_id: str
-
     path: str
-
     line: int = 0
-
     message: str = ""
 
     def format(self) -> str:
-        """Return a CI-safe violation message without echoing matched text.
-
-        Returns:
-          result: The str.
-
-        """
+        """Return a CI-safe violation message without echoing matched text."""
         location = f"{self.path}:{self.line}" if self.line else self.path
         if self.message:
             return f"{self.rule_id}: {location}: {self.message}"
@@ -86,14 +78,7 @@ def check_leaks(
 def enforce_leak_check(
     *, root: Path, policy: LeakCheck, globstar: Globstar = "one_or_more"
 ) -> None:
-    """Raise when a transformed tree violates leak-check policy.
-
-    Args:
-      root: Root.
-      policy: Policy.
-      globstar: Globstar.
-
-    """
+    """Raise when a transformed tree violates leak-check policy."""
     violations = check_leaks(root=root, policy=policy, globstar=globstar)
     if violations:
         lines = "\n".join(violation.format() for violation in violations)
@@ -105,7 +90,6 @@ class _TreeListing:
     """Root-relative POSIX paths below an export root, listed once for all rules."""
 
     paths: tuple[str, ...]
-
     regular_files: tuple[str, ...]
 
 

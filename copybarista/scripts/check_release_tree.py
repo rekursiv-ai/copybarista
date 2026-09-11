@@ -56,12 +56,7 @@ TEXT_SCAN_SKIP_PATHS = frozenset(
 
 
 def main() -> int:
-    """Run the program; return the process exit code.
-
-    Returns:
-      result: The int.
-
-    """
+    """Run the program; return the process exit code."""
     return run()
 
 
@@ -69,10 +64,10 @@ def run(argv: list[str] | None = None) -> int:
     """Run the release-tree policy check. Return the process exit code.
 
     Args:
-      argv: Argv.
+      argv: Command-line args (--root, --allow-root-git); None uses sys.argv.
 
     Returns:
-      result: The int.
+      code: 0 if no violations found, 1 if policy errors detected.
 
     """
     args = _parser().parse_args(argv)

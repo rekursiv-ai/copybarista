@@ -106,61 +106,33 @@ class SyncSettings:
     """
 
     package_name: str
-
     sync_label: str
-
     source_root: str
-
     public_repo: str
-
     source_repo: str
-
     copybarista_project_path: str
-
     smoke_import: str
-
     type_check_targets: tuple[str, ...]
-
     forbidden_pr_text: tuple[str, ...]
-
     export_watch_paths: tuple[str, ...] = ()
-
     release_check_script: str = ""
-
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
-
     validation_commands: tuple[str, ...] = ()
-
     validation_commands_comment: tuple[str, ...] = ()
-
     system_packages: tuple[str, ...] = DEFAULT_SYSTEM_PACKAGES
-
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
-
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
-
     sync_token_login: str = ""
-
     export_branch_prefix: str = ""
-
     import_branch_prefix: str = ""
-
     pr_default_title: str = ""
-
     pr_default_body: str = ""
-
     require_pr_metadata: bool = False
-
     pr_metadata_source: str = "commit_messages"
-
     replay_bootstrap_base: str = ""
-
     replay_bootstrap_base_comment: tuple[str, ...] = ()
-
     publish_source_rev: bool = False
-
     refresh_public_lockfile: bool = False
-
     skip_source_validation: bool = False
 
     def __post_init__(self) -> None:
@@ -755,10 +727,10 @@ def workflow_dir(root: Path) -> Path:
     excludes, so validating those would check files that never ship.
 
     Args:
-      root: Root.
+      root: Package directory (contains .export or .github).
 
     Returns:
-      result: The Path.
+      result: ``.export/.github/workflows`` if it exists, else ``.github/workflows``.
 
     """
     staged = root / ".export" / ".github" / "workflows"
