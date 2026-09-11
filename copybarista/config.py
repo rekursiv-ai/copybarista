@@ -86,11 +86,8 @@ class GitDestination:
     """
 
     url: str = ""
-
     branch: str = DEFAULT_GIT_BRANCH
-
     committer_name: str = ""
-
     committer_email: str = ""
 
 
@@ -99,22 +96,13 @@ class FileCopy:
     """Additional repo-relative files to assemble into the exported tree."""
 
     source: str
-
     destination: str
-
     include: tuple[str, ...] = ("**",)
-
     exclude: tuple[str, ...] = ()
-
     use_default_python_excludes: bool = False
 
     def effective_exclude(self) -> tuple[str, ...]:
-        """Return exclude patterns with default Python artifacts prepended.
-
-        Returns:
-          result: The tuple[str, ...].
-
-        """
+        """Return exclude patterns with default Python artifacts prepended."""
         if not self.use_default_python_excludes:
             return self.exclude
         return DEFAULT_PYTHON_EXCLUDES + self.exclude
@@ -125,7 +113,6 @@ class FileWrite:
     """Generated file to materialize into the exported tree."""
 
     path: str
-
     content: str
 
 
@@ -148,7 +135,6 @@ class FileMove:
     """
 
     path: str
-
     destination: str
 
 
@@ -161,24 +147,14 @@ class FileSelection:
     """
 
     include: tuple[str, ...]
-
     exclude: tuple[str, ...]
-
     moves: tuple[FileMove, ...] = ()
-
     copy: tuple[FileCopy, ...] = ()
-
     write: tuple[FileWrite, ...] = ()
-
     use_default_python_excludes: bool = False
 
     def effective_exclude(self) -> tuple[str, ...]:
-        """Return exclude patterns with default Python artifacts prepended.
-
-        Returns:
-          result: The tuple[str, ...].
-
-        """
+        """Return exclude patterns with default Python artifacts prepended."""
         if not self.use_default_python_excludes:
             return self.exclude
         return DEFAULT_PYTHON_EXCLUDES + self.exclude
@@ -189,13 +165,9 @@ class ForbiddenTextRule:
     """Regex rule for text that must not appear in exported files."""
 
     id: str
-
     pattern: str
-
     paths: tuple[str, ...] = ("**",)
-
     exclude: tuple[str, ...] = ()
-
     message: str = ""
 
 
@@ -204,9 +176,7 @@ class ForbiddenPathRule:
     """Glob rule for paths that must not appear in an exported tree."""
 
     id: str
-
     paths: tuple[str, ...]
-
     message: str = ""
 
 
@@ -215,7 +185,6 @@ class LeakCheck:
     """Policy checks that run against the transformed export tree."""
 
     forbidden_text: tuple[ForbiddenTextRule, ...] = ()
-
     forbidden_path: tuple[ForbiddenPathRule, ...] = ()
 
 
@@ -229,30 +198,18 @@ class Transform:
     """
 
     id: str
-
     type: TransformType
-
     path: str
-
     before: str = ""
-
     after: str = ""
-
     reverse_before: str = ""
-
     reverse_after: str = ""
-
     start: str = ""
-
     end: str = ""
-
     # TOML key "else"; strip_block keeps and uncomments this branch.
     else_marker: str = ""
-
     inclusive: bool = True
-
     required: bool = True
-
     # When False, the transform is forward-only: it is applied on export but
     # skipped during reverse import. Use for transforms whose reverse is
     # inherently ambiguous (e.g. a home-directory prefix rewritten to ``.``,
@@ -260,7 +217,6 @@ class Transform:
     # Copybara's ``core.transform([...], reversal=[])`` (a declared no-op
     # reversal).
     reversible: bool = True
-
     # Ordered ``(name, regex)`` interpolation bindings for ``replace``. When set,
     # ``before``/``after`` are templates: literal text matches verbatim and
     # ``${name}`` matches/re-emits the named group. The same machinery runs
@@ -271,7 +227,6 @@ class Transform:
     # reversible without corrupting identifier substrings (``pkg_state``) or
     # dotfiles (``.pkg``).
     regex_groups: tuple[tuple[str, str], ...] = ()
-
     destination: str = ""
 
 
@@ -285,21 +240,13 @@ class WorkflowConfig:
     """
 
     name: str
-
     mode: str
-
     source_root: str
-
     files: FileSelection
-
     transforms: tuple[Transform, ...]
-
     folder: FolderDestination
-
     git: GitDestination
-
     leak_check: LeakCheck = LeakCheck()
-
     globstar: Globstar = "one_or_more"
 
 

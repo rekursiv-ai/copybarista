@@ -50,16 +50,7 @@ class GitCommands(Protocol):
     """Runs Git command lines for Git destination operations."""
 
     def run(self, argv: list[str], *, check: bool = True) -> CommandResult:
-        """Run one command and return its captured result.
-
-        Args:
-          argv: Argv.
-          check: Check.
-
-        Returns:
-          result: The CommandResult.
-
-        """
+        """Run one command and return its captured result."""
         ...
 
 
@@ -80,13 +71,10 @@ class GitRuntime:
     """
 
     git: str = field(default_factory=lambda: resolve_executable("git"))
-
     commands: GitCommands = field(default_factory=CommandRunner)
-
     cache_root: Path = field(
         default_factory=lambda: cache_dir() / "rekursiv-ai" / "copybarista" / "git"
     )
-
     source_rev_label: str = "Copybarista-Source-Rev"
 
 

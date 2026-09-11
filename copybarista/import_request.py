@@ -57,9 +57,7 @@ class TreeEntry:
     """
 
     kind: EntryKind
-
     data: bytes
-
     executable: bool = False
 
 
@@ -74,7 +72,6 @@ class TreeChange:
     """
 
     path: str
-
     action: ChangeAction
 
 
@@ -168,10 +165,10 @@ class TreeSnapshot:
         """Return created, deleted, modified, and type-changed paths.
 
         Args:
-          other: Other.
+          other: TreeSnapshot to diff against this one.
 
         Returns:
-          result: The TreeDiff.
+          result: TreeDiff listing changes from self to other.
 
         """
         changes: list[TreeChange] = []
@@ -198,7 +195,6 @@ class PathMapper:
     """
 
     config: WorkflowConfig
-
     matcher: GlobSet = field(init=False)
 
     def __post_init__(self) -> None:
@@ -371,13 +367,9 @@ class ImportChange:
     """
 
     public: str
-
     source: str
-
     action: ChangeAction
-
     transforms: tuple[str, ...] = ()
-
     outcome: ChangeOutcome = "applied"
 
 
@@ -405,7 +397,7 @@ class ImportResult:
         """Return a JSON-serializable report.
 
         Returns:
-          result: The dict[str, object].
+          result: Dict with changes array describing each import action.
 
         """
         return {
@@ -440,24 +432,18 @@ class ChangeRequestImporter:
     """
 
     config: WorkflowConfig
-
     public_base: Path
-
     public_head: Path
-
     source_base: Path
-
     destination: Path
-
     verify: bool = True
-
     merge_import: bool = False
 
     def plan(self) -> ImportPlan:
         """Build and validate the import plan.
 
         Returns:
-          result: The ImportPlan.
+          result: ImportPlan with changes and reverse transforms.
 
         """
         _validate_import_destination(self.destination)
@@ -482,7 +468,7 @@ class ChangeRequestImporter:
         """Apply the public diff to the destination checkout.
 
         Returns:
-          result: The ImportResult.
+          result: ImportResult with outcomes for each change applied.
 
         """
         plan = self.plan()
@@ -1136,17 +1122,11 @@ class ImportRequest:
     """Inputs for a local-checkout change-request import."""
 
     config: WorkflowConfig
-
     public_base: Path
-
     public_head: Path
-
     source_base: Path
-
     destination: Path
-
     verify: bool = True
-
     merge_import: bool = False
 
 
@@ -1154,10 +1134,10 @@ def import_change_request(request: ImportRequest) -> ImportResult:
     """Import a public change request into a source-of-truth checkout.
 
     Args:
-      request: Request.
+      request: Configuration specifying source, destination, and options.
 
     Returns:
-      result: The ImportResult.
+      result: ImportResult with applied changes and outcomes.
 
     """
     return ChangeRequestImporter(
@@ -1362,9 +1342,7 @@ class _ReverseMatcher:
     """One reverse ``replace`` rule compiled once for the simultaneous pass."""
 
     pattern: re.Pattern[str]
-
     template: ReplaceTemplate | None
-
     literal_after: str
 
     @classmethod
@@ -1372,10 +1350,10 @@ class _ReverseMatcher:
         """Compile a transform's reverse rule for repeated position matching.
 
         Args:
-          transform: Transform.
+          transform: Forward transform to invert for reverse matching.
 
         Returns:
-          result: The _ReverseMatcher.
+          result: _ReverseMatcher with compiled regex and template.
 
         """
         reverse_before = _reverse_before(transform)
@@ -1396,10 +1374,10 @@ class _ReverseMatcher:
         """Render this rule's reverse output for one match.
 
         Args:
-          match: Match.
+          match: Regex match to expand through this rule's template.
 
         Returns:
-          result: The str.
+          result: Rendered replacement string.
 
         """
         if self.template is None:
@@ -1973,7 +1951,6 @@ class _OriginalPath:
     """Original destination path state captured for import rollback."""
 
     path: Path
-
     backup: Path | None
 
 

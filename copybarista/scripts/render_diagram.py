@@ -32,10 +32,10 @@ def render(input_path: Path, output_path: Path, width: int, scale: int) -> None:
     """Render ``input_path`` to ``output_path`` via mmdc + cwebp.
 
     Args:
-      input_path: Input path.
-      output_path: Output path.
-      width: Width.
-      scale: Scale.
+      input_path: Mermaid diagram .md file.
+      output_path: Output .webp file path.
+      width: SVG width in pixels.
+      scale: DPI scaling factor.
 
     """
     npx = _require_tool("npx")
@@ -82,7 +82,7 @@ def main() -> int:
     """Parse arguments and render the diagram. Return the process exit code.
 
     Returns:
-      result: The int.
+      result: 0 on success, 1 if input not found.
 
     """
     parser = argparse.ArgumentParser(

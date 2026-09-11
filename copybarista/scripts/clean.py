@@ -28,7 +28,7 @@ def main() -> int:
     """Run the cleanup command. Return the process exit code.
 
     Returns:
-      result: The int.
+      result: Process exit code (0 on success, non-zero on error).
 
     """
     parser = argparse.ArgumentParser(

@@ -165,9 +165,7 @@ class _TransformResult:
     """Internal transform outcome before adding config identity fields."""
 
     changed: int
-
     count: int
-
     files: tuple[TransformFileReport, ...]
 
 
@@ -178,11 +176,12 @@ def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
     block's exported form; a second copy of this walk would drift from it.
 
     Args:
-      text: Text.
-      transform: Transform.
+      text: Source code as a string.
+      transform: Transform configuration with start/end markers.
 
     Returns:
-      result: The tuple[str, int].
+      uncommented_text: Source with marker lines and comments removed.
+      count: Number of marker regions processed.
 
     """
     lines = text.split("\n")
@@ -242,11 +241,11 @@ def line_has_marker_token(line: str, marker: str) -> bool:
     load-bearing.
 
     Args:
-      line: Line.
-      marker: Marker.
+      line: Text line to search.
+      marker: Marker string to find as a whole token (not followed by ':').
 
     Returns:
-      result: The bool.
+      has_marker: True if marker appears not immediately followed by ':'.
 
     """
     index = line.find(marker)
@@ -269,11 +268,11 @@ def strip_source_text(text: str, transform: Transform) -> str:
     across export and import automatically.
 
     Args:
-      text: Text.
-      transform: Transform.
+      text: Source code as a string.
+      transform: Transform configuration with strip markers and type.
 
     Returns:
-      result: The str.
+      stripped_text: Source with marked regions removed (exported form).
 
     """
     return strip_source_regions(text, transform)[0]
@@ -298,11 +297,13 @@ def strip_source_regions(
     rather than fabricate one.
 
     Args:
-      text: Text.
-      transform: Transform.
+      text: Source code as a string.
+      transform: Transform configuration with strip markers and type.
 
     Returns:
-      result: The tuple[str, tuple[tuple[int, str], ...]].
+      exported_text: Source with marked regions removed.
+      removed_regions: List of (offset_in_stripped, removed_bytes) for each
+        deleted region, empty when transform uses else/rewrite logic.
 
     """
     if transform.type == "strip_block":

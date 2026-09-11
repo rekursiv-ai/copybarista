@@ -33,7 +33,6 @@ class GlobSpec:
     """A parsed `glob(...)` include/exclude expression."""
 
     include: tuple[str, ...]
-
     exclude: tuple[str, ...] = ()
 
 
@@ -42,9 +41,7 @@ class DestinationSpec:
     """A parsed destination expression."""
 
     kind: str
-
     url: str = ""
-
     branch: str = DEFAULT_GIT_BRANCH
 
 
@@ -53,7 +50,6 @@ class AuthorSpec:
     """A parsed authoring expression."""
 
     name: str
-
     email: str
 
 
@@ -62,7 +58,6 @@ class MoveSpec:
     """A parsed `core.move` transform."""
 
     source: str
-
     destination: str
 
 
@@ -76,7 +71,6 @@ class CopySpec:
     """
 
     source: str
-
     destination: str
 
     include: tuple[str, ...] = ("**",)
@@ -130,36 +124,25 @@ class TranslatedWorkflow:
     """A workflow translated from `copy.bara.sky` syntax."""
 
     name: str
-
     mode: str
-
     source_root: str
-
     include: tuple[str, ...]
-
     exclude: tuple[str, ...]
-
     transforms: tuple[Transform, ...]
-
     moves: tuple[FileMove, ...] = ()
-
     copies: tuple[FileCopy, ...] = ()
-
     folder_path: str = ""
-
     git_url: str = ""
-
     git_branch: str = DEFAULT_GIT_BRANCH
-
     git_committer_name: str = ""
-
     git_committer_email: str = ""
 
     def to_raw_config(self) -> dict[str, object]:
         """Return a raw config dictionary accepted by `parse_config`.
 
         Returns:
-          raw: The dict[str, object].
+          raw: Configuration dict with workflow, files, destination, and
+            transform entries ready for parser validation.
 
         """
         raw: dict[str, object] = {
@@ -279,7 +262,7 @@ class _CopyBaraSkyParser:
         """Return all supported workflows defined by the config.
 
         Returns:
-          workflows: The list[TranslatedWorkflow].
+          workflows: All top-level workflow definitions found in the module.
 
         """
         workflows: list[TranslatedWorkflow] = []

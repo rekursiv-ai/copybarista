@@ -66,12 +66,7 @@ PR_VALIDATION_TEMPLATE_SECTIONS = frozenset({"Testing", "Validation"})
 
 
 def main() -> int:
-    """Run the program; return the process exit code.
-
-    Returns:
-      result: The int.
-
-    """
+    """Run the program; return the process exit code."""
     return run()
 
 
@@ -79,10 +74,10 @@ def run(argv: list[str] | None = None) -> int:
     """Run source-to-public export validation and PR creation.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments (sys.argv[1:] if None).
 
     Returns:
-      result: The int.
+      code: 0 on success, nonzero on error or validation failure.
 
     """
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -156,15 +151,10 @@ class PrReplaySettings:
     """Settings that control public PR metadata replay."""
 
     scope: str
-
     default_title: str
-
     default_body: str
-
     require_metadata: bool
-
     bootstrap_base: str
-
     publish_source_rev: bool
 
 
@@ -173,57 +163,31 @@ class ExportRequest:
     """Typed namespace for one export sync run."""
 
     source_dir: Path
-
     project_path: Path
-
     public_dir: Path
-
     target_repo: str
-
     base_branch: str
-
     source_sha: str
-
     branch: str
-
     sync_label: str
-
     sync_user_name: str
-
     sync_user_email: str
-
     pr_title: str
-
     pr_body: str
-
     manual_pr_title: str
-
     manual_pr_body: str
-
     replay_settings: PrReplaySettings
-
     forbidden_pr_text: tuple[str, ...]
-
     auto_merge: bool
-
     refresh_public_lockfile: bool
-
     skip_source_validation: bool
-
     runner_temp: Path
-
     release_check_script: Path | None
-
     type_check_targets: tuple[str, ...]
-
     smoke_import: str
-
     validation_commands: tuple[str, ...]
-
     dry_run: bool
-
     import_branch_prefix: str = ""
-
     source_repo: str = ""
 
 
@@ -241,7 +205,6 @@ class SourceAuthor:
     """One git source author used for generated commit attribution."""
 
     name: str
-
     email: str
 
 
@@ -250,15 +213,10 @@ class PrMetadataPatch:
     """One source commit's public PR metadata."""
 
     commit_sha: str
-
     scope: str
-
     title: str
-
     author: SourceAuthor
-
     body: str
-
     body_mode: str
 
 
@@ -267,7 +225,6 @@ class PrBodyEntry:
     """One appended public PR body entry."""
 
     commit_sha: str
-
     text: str
 
 
@@ -276,17 +233,11 @@ class PrReplayState:
     """Rendered public PR state after replaying source commit metadata."""
 
     title: str
-
     authors: tuple[SourceAuthor, ...]
-
     body_intro: str
-
     body_entries: tuple[PrBodyEntry, ...]
-
     applied_source_rev: str
-
     applied_source_digest: str
-
     metadata_count: int
 
 
@@ -295,11 +246,8 @@ class CurrentPr:
     """Open generated public PR state."""
 
     title: str
-
     body: str
-
     number: int
-
     url: str
 
 
@@ -308,9 +256,7 @@ class BranchMarkers:
     """Machine markers read from the current generated branch commit."""
 
     source_digest: str
-
     replay_base_digest: str
-
     exists: bool
 
 
@@ -319,13 +265,9 @@ class PrReplayPlan:
     """Resolved PR replay result for one export run."""
 
     state: PrReplayState
-
     body: str
-
     replay_base: str
-
     replay_base_digest: str
-
     current_pr: CurrentPr | None
 
 
@@ -352,7 +294,7 @@ def run_export_sync(request: ExportRequest) -> None:
     fixes on its own.
 
     Args:
-      request: Request.
+      request: Export parameters and credentials.
 
     """
     if request.import_branch_prefix and request.source_repo:
@@ -421,16 +363,16 @@ def export_pr_text(
     """Return public export PR text from manual inputs, commit text, or defaults.
 
     Args:
-      title: Title.
-      body: Body.
-      source_message: Source message.
-      use_source_message: Use source message.
-      forbidden_text: Forbidden text.
-      default_title: Default title.
-      default_body: Default body.
+      title: Manual PR title (overrides source message).
+      body: Manual PR body (overrides source message).
+      source_message: Commit message from source (fallback source).
+      use_source_message: Prefer source message over manual inputs.
+      forbidden_text: Substrings to reject in PR body.
+      default_title: Fallback title if all else empty.
+      default_body: Fallback body if all else empty.
 
     Returns:
-      result: The ExportPrText.
+      text: PR title and body, validated against forbidden patterns.
 
     """
     message_title = ""
@@ -459,11 +401,11 @@ def replay_pr_metadata(
     """Apply source commit PR metadata patches in chronological order.
 
     Args:
-      base: Base.
-      patches: Patches.
+      base: Starting PR state (typically from public repo).
+      patches: Mutations to apply in sequence.
 
     Returns:
-      state: The PrReplayState.
+      state: PR state after all patches applied.
 
     """
     state = base
@@ -505,13 +447,13 @@ def export_branch_name(
     """Return the source-to-public sync branch name.
 
     Args:
-      explicit: Explicit.
-      source_branch: Source branch.
-      source_sha: Source sha.
-      prefix: Prefix.
+      explicit: User-provided branch name (highest priority).
+      source_branch: Source repository branch name.
+      source_sha: Source commit SHA (40-hex or "manual").
+      prefix: Required prefix for generated branch names.
 
     Returns:
-      result: The str.
+      name: Validated branch name with prefix.
 
     """
     if explicit.strip():
