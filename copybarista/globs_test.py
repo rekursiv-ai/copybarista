@@ -178,3 +178,9 @@ def test_character_class_matches_style_choices():
 def test_rejects_unsupported_or_unsafe_patterns(pattern: str):
     with pytest.raises(GlobError):
         GlobSet(include=(pattern,))
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

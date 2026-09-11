@@ -499,3 +499,9 @@ def test_folder_export_requires_force_for_existing_destination(tmp_path: Path):
             source_ref=source_ref,
             destination=destination,
         )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

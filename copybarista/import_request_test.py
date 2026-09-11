@@ -536,7 +536,8 @@ def test_import_rolls_back_when_final_verification_fails(
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     original = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
 
-    def fail_check(_self: ChangeRequestImporter) -> None:
+    def fail_check(self: ChangeRequestImporter) -> None:
+        del self
         raise ImportRequestError("forced verification failure")
 
     monkeypatch.setattr(ChangeRequestImporter, "_check_public_head", fail_check)
@@ -720,18 +721,19 @@ def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
 
 @pytest.mark.cli_python_subprocess
 def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
-    """Invariant: importing a public change must not pollute source with lint
-    violations. A namespace ``replace`` is pure text substitution that preserves
-    physical line order, so a public file whose imports are sorted under the
-    *public* namespace can land unsorted under the *internal* namespace whenever
-    the two namespaces sort their import groups differently. The import must
-    re-apply ``ruff_format`` (isort) on the reversed source form so the written
-    file is isort-clean.
+    """Invariant: importing a public change must not pollute source with lint.
 
-    The fixture mirrors the real inversion: a public ``pub.lib`` member sorts
-    before ``pub.providers``, but after the reverse rewrite the corresponding
-    source members are a shallow package and a deeper one whose alphabetical
-    order flips, so the public ordering is wrong under the source namespace.
+    Violations. A namespace ``replace`` is pure text substitution that preserves
+    physical line order, so a public file whose imports are sorted under the *public*
+    namespace can land unsorted under the *internal* namespace whenever the two
+    namespaces sort their import groups differently. The import must re-apply
+    ``ruff_format`` (isort) on the reversed source form so the written file is isort-
+    clean.
+
+        The fixture mirrors the real inversion: a public ``pub.lib`` member sorts
+        before ``pub.providers``, but after the reverse rewrite the corresponding
+        source members are a shallow package and a deeper one whose alphabetical
+        order flips, so the public ordering is wrong under the source namespace.
     """
     source_base = tmp_path / "source-base"
     source_project = source_base / "internal/demo"
@@ -1062,14 +1064,15 @@ def test_import_rejects_excluded_public_path(tmp_path: Path):
 
 
 def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
-    """A public edit to a strip_block file imports by re-inserting the source
-    block verbatim, rather than failing the whole import.
+    """A public edit to a strip_block file imports by re-inserting the source block.
 
-    strip_block is not invertible (the block is absent from the public tree),
-    so the importer splices the source's block back at its original position and
-    applies the public edit around it. Re-exporting strips the block again, so
-    the destination still reproduces the public head; the import PR's CI is the
-    human-review gate for any semantic conflict.
+    Verbatim, rather than failing the whole import.
+
+        strip_block is not invertible (the block is absent from the public tree),
+        so the importer splices the source's block back at its original position and
+        applies the public edit around it. Re-exporting strips the block again, so
+        the destination still reproduces the public head; the import PR's CI is the
+        human-review gate for any semantic conflict.
     """
     paths = _fixture(tmp_path, include_strip_block=True)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
@@ -1821,7 +1824,7 @@ def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path)
     )
     transform = load_config(config).transforms[0]
     exported = strip_source_text(source_module, transform)
-    # public edit: change the function body BELOW the else block.
+    # Public edit: change the function body BELOW the else block.
     public_head_module = exported.replace("return 1", "return 2")
 
     source_base = tmp_path / "source-base"
@@ -1910,7 +1913,7 @@ def test_merge_import_reconciles_public_rewrite_of_stripped_region_context(
         """,
         encoding="utf-8",
     )
-    # public base = the source's real export (internal line stripped).
+    # Public base = the source's real export (internal line stripped).
     stripped = strip_source_text(
         source_module,
         load_config(config).transforms[0],
@@ -2080,7 +2083,7 @@ def test_anchor_rejects_non_monotonic_public_reorder():
     landed at end-of-file, detached from its true neighbors.
     """
     source = "h1\nh2\nnote = 0  # INT\nt1\nt2\n"
-    public = "t1\nt2\nh1\nh2\n"  # blocks reordered
+    public = "t1\nt2\nh1\nh2\n"  # blocks reordered.
 
     out = _anchor_source_only_regions(
         source_text=source, public_text=public, transform=_INTERNAL_LINES
@@ -2098,7 +2101,7 @@ def test_anchor_places_trailing_run_after_rewritten_neighbor():
     followed the run and the before-neighbor did not align.
     """
     source = "keep_top\nreal = 1\nnote = 0  # INT\n"
-    public = "keep_top\nreal = 2\n"  # 'real' rewritten
+    public = "keep_top\nreal = 2\n"  # 'real' rewritten.
 
     out = _anchor_source_only_regions(
         source_text=source, public_text=public, transform=_INTERNAL_LINES
@@ -2151,16 +2154,17 @@ def test_removed_regions_allows_else_transform_on_file_without_block():
 
 
 def test_import_allows_strip_block_glob_match_without_block(tmp_path: Path):
-    """A strip_block transform that finds no block in the source file is a
-    no-op, so importing a public change to that file must succeed.
+    """A strip_block transform that finds no block in the source file is a no-op.
 
-    Copybara treats a transform that changes nothing as a no-op rather than an
-    error (see Replace.java: ``TransformationStatus.noop(... "was a no-op
-    because it didn't ...")`` and the same in FilterReplace.java). Copybarista's
-    importer previously rejected any path merely *matching* a strip_block glob,
-    even when the file contained no block markers -- diverging from that
-    behaviour. This guards the no-op case: the strip removed nothing, so the
-    public content reverses unchanged.
+    Importing a public change to that file must succeed.
+
+        Copybara treats a transform that changes nothing as a no-op rather than an
+        error (see Replace.java: ``TransformationStatus.noop(... "was a no-op
+        because it didn't ...")`` and the same in FilterReplace.java). Copybarista's
+        importer previously rejected any path merely *matching* a strip_block glob,
+        even when the file contained no block markers -- diverging from that
+        behaviour. This guards the no-op case: the strip removed nothing, so the
+        public content reverses unchanged.
     """
     paths = _fixture(tmp_path, include_strip_block_noop=True)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
@@ -2457,12 +2461,10 @@ def test_merge_import_three_way_merges_independent_drift(tmp_path: Path):
     )
 
 
+# The wide gap between the overridable lines lets one edit near the top and another near
+# the bottom three-way-merge cleanly (non-overlapping hunks).
 def _numbered_module(*, first: str | None = None, last: str | None = None) -> str:
-    """Return a 20-line module body; override the first/last data line.
-
-    The wide gap between the overridable lines lets one edit near the top and
-    another near the bottom three-way-merge cleanly (non-overlapping hunks).
-    """
+    """Return a 20-line module body; override the first/last data line."""
     lines = ["from internal.demo import api", *(f"L{i} = {i}" for i in range(20))]
     if first is not None:
         lines[1] = first
@@ -2710,6 +2712,19 @@ def test_import_overlapping_namespace_transforms_do_not_double_prefix(
         "from loop.acme.paper import PaperRecord\n"
         'data_dir = home("loop.acme")\n'
     )
+
+
+class _FixturePaths:
+    def __init__(
+        self,
+        *,
+        config: Path,
+        public_base: Path,
+        source_base: Path,
+    ) -> None:
+        self.config = config
+        self.public_base = public_base
+        self.source_base = source_base
 
 
 def _regex_groups_fixture(tmp_path: Path) -> _FixturePaths:
@@ -3055,19 +3070,6 @@ def test_three_way_merge_byte_matches_diff3(
     assert conflicted == (expected.returncode == 1)
 
 
-class _FixturePaths:
-    def __init__(
-        self,
-        *,
-        config: Path,
-        public_base: Path,
-        source_base: Path,
-    ) -> None:
-        self.config = config
-        self.public_base = public_base
-        self.source_base = source_base
-
-
 def _fixture(
     tmp_path: Path,
     *,
@@ -3253,16 +3255,14 @@ def _copy_tree(source: Path, destination: Path) -> Path:
     return destination
 
 
+# The package ships under a whole-tree ``[[files.moves]]`` to ``pub``; an out-of-prefix
+# repo-root path (``typings/brotli/...``) exists in the public tree but has no
+# ``[[files.copy]]`` and matches no move -- i.e. it is UNMAPPED, the ``typings/brotli``
+# class left behind when an export mapping is dropped from config. Mirrors Copybara,
+# where such a path matches no ``core.move`` rule and keeps its identical path on both
+# sides.
 def _unmapped_fixture(tmp_path: Path) -> _FixturePaths:
-    """Build a fixture with a path that maps to no config rule.
-
-    The package ships under a whole-tree ``[[files.moves]]`` to ``pub``; an
-    out-of-prefix repo-root path (``typings/brotli/...``) exists in the public
-    tree but has no ``[[files.copy]]`` and matches no move -- i.e. it is
-    UNMAPPED, the ``typings/brotli`` class left behind when an export mapping is
-    dropped from config. Mirrors Copybara, where such a path matches no
-    ``core.move`` rule and keeps its identical path on both sides.
-    """
+    """Build a fixture with a path that maps to no config rule."""
     source_base = tmp_path / "source-base"
     (source_base / "internal/demo/pkg").mkdir(parents=True)
     (source_base / "internal/demo/pkg/module.py").write_text(
@@ -3491,3 +3491,9 @@ def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path
     assert (destination / "typings/brotli/__init__.pyi").read_text(
         encoding="utf-8"
     ) == "MODE_GENERIC: int\nMODE_TEXT: int\n"
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

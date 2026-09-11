@@ -469,3 +469,9 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(
         encoding="utf-8"
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

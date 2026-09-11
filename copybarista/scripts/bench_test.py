@@ -148,3 +148,9 @@ def _write_synthetic_tree(*, project: Path, files: int) -> None:
     cache = project / "pkg" / "__pycache__"
     cache.mkdir(parents=True)
     (cache / "ignored.pyc").write_bytes(b"ignored")
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

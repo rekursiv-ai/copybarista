@@ -25,21 +25,17 @@ _CWD: Final = Path(__file__).resolve().parent
 
 
 def main() -> int:
-    """Run the cleanup command. Return the process exit code."""
+    """Run the cleanup command. Return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 2)[2],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--venv",
-        action="store_true",
-        help="also remove the project-local .venv directory",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print paths that would be removed without deleting them",
-    )
+    _add_arguments(parser)
     args = parser.parse_args()
 
     targets: list[str] = [
@@ -71,6 +67,20 @@ def main() -> int:
         else:
             target.unlink()
     return 0
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register flags on ``parser``."""
+    parser.add_argument(
+        "--venv",
+        action="store_true",
+        help="also remove the project-local .venv directory",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print paths that would be removed without deleting them",
+    )
 
 
 def _safe_project_path(relative_target: str) -> Path:

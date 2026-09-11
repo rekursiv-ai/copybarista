@@ -135,3 +135,9 @@ def test_rejects_a_malformed_group_masked_by_a_later_group(
     """
     with pytest.raises(ConfigError, match=rf"regex_groups\.{culprit}"):
         compile_replace(before="${a}MID${b}", after="", regex_groups=groups)
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

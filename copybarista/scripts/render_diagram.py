@@ -29,7 +29,15 @@ import sys
 
 
 def render(input_path: Path, output_path: Path, width: int, scale: int) -> None:
-    """Render ``input_path`` to ``output_path`` via mmdc + cwebp."""
+    """Render ``input_path`` to ``output_path`` via mmdc + cwebp.
+
+    Args:
+      input_path: Input path.
+      output_path: Output path.
+      width: Width.
+      scale: Scale.
+
+    """
     npx = _require_tool("npx")
     cwebp = _require_tool("cwebp")
     with TemporaryDirectory() as tmp:
@@ -70,20 +78,32 @@ def render(input_path: Path, output_path: Path, width: int, scale: int) -> None:
         )
 
 
-def _require_tool(name: str) -> str:
-    """Return the resolved executable path for a required CLI tool."""
-    executable = shutil.which(name)
-    if executable is None:
-        sys.exit(f"required tool not on PATH: {name}")
-    return executable
-
-
 def main() -> int:
-    """Parse arguments and render the diagram. Return the process exit code."""
+    """Parse arguments and render the diagram. Return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 2)[2],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    _add_arguments(parser)
+    args = parser.parse_args()
+
+    if not args.input.is_file():
+        sys.stderr.write(f"input not found: {args.input}\n")
+        return 1
+
+    output = args.output or args.input.with_suffix(".webp")
+    render(args.input, output, args.width, args.scale)
+    sys.stdout.write(f"wrote {output}\n")
+    return 0
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register flags on ``parser``."""
     parser.add_argument(
         "input",
         type=Path,
@@ -108,15 +128,14 @@ def main() -> int:
         default=2,
         help="DPI scale factor for HiDPI sharpness (default: 2)",
     )
-    args = parser.parse_args()
 
-    if not args.input.is_file():
-        sys.exit(f"input not found: {args.input}")
 
-    output = args.output or args.input.with_suffix(".webp")
-    render(args.input, output, args.width, args.scale)
-    sys.stdout.write(f"wrote {output}\n")
-    return 0
+def _require_tool(name: str) -> str:
+    """Return the resolved executable path for a required CLI tool."""
+    executable = shutil.which(name)
+    if executable is None:
+        sys.exit(f"required tool not on PATH: {name}")
+    return executable
 
 
 if __name__ == "__main__":

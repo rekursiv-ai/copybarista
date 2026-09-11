@@ -206,3 +206,9 @@ def test_check_tree_reports_missing_required_paths(tmp_path: Path):
 
     assert any("one of .github/workflows/ci.yml" in error for error in errors)
     assert any("pyproject.toml" in error for error in errors)
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

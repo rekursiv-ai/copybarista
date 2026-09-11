@@ -340,3 +340,9 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
     assert [(entry.source, entry.destination) for entry in staged.files] == [
         ("project/_stubs/pkg/__init__.py", "pkg/__init__.py")
     ]
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

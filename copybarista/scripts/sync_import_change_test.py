@@ -46,11 +46,9 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run([*argv, *args], check=True)  # noqa: S603 -- fixed argv, test-only
 
 
+# For tests that only care about target_dir / project routing.
 def _import_request(*, target_dir: Path) -> ImportRequest:
-    """Build an ImportRequest with placeholder fields.
-
-    For tests that only care about target_dir / project routing.
-    """
+    """Build an ImportRequest with placeholder fields."""
     return ImportRequest(
         public_base=target_dir / "public-base",
         public_head=target_dir / "public-head",
@@ -282,7 +280,7 @@ def test_run_import_sync_imports_then_validates(
         return subprocess.CompletedProcess(argv, 0)
 
     def fake_export_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
-        del target_dir  # signature must match for monkeypatch; unused here
+        del target_dir  # signature must match for monkeypatch; unused here.
         return runner_temp / "copybarista-requirements.txt"
 
     def fake_import_change(
@@ -301,7 +299,7 @@ def test_run_import_sync_imports_then_validates(
         runner_temp: Path,
         requirements: Path,
     ) -> None:
-        del request  # unused here; present to match the patched signature
+        del request  # unused here; present to match the patched signature.
         calls.append(
             [
                 "validate",
@@ -520,8 +518,8 @@ def test_gh_pr_exists_retries_transient_github_failures(
             )
         return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
 
-    def no_sleep(_seconds: float) -> None:
-        return None
+    def no_sleep(seconds: float) -> None:
+        del seconds
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
@@ -550,8 +548,8 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
             stderr="HTTP 504: try resubmitting your request",
         )
 
-    def no_sleep(_seconds: float) -> None:
-        return None
+    def no_sleep(seconds: float) -> None:
+        del seconds
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
@@ -955,10 +953,6 @@ def test_main_print_synced_base_emits_fallback_without_history(
     assert capsys.readouterr().out.strip() == parent
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_import_pr_auto_merges_when_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1185,3 +1179,9 @@ def test_ledger_subject_satisfies_the_export_guard(tmp_path: Path) -> None:
         last_synced_public_sha(target_dir=root, sync_label="Priml", base_branch="main")
         == sha
     )
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

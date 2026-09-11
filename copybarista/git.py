@@ -50,7 +50,16 @@ class GitCommands(Protocol):
     """Runs Git command lines for Git destination operations."""
 
     def run(self, argv: list[str], *, check: bool = True) -> CommandResult:
-        """Run one command and return its captured result."""
+        """Run one command and return its captured result.
+
+        Args:
+          argv: Argv.
+          check: Check.
+
+        Returns:
+          result: The CommandResult.
+
+        """
         ...
 
 
@@ -71,10 +80,13 @@ class GitRuntime:
     """
 
     git: str = field(default_factory=lambda: resolve_executable("git"))
+
     commands: GitCommands = field(default_factory=CommandRunner)
+
     cache_root: Path = field(
         default_factory=lambda: cache_dir() / "rekursiv-ai" / "copybarista" / "git"
     )
+
     source_rev_label: str = "Copybarista-Source-Rev"
 
 
@@ -214,12 +226,10 @@ def _ensure_local_remote(url: str, *, runtime: GitRuntime | None = None) -> None
         raise ExportError(f"Local Git remote path is not a Git repository: {path}")
 
 
+# SCP-style SSH remotes have no URL scheme, so they must be detected before treating
+# scheme-less values as local paths.
 def _local_remote_path(url: str) -> Path | None:
-    """Return the filesystem path for local Git URLs.
-
-    SCP-style SSH remotes have no URL scheme, so they must be detected before
-    treating scheme-less values as local paths.
-    """
+    """Return the filesystem path for local Git URLs."""
     if SCP_STYLE_URL.match(url):
         return None
     parsed = urlparse(url)

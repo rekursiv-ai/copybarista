@@ -45,7 +45,15 @@ from copybarista.sync_setup import (
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the Copybarista CLI. Return the process exit code."""
+    """Run the Copybarista CLI. Return the process exit code.
+
+    Args:
+      argv: Argv.
+
+    Returns:
+      result: The int.
+
+    """
     parser = _parser()
     args = parser.parse_args(argv)
     try:
@@ -295,14 +303,12 @@ def _run_write_export_workflow(args: argparse.Namespace) -> None:
         sys.stdout.write(text)
 
 
+# Both files bake in ``sync.validation_commands``, so changing that list must rewrite
+# both or the byte-parity test fails on whichever was missed. ``write_sync_scaffold``
+# would also overwrite the hand-tuned ``copy.barista.toml``, which is why this writes
+# only the two.
 def _run_write_public_workflows(args: argparse.Namespace) -> None:
-    """Rewrite the generated workflows under a package's ``.export/``.
-
-    Both files bake in ``sync.validation_commands``, so changing that list
-    must rewrite both or the byte-parity test fails on whichever was
-    missed. ``write_sync_scaffold`` would also overwrite the hand-tuned
-    ``copy.barista.toml``, which is why this writes only the two.
-    """
+    """Rewrite the generated workflows under a package's ``.export/``."""
     config = Path(args.sync_config)
     settings = load_sync_settings(config)
     workflows = config.parent / ".export/.github/workflows"

@@ -2156,3 +2156,9 @@ def test_rejects_unsupported_sky_workflows(
 
     with pytest.raises(ConfigError, match=match):
         load_config(config_path)
+
+
+if __name__ == "__main__":
+    from copybarista.lib.testing.main import test_main
+
+    test_main(__file__)

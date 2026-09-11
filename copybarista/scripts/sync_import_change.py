@@ -29,66 +29,6 @@ import tempfile
 import time
 
 
-def _copybarista_argv(*, requirements: Path) -> list[str]:
-    """Return the argv prefix that runs copybarista dependency-free.
-
-    `uv run --no-project` skips monorepo-root resolution (no torch/jax/tf/
-    pycairo build); --with-requirements supplies copybarista's only third-party
-    deps (see _export_copybarista_requirements). The package imports under its
-    monorepo path, so callers run this with cwd=target_dir. A project
-    dependency-group cannot install here because --group is ignored under
-    --no-project; the group is instead exported to a requirements file.
-
-    `requirements` must be absolute: callers run with cwd=target_dir, so a
-    relative path would be resolved twice (target/target/...).
-    """
-    return [
-        "uv",
-        "--quiet",
-        "run",
-        "--no-project",
-        "--with-requirements",
-        str(requirements),
-        "python",
-        "-m",
-        # Dotted module path of the copybarista package, run via `python -m` with
-        # cwd=target_dir so the import resolves under the monorepo checkout.
-        "copybarista",
-    ]
-
-
-def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
-    """Export the `copybarista` dependency group from the lock to a pinned file.
-
-    `uv run --with-requirements` consults no lockfile, so to keep copybarista's
-    standalone deps reproducible (and matched to the monorepo) we export the
-    `copybarista` group from the checkout's uv.lock into a requirements file and
-    feed that. This is the single source of truth -- no separately maintained
-    version pins.
-    """
-    requirements = (runner_temp / "copybarista-requirements.txt").resolve()
-    requirements.write_text(
-        _run(
-            [
-                "uv",
-                "--quiet",
-                "export",
-                "--frozen",
-                "--only-group",
-                "copybarista",
-                "--no-hashes",
-                "--no-emit-project",
-                "--format",
-                "requirements.txt",
-            ],
-            cwd=target_dir,
-            capture=True,
-        ).stdout,
-        encoding="utf-8",
-    )
-    return requirements
-
-
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
 DEFAULT_SYNC_LABEL: Final = "Copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
@@ -99,12 +39,25 @@ GITHUB_RETRY_DELAY_SEC: Final = 2
 
 
 def main() -> int:
-    """The main function. Return the process exit code."""
+    """Run the program; return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     return run()
 
 
 def run(argv: list[str] | None = None) -> int:
-    """Run public-to-source import validation and optional PR creation."""
+    """Run public-to-source import validation and optional PR creation.
+
+    Args:
+      argv: Argv.
+
+    Returns:
+      result: The int.
+
+    """
     args = _parser().parse_args(argv)
     if args.print_synced_base:
         # Resolve the merge baseline from the target's own import history and
@@ -161,30 +114,55 @@ class ImportRequest:
     """Typed namespace for one import sync run."""
 
     public_base: Path
+
     public_head: Path
+
     target_dir: Path
+
     target_repo: str
+
     project_path: Path
+
     base_branch: str
+
     public_repo: str
+
     public_sha: str
+
     public_base_ref: str
+
     public_head_ref: str
+
     branch: str
+
     sync_label: str
+
     sync_user_name: str
+
     sync_user_email: str
+
     report: Path
+
     open_pr: bool
+
     open_pr_only: bool
+
     auto_merge: bool = True
+
     runner_temp: Path
+
     validation_commands: tuple[str, ...]
+
     refresh_public_lockfile: bool
 
 
 def run_import_sync(request: ImportRequest) -> None:
-    """Import public changes into source, validate, and optionally open a PR."""
+    """Import public changes into source, validate, and optionally open a PR.
+
+    Args:
+      request: Request.
+
+    """
     project = request.target_dir / request.project_path
     if request.open_pr_only:
         _log("Opening or updating target import PR.")
@@ -220,6 +198,403 @@ def run_import_sync(request: ImportRequest) -> None:
     if request.open_pr:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
+
+
+def import_change_pr_body(
+    *,
+    public_repo: str,
+    public_sha: str,
+    public_base_ref: str,
+    public_head_ref: str,
+    source_base_ref: str,
+    sync_label: str,
+) -> str:
+    """Return the target import-change PR body.
+
+    Args:
+      public_repo: Public repo.
+      public_sha: Public sha.
+      public_base_ref: Public base ref.
+      public_head_ref: Public head ref.
+      source_base_ref: Source base ref.
+      sync_label: Sync label.
+
+    Returns:
+      result: The str.
+
+    """
+    return (
+        f"Imports {sync_label} public repository changes into the source repository.\n\n"
+        f"- Public repository: `{public_repo}`\n"
+        f"- Public SHA: `{public_sha}`\n"
+        f"- Public base: `{public_base_ref}`\n"
+        f"- Public head: `{public_head_ref}`\n"
+        f"- Source base: `{source_base_ref}`\n"
+        "- Import report: generated by `copybarista import-change`\n"
+        "\n"
+        "Regenerate this PR before merging if source `main` changes.\n"
+    )
+
+
+def import_branch_name(*, explicit: str, public_sha: str, prefix: str) -> str:
+    """Return the public-to-source sync branch name.
+
+    Args:
+      explicit: Explicit.
+      public_sha: Public sha.
+      prefix: Prefix.
+
+    Returns:
+      result: The str.
+
+    """
+    if explicit.strip():
+        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
+    branch = f"{prefix}sha-{_branch_component(public_sha[:12])}"
+    return _validated_generated_branch(branch=branch, prefix=prefix)
+
+
+class ImportBaseError(RuntimeError):
+    """Raised when the target records no prior import to use as a baseline."""
+
+
+def import_commit_subject_prefix(sync_label: str) -> str:
+    """Return the fixed prefix of a landed import's commit subject.
+
+    Args:
+      sync_label: Sync label.
+
+    Returns:
+      result: The str.
+
+    """
+    return f"Import {sync_label} public changes "
+
+
+def import_commit_subject(sync_label: str, public_sha: str) -> str:
+    """Return the ledger subject, refusing one the baseline walk cannot read.
+
+    This subject IS the ledger: :func:`last_synced_public_sha` re-reads the
+    imported SHA out of it to pick the next merge baseline, and the export
+    guard asks that walk whether a force-write would revert public work. So a
+    subject the walk cannot parse does not merely lose one import -- the
+    project stops exporting, with every run still reporting success.
+
+    Validating at the WRITE side is what makes that unrepresentable. The read
+    side already anchors on ``[0-9a-f]{40}``; composing a subject and pushing
+    it without checking left an abbreviated or reworded one to fail silently
+    hours later, in a different repository, as a skipped export.
+
+    Args:
+      sync_label: Import label, e.g. ``Wesearch``.
+      public_sha: Full 40-character public commit SHA being imported.
+
+    Returns:
+      subject: The commit subject to write.
+
+    Raises:
+      ImportBaseError: The composed subject would not survive the walk.
+
+    """
+    subject = import_commit_subject_prefix(sync_label) + public_sha
+    if _import_subject_pattern(sync_label).match(subject) is None:
+        raise ImportBaseError(
+            f"Refusing to write an unreadable import ledger subject: "
+            f"{subject!r}. The baseline walk requires the full 40-character "
+            f"SHA, so this would silently wedge {sync_label} exports."
+        )
+    return subject
+
+
+def last_synced_public_sha(
+    *, target_dir: Path, sync_label: str, base_branch: str, fallback: str = ""
+) -> str:
+    """Return the newest public SHA already imported into the target branch.
+
+    The merge-import baseline must be the public commit the target tree
+    currently reflects, not the pushed commit's parent. Those diverge whenever
+    an import fails to land (validation error, unmerged PR, conflict): the
+    parent marches forward while the target stays pinned to its last successful
+    import, so a parent-based baseline feeds the three-way merge a wrong common
+    ancestor and manufactures spurious conflicts.
+
+    Each landed import records its public SHA in the commit subject
+    (``Import <label> public changes <sha>``, written by
+    ``_open_or_update_target_pr``), so the target's own history is the source of
+    truth for what it last synced. Walk the branch newest-first and return the
+    SHA from the first subject that matches the full template.
+
+    Args:
+      target_dir: Root of the target repository checkout.
+      sync_label: Import label, e.g. ``Sagent``; scopes the commit search.
+      base_branch: Target branch to walk, e.g. ``main``.
+      fallback: SHA to return when the branch records no import -- a
+        first-import baseline (e.g. the branch tip before the push). Empty
+        string means raise.
+
+    Returns:
+      sha: The most recently imported public SHA, or ``fallback`` when the
+        branch has no landed import and ``fallback`` is set.
+
+    Raises:
+      ImportBaseError: When the branch records no import commit and no fallback
+        is provided.
+
+    """
+    prefix = import_commit_subject_prefix(sync_label)
+    # --fixed-strings: sync_label is matched literally, never as a git BRE, so a
+    # label with regex metacharacters cannot broaden or break the search.
+    subjects = _run(
+        [
+            "git",
+            "log",
+            base_branch,
+            "--fixed-strings",
+            f"--grep={prefix}",
+            "--format=%s",
+        ],
+        cwd=target_dir,
+        capture=True,
+    ).stdout.splitlines()
+    # Shared with the writer, so a subject one accepts is one the other reads.
+    pattern = _import_subject_pattern(sync_label)
+    for subject in subjects:
+        match = pattern.match(subject)
+        if match is not None:
+            sha = match[1]
+            assert isinstance(sha, str)
+            return sha
+    if fallback:
+        return fallback
+    raise ImportBaseError(
+        f"No landed '{sync_label}' import commit found on "
+        f"'{base_branch}'; cannot resolve the merge baseline."
+    )
+
+
+def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+    """Return whether GitHub has an open PR for a branch."""
+    result = _run_gh(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
+        cwd=cwd,
+        capture=True,
+    )
+    return bool(json.loads(result.stdout))
+
+
+def _fetch_branch(*, branch: str, cwd: Path) -> None:
+    """Fetch a remote branch if it exists without failing on first import."""
+    _run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"refs/heads/{branch}:refs/remotes/origin/{branch}",
+        ],
+        cwd=cwd,
+        check=False,
+    )
+
+
+def _string_bool(value: str) -> bool:
+    """Parse Action-style boolean strings."""
+    return value.lower() in {"1", "true", "yes"}
+
+
+def _branch_component(value: str) -> str:
+    """Sanitize arbitrary run metadata for use in a Git branch name."""
+    return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
+
+
+def _validated_generated_branch(*, branch: str, prefix: str) -> str:
+    """Return a safe generated branch name or exit with a usage error."""
+    if not branch.startswith(prefix):
+        sys.stderr.write(f"Branch must start with {prefix}\n")
+        raise SystemExit(2)
+    if not _valid_git_branch_name(branch):
+        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
+        raise SystemExit(2)
+    return branch
+
+
+def _valid_git_branch_name(branch: str) -> bool:
+    """Return whether a branch name is safe for force-updated sync branches."""
+    if branch in {"main", "master"} or branch.startswith(("-", "/")):
+        return False
+    if branch.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in branch or "//" in branch or "@{" in branch:
+        return False
+    forbidden = set(" ~^:?*[\\")
+    return not any(
+        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
+    )
+
+
+# Every command here runs through ``uv``, which re-derives the environment from the
+# target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the operator's
+# activated loop venv) only triggers uv's "does not match the project environment"
+# warning, so drop it for a clean run.
+def _child_env() -> dict[str, str]:
+    """Return the parent env without ``VIRTUAL_ENV``."""
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def _run(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    stdout: TextIO | int | None = None,
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess while streaming commands for Action logs."""
+    _log("+ " + " ".join(argv))
+    # The caller provides an argument vector, not a shell string.
+    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE if capture else stdout,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+        env=_child_env(),
+    )
+    if check and result.returncode != 0:
+        raise SystemExit(result.returncode)
+    return result
+
+
+# With ``check=False`` a non-retryable failure is returned to the caller instead of
+# raising, so the caller can inspect stderr and recover (the auto-merge fallback reads
+# it to detect a repo that cannot defer merges).
+def _run_gh(
+    argv: list[str],
+    *,
+    cwd: Path,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a GitHub CLI command with retries for transient API failures."""
+    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
+        result = _run(argv, cwd=cwd, check=False, capture=True)
+        if result.returncode == 0:
+            if not capture:
+                _write_process_output(result)
+            return result
+        if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
+            if not check:
+                return result
+            _write_process_output(result)
+            raise SystemExit(result.returncode)
+        _log(
+            "GitHub CLI command failed with a transient API error; "
+            f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
+            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
+        )
+        time.sleep(GITHUB_RETRY_DELAY_SEC)
+    raise AssertionError("unreachable")
+
+
+def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether a GitHub CLI failure is likely transient."""
+    output = f"{result.stdout}\n{result.stderr}".casefold()
+    return any(
+        token in output
+        for token in (
+            "http 5",
+            "timeout",
+            "timed out",
+            "try resubmitting",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
+    """Replay captured process output to the workflow log."""
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+
+
+# Diagnostics go to stderr so stdout stays a clean machine-readable channel (``--print-
+# synced-base`` emits only the resolved SHA there). GitHub merges both streams into the
+# Action log, so human-facing output is unchanged.
+def _log(message: str) -> None:
+    """Write one flushed workflow log line to stderr."""
+    sys.stderr.write(f"{message}\n")
+    sys.stderr.flush()
+
+
+# `uv run --no-project` skips monorepo-root resolution (no torch/jax/tf/ pycairo build);
+# --with-requirements supplies copybarista's only third-party deps (see
+# _export_copybarista_requirements). The package imports under its monorepo path, so
+# callers run this with cwd=target_dir. A project dependency-group cannot install here
+# because --group is ignored under --no-project; the group is instead exported to a
+# requirements file.
+#
+# `requirements` must be absolute: callers run with cwd=target_dir, so a relative path
+# would be resolved twice (target/target/...).
+def _copybarista_argv(*, requirements: Path) -> list[str]:
+    """Return the argv prefix that runs copybarista dependency-free."""
+    return [
+        "uv",
+        "--quiet",
+        "run",
+        "--no-project",
+        "--with-requirements",
+        str(requirements),
+        "python",
+        "-m",
+        # Dotted module path of the copybarista package, run via `python -m` with
+        # cwd=target_dir so the import resolves under the monorepo checkout.
+        "copybarista",
+    ]
+
+
+# `uv run --with-requirements` consults no lockfile, so to keep copybarista's standalone
+# deps reproducible (and matched to the monorepo) we export the `copybarista` group from
+# the checkout's uv.lock into a requirements file and feed that. This is the single
+# source of truth -- no separately maintained version pins.
+def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
+    """Export the `copybarista` dependency group from the lock to a pinned file."""
+    requirements = (runner_temp / "copybarista-requirements.txt").resolve()
+    requirements.write_text(
+        _run(
+            [
+                "uv",
+                "--quiet",
+                "export",
+                "--frozen",
+                "--only-group",
+                "copybarista",
+                "--no-hashes",
+                "--no-emit-project",
+                "--format",
+                "requirements.txt",
+            ],
+            cwd=target_dir,
+            capture=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    return requirements
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -398,6 +773,20 @@ def _public_tree_for_import(
     return destination
 
 
+# The imported tree under ``project`` is monorepo-form (``loop.*`` imports, monorepo-
+# root deps). Validating it directly would require the monorepo environment -- including
+# the ML stack (torch, jax, tf, pycairo, ...) a CPU import runner cannot build. Instead
+# this exports the public-form tree (the artifact actually published: ``sagent.*``
+# imports, public ``pyproject.toml`` / ``uv.lock``) and runs the validation commands
+# against *that*. The exported env has the package's real runtime deps but never the
+# monorepo ML stack, so a CPU runner validates exactly what ships.
+#
+# ``validation_commands`` is the single source of truth (``copybarista.sync.toml``
+# ``sync.validation_commands``) that also drives the public repository's ``package-
+# validation.yml`` and the source-to-public export gate. Running the same shell commands
+# here makes all three verify byte-identical checks. Each command runs through ``bash
+# -c`` in the exported tree, so it self-contains its ``uv sync`` and may use shell
+# features.
 def _validate_target(
     *,
     request: ImportRequest,
@@ -406,24 +795,7 @@ def _validate_target(
     runner_temp: Path,
     requirements: Path,
 ) -> None:
-    """Validate the imported change by checking its exported public tree.
-
-    The imported tree under ``project`` is monorepo-form (``loop.*`` imports,
-    monorepo-root deps). Validating it directly would require the monorepo
-    environment -- including the ML stack (torch, jax, tf, pycairo, ...) a CPU
-    import runner cannot build. Instead this exports the public-form tree (the
-    artifact actually published: ``sagent.*`` imports, public ``pyproject.toml``
-    / ``uv.lock``) and runs the validation commands against *that*. The exported
-    env has the package's real runtime deps but never the monorepo ML stack, so
-    a CPU runner validates exactly what ships.
-
-    ``validation_commands`` is the single source of truth
-    (``copybarista.sync.toml`` ``sync.validation_commands``) that also drives the
-    public repository's ``package-validation.yml`` and the source-to-public
-    export gate. Running the same shell commands here makes all three verify
-    byte-identical checks. Each command runs through ``bash -c`` in the exported
-    tree, so it self-contains its ``uv sync`` and may use shell features.
-    """
+    """Validate the imported change by checking its exported public tree."""
     tree = _export_public_tree(
         request=request,
         project=project,
@@ -434,15 +806,13 @@ def _validate_target(
         _run(["bash", "-c", command], cwd=tree)
 
 
+# Runs ``copybarista export`` (dependency-free) against the post-import source checkout,
+# producing the transformed public package (``sagent.*`` imports, public
+# ``pyproject.toml`` / ``uv.lock``) under a fresh directory.
 def _export_public_tree(
     *, request: ImportRequest, project: Path, runner_temp: Path, requirements: Path
 ) -> Path:
-    """Export the public-form tree for the imported project and return its path.
-
-    Runs ``copybarista export`` (dependency-free) against the post-import source
-    checkout, producing the transformed public package (``sagent.*`` imports,
-    public ``pyproject.toml`` / ``uv.lock``) under a fresh directory.
-    """
+    """Export the public-form tree for the imported project and return its path."""
     tree = runner_temp / "copybarista-validation-tree"
     if tree.exists():
         shutil.rmtree(tree)
@@ -472,21 +842,19 @@ def _export_public_tree(
     return tree
 
 
+# Commits even when the merge produced no file changes. Two different questions share
+# this path: "is there a diff to review?" and "has the source absorbed this public
+# SHA?". Only the first is answered by an empty tree. The export guard asks the second,
+# and answers it by searching target history for this commit's subject -- so returning
+# early here left the guard reading "not imported" for content the source demonstrably
+# already had.
+#
+# An empty diff at this point is the strongest possible yes: the three-way merge applied
+# without conflict and ``_validate_target`` passed the full gate suite on the exported
+# result. A transform that dropped content, or a wrong ``--public-base``, raises before
+# reaching this function.
 def _open_or_update_target_pr(*, request: ImportRequest) -> None:
-    """Commit the import and create or update the target PR.
-
-    Commits even when the merge produced no file changes. Two different
-    questions share this path: "is there a diff to review?" and "has the
-    source absorbed this public SHA?". Only the first is answered by an empty
-    tree. The export guard asks the second, and answers it by searching target
-    history for this commit's subject -- so returning early here left the guard
-    reading "not imported" for content the source demonstrably already had.
-
-    An empty diff at this point is the strongest possible yes: the three-way
-    merge applied without conflict and ``_validate_target`` passed the full
-    gate suite on the exported result. A transform that dropped content, or a
-    wrong ``--public-base``, raises before reaching this function.
-    """
+    """Commit the import and create or update the target PR."""
     if not _git_has_changes(path=request.target_dir, rel=request.project_path):
         _log("Import produced no target changes; recording the SHA anyway.")
 
@@ -581,37 +949,26 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
 
 
 def _pr_title_sha(public_sha: str) -> str:
-    """The SHA form the import PR title carries, which the ledger parses back."""
+    """Return the SHA form the import PR title carries, which the ledger parses back."""
     return public_sha
 
 
+# A clean import needs no human decision. The public change is already reviewed and
+# already published; the source is the authority on how it RENDERS, not a second
+# approval gate. Waiting for a click is also what stalls the other direction, since the
+# export refuses to run while an import is outstanding.
+#
+# A conflicting or failing import never reaches here -- it raises before the PR is
+# opened -- so this path only ever merges an import that applied cleanly and passed the
+# same checks the source requires of any change.
+#
+# Mirrors the export's merge policy: ``--auto`` needs a deferrable merge (branch
+# protection or pending checks), so a repo with neither rejects it and the merge is
+# issued directly instead.
 def _merge_import_pr(
     *, branch: str, target_repo: str, title: str, sync_label: str, cwd: Path
 ) -> None:
-    """Merge the import PR, preferring auto-merge.
-
-    A clean import needs no human decision. The public change is already
-    reviewed and already published; the source is the authority on how it
-    RENDERS, not a second approval gate. Waiting for a click is also what
-    stalls the other direction, since the export refuses to run while an
-    import is outstanding.
-
-    A conflicting or failing import never reaches here -- it raises before
-    the PR is opened -- so this path only ever merges an import that applied
-    cleanly and passed the same checks the source requires of any change.
-
-    Mirrors the export's merge policy: ``--auto`` needs a deferrable merge
-    (branch protection or pending checks), so a repo with neither rejects it
-    and the merge is issued directly instead.
-
-    Args:
-      branch: The import branch to merge.
-      target_repo: The source repository holding the PR.
-      title: Squash-commit subject; the ledger reads the imported SHA from it.
-      sync_label: Import label, used in the squash body.
-      cwd: Directory to run the GitHub CLI from.
-
-    """
+    """Merge the import PR, preferring auto-merge."""
     merge_argv = [
         "gh",
         "pr",
@@ -642,37 +999,6 @@ def _merge_import_pr(
     raise SystemExit(result.returncode)
 
 
-def import_change_pr_body(
-    *,
-    public_repo: str,
-    public_sha: str,
-    public_base_ref: str,
-    public_head_ref: str,
-    source_base_ref: str,
-    sync_label: str,
-) -> str:
-    """Return the target import-change PR body."""
-    return (
-        f"Imports {sync_label} public repository changes into the source repository.\n\n"
-        f"- Public repository: `{public_repo}`\n"
-        f"- Public SHA: `{public_sha}`\n"
-        f"- Public base: `{public_base_ref}`\n"
-        f"- Public head: `{public_head_ref}`\n"
-        f"- Source base: `{source_base_ref}`\n"
-        "- Import report: generated by `copybarista import-change`\n"
-        "\n"
-        "Regenerate this PR before merging if source `main` changes.\n"
-    )
-
-
-def import_branch_name(*, explicit: str, public_sha: str, prefix: str) -> str:
-    """Return the public-to-source sync branch name."""
-    if explicit.strip():
-        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
-    branch = f"{prefix}sha-{_branch_component(public_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix=prefix)
-
-
 def _commit_author(name: str, email: str) -> str:
     """Return the Git author identity for a generated sync commit."""
     return f"{name} <{email}>"
@@ -694,301 +1020,13 @@ def _git_head(*, cwd: Path) -> str:
     return _run(["git", "rev-parse", "HEAD"], cwd=cwd, capture=True).stdout.strip()
 
 
-class ImportBaseError(RuntimeError):
-    """Raised when the target records no prior import to use as a baseline."""
-
-
-def import_commit_subject_prefix(sync_label: str) -> str:
-    """Return the fixed prefix of a landed import's commit subject."""
-    return f"Import {sync_label} public changes "
-
-
-def import_commit_subject(sync_label: str, public_sha: str) -> str:
-    """Return the ledger subject, refusing one the baseline walk cannot read.
-
-    This subject IS the ledger: :func:`last_synced_public_sha` re-reads the
-    imported SHA out of it to pick the next merge baseline, and the export
-    guard asks that walk whether a force-write would revert public work. So a
-    subject the walk cannot parse does not merely lose one import -- the
-    project stops exporting, with every run still reporting success.
-
-    Validating at the WRITE side is what makes that unrepresentable. The read
-    side already anchors on ``[0-9a-f]{40}``; composing a subject and pushing
-    it without checking left an abbreviated or reworded one to fail silently
-    hours later, in a different repository, as a skipped export.
-
-    Args:
-      sync_label: Import label, e.g. ``Wesearch``.
-      public_sha: Full 40-character public commit SHA being imported.
-
-    Returns:
-      subject: The commit subject to write.
-
-    Raises:
-      ImportBaseError: The composed subject would not survive the walk.
-
-    """
-    subject = import_commit_subject_prefix(sync_label) + public_sha
-    if _import_subject_pattern(sync_label).match(subject) is None:
-        raise ImportBaseError(
-            f"Refusing to write an unreadable import ledger subject: "
-            f"{subject!r}. The baseline walk requires the full 40-character "
-            f"SHA, so this would silently wedge {sync_label} exports."
-        )
-    return subject
-
-
+# One expression, so the two directions cannot drift: a subject the writer accepts is by
+# construction one the walk can read.
 def _import_subject_pattern(sync_label: str) -> re.Pattern[str]:
-    """Return the regex both the writer and the baseline walk agree on.
-
-    One expression, so the two directions cannot drift: a subject the writer
-    accepts is by construction one the walk can read.
-    """
+    """Return the regex both the writer and the baseline walk agree on."""
     prefix = import_commit_subject_prefix(sync_label)
     # ``(#N)`` is GitHub's squash-merge suffix, which is how these imports land.
     return re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})(?: \(#\d+\))?$")
-
-
-def last_synced_public_sha(
-    *, target_dir: Path, sync_label: str, base_branch: str, fallback: str = ""
-) -> str:
-    """Return the newest public SHA already imported into the target branch.
-
-    The merge-import baseline must be the public commit the target tree
-    currently reflects, not the pushed commit's parent. Those diverge whenever
-    an import fails to land (validation error, unmerged PR, conflict): the
-    parent marches forward while the target stays pinned to its last successful
-    import, so a parent-based baseline feeds the three-way merge a wrong common
-    ancestor and manufactures spurious conflicts.
-
-    Each landed import records its public SHA in the commit subject
-    (``Import <label> public changes <sha>``, written by
-    ``_open_or_update_target_pr``), so the target's own history is the source of
-    truth for what it last synced. Walk the branch newest-first and return the
-    SHA from the first subject that matches the full template.
-
-    Args:
-      target_dir: Root of the target repository checkout.
-      sync_label: Import label, e.g. ``Sagent``; scopes the commit search.
-      base_branch: Target branch to walk, e.g. ``main``.
-      fallback: SHA to return when the branch records no import -- a
-        first-import baseline (e.g. the branch tip before the push). Empty
-        string means raise.
-
-    Returns:
-      sha: The most recently imported public SHA, or ``fallback`` when the
-        branch has no landed import and ``fallback`` is set.
-
-    Raises:
-      ImportBaseError: When the branch records no import commit and no fallback
-        is provided.
-
-    """
-    prefix = import_commit_subject_prefix(sync_label)
-    # --fixed-strings: sync_label is matched literally, never as a git BRE, so a
-    # label with regex metacharacters cannot broaden or break the search.
-    subjects = _run(
-        [
-            "git",
-            "log",
-            base_branch,
-            "--fixed-strings",
-            f"--grep={prefix}",
-            "--format=%s",
-        ],
-        cwd=target_dir,
-        capture=True,
-    ).stdout.splitlines()
-    # Shared with the writer, so a subject one accepts is one the other reads.
-    pattern = _import_subject_pattern(sync_label)
-    for subject in subjects:
-        match = pattern.match(subject)
-        if match is not None:
-            sha = match[1]
-            assert isinstance(sha, str)
-            return sha
-    if fallback:
-        return fallback
-    raise ImportBaseError(
-        f"No landed '{sync_label}' import commit found on "
-        f"'{base_branch}'; cannot resolve the merge baseline."
-    )
-
-
-def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
-    """Return whether GitHub has an open PR for a branch."""
-    result = _run_gh(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--head",
-            branch,
-            "--json",
-            "number",
-        ],
-        cwd=cwd,
-        capture=True,
-    )
-    return bool(json.loads(result.stdout))
-
-
-def _fetch_branch(*, branch: str, cwd: Path) -> None:
-    """Fetch a remote branch if it exists without failing on first import."""
-    _run(
-        [
-            "git",
-            "fetch",
-            "origin",
-            f"refs/heads/{branch}:refs/remotes/origin/{branch}",
-        ],
-        cwd=cwd,
-        check=False,
-    )
-
-
-def _string_bool(value: str) -> bool:
-    """Parse Action-style boolean strings."""
-    return value.lower() in {"1", "true", "yes"}
-
-
-def _branch_component(value: str) -> str:
-    """Sanitize arbitrary run metadata for use in a Git branch name."""
-    return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
-
-
-def _validated_generated_branch(*, branch: str, prefix: str) -> str:
-    """Return a safe generated branch name or exit with a usage error."""
-    if not branch.startswith(prefix):
-        sys.stderr.write(f"Branch must start with {prefix}\n")
-        raise SystemExit(2)
-    if not _valid_git_branch_name(branch):
-        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
-        raise SystemExit(2)
-    return branch
-
-
-def _valid_git_branch_name(branch: str) -> bool:
-    """Return whether a branch name is safe for force-updated sync branches."""
-    if branch in {"main", "master"} or branch.startswith(("-", "/")):
-        return False
-    if branch.endswith(("/", ".", ".lock")):
-        return False
-    if ".." in branch or "//" in branch or "@{" in branch:
-        return False
-    forbidden = set(" ~^:?*[\\")
-    return not any(
-        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
-    )
-
-
-def _child_env() -> dict[str, str]:
-    """Return the parent env without ``VIRTUAL_ENV``.
-
-    Every command here runs through ``uv``, which re-derives the environment
-    from the target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the
-    operator's activated loop venv) only triggers uv's "does not match the
-    project environment" warning, so drop it for a clean run.
-    """
-    env = dict(os.environ)
-    env.pop("VIRTUAL_ENV", None)
-    return env
-
-
-def _run(
-    argv: list[str],
-    *,
-    cwd: Path | None = None,
-    stdout: TextIO | int | None = None,
-    check: bool = True,
-    capture: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess while streaming commands for Action logs."""
-    _log("+ " + " ".join(argv))
-    # The caller provides an argument vector, not a shell string.
-    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
-        argv,
-        cwd=cwd,
-        check=False,
-        stdout=subprocess.PIPE if capture else stdout,
-        stderr=subprocess.PIPE if capture else None,
-        text=True,
-        env=_child_env(),
-    )
-    if check and result.returncode != 0:
-        raise SystemExit(result.returncode)
-    return result
-
-
-def _run_gh(
-    argv: list[str],
-    *,
-    cwd: Path,
-    capture: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    """Run a GitHub CLI command with retries for transient API failures.
-
-    With ``check=False`` a non-retryable failure is returned to the caller
-    instead of raising, so the caller can inspect stderr and recover (the
-    auto-merge fallback reads it to detect a repo that cannot defer merges).
-    """
-    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
-        result = _run(argv, cwd=cwd, check=False, capture=True)
-        if result.returncode == 0:
-            if not capture:
-                _write_process_output(result)
-            return result
-        if attempt == GITHUB_RETRY_ATTEMPTS or not _retryable_github_failure(result):
-            if not check:
-                return result
-            _write_process_output(result)
-            raise SystemExit(result.returncode)
-        _log(
-            "GitHub CLI command failed with a transient API error; "
-            f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
-            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
-        )
-        time.sleep(GITHUB_RETRY_DELAY_SEC)
-    raise AssertionError("unreachable")
-
-
-def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return whether a GitHub CLI failure is likely transient."""
-    output = f"{result.stdout}\n{result.stderr}".casefold()
-    return any(
-        token in output
-        for token in (
-            "http 5",
-            "timeout",
-            "timed out",
-            "try resubmitting",
-            "temporarily unavailable",
-        )
-    )
-
-
-def _write_process_output(result: subprocess.CompletedProcess[str]) -> None:
-    """Replay captured process output to the workflow log."""
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-
-
-def _log(message: str) -> None:
-    """Write one flushed workflow log line to stderr.
-
-    Diagnostics go to stderr so stdout stays a clean machine-readable channel
-    (``--print-synced-base`` emits only the resolved SHA there). GitHub merges
-    both streams into the Action log, so human-facing output is unchanged.
-    """
-    sys.stderr.write(f"{message}\n")
-    sys.stderr.flush()
 
 
 if __name__ == "__main__":
