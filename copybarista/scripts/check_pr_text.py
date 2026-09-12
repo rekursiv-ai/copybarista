@@ -56,7 +56,7 @@ def main() -> int:
     lines.append(
         "\nThese fields are replayed into the PUBLIC export PR and will hard-fail "
         "the export. Rewrite them in public terms (no loop./loop/ paths); describe "
-        "the change with backticked bare module names and relative layout."
+        "the change with backticked bare module names and relative layout.",
     )
     sys.stderr.write("\n".join(lines) + "\n")
     return 1

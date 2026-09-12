@@ -56,7 +56,8 @@ from copybarista.transforms import (
     ],
 )
 def test_strip_source_regions_matches_export_and_reconstructs(
-    transform: Transform, source: str
+    transform: Transform,
+    source: str,
 ):
     """The region oracle agrees with the export and reconstructs the source.
 
@@ -96,7 +97,7 @@ def test_required_replace_changes_all_literal_matches(tmp_path: Path):
     assert result.changed == 1
     assert result.count == 2
     assert [(file.source, file.destination, file.count) for file in result.files] == [
-        ("module_test.py", "module_test.py", 2)
+        ("module_test.py", "module_test.py", 2),
     ]
 
 
@@ -221,7 +222,7 @@ def test_strip_block_removes_inclusive_markers(tmp_path: Path):
     assert result.changed == 1
     assert result.count == 1
     assert [(file.source, file.destination, file.count) for file in result.files] == [
-        ("README.md", "README.md", 1)
+        ("README.md", "README.md", 1),
     ]
 
 
@@ -295,7 +296,7 @@ def test_strip_block_reports_blocks_removed(tmp_path: Path):
     assert result.changed == 1
     assert result.count == 2
     assert [(file.source, file.destination, file.count) for file in result.files] == [
-        ("project/README.md", "README.md", 2)
+        ("project/README.md", "README.md", 2),
     ]
 
 
@@ -783,7 +784,7 @@ def test_internal_lines_removes_marked_lines(tmp_path: Path):
     assert result.changed == 1
     assert result.count == 2
     assert [(f.source, f.destination, f.count) for f in result.files] == [
-        ("module.py", "module.py", 2)
+        ("module.py", "module.py", 2),
     ]
 
 
@@ -832,7 +833,8 @@ def test_internal_lines_marker_does_not_claim_longer_block_marker(tmp_path: Path
 
 def test_internal_lines_across_multiple_files(tmp_path: Path):
     (tmp_path / "a.py").write_text(
-        "keep\nomit  # copybarista:internal\n", encoding="utf-8"
+        "keep\nomit  # copybarista:internal\n",
+        encoding="utf-8",
     )
     (tmp_path / "b.py").write_text("# copybarista:internal\nkeep\n", encoding="utf-8")
 

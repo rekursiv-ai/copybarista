@@ -49,7 +49,10 @@ class LeakViolation:
 
 
 def check_leaks(
-    *, root: Path, policy: LeakCheck, globstar: Globstar = "one_or_more"
+    *,
+    root: Path,
+    policy: LeakCheck,
+    globstar: Globstar = "one_or_more",
 ) -> tuple[LeakViolation, ...]:
     """Return leak-check violations for a transformed tree.
 
@@ -72,7 +75,9 @@ def check_leaks(
     listing = _list_tree(root)
     return (
         *_forbidden_path_violations(
-            rules=policy.forbidden_path, rel_paths=listing.paths, globstar=globstar
+            rules=policy.forbidden_path,
+            rel_paths=listing.paths,
+            globstar=globstar,
         ),
         *_forbidden_text_violations(
             root=root,
@@ -84,7 +89,10 @@ def check_leaks(
 
 
 def enforce_leak_check(
-    *, root: Path, policy: LeakCheck, globstar: Globstar = "one_or_more"
+    *,
+    root: Path,
+    policy: LeakCheck,
+    globstar: Globstar = "one_or_more",
 ) -> None:
     """Raise when a transformed tree violates leak-check policy.
 
@@ -185,6 +193,6 @@ def _forbidden_text_violations(
                     path=rel,
                     line=texts[rel].count("\n", 0, match.start()) + 1,
                     message=rule.message or "forbidden text matched",
-                )
+                ),
             )
     return tuple(violations)

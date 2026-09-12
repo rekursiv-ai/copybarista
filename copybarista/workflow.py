@@ -70,7 +70,9 @@ class WorkflowRunner:
     source_ref: Path
 
     def stage(
-        self, staging: Path, record_phase: PhaseRecorder | None = None
+        self,
+        staging: Path,
+        record_phase: PhaseRecorder | None = None,
     ) -> StagedTree:
         """Copy selected source files to staging and apply transforms.
 
@@ -119,7 +121,7 @@ class WorkflowRunner:
                         globstar=self.config.globstar,
                     ),
                     record_phase=record_phase,
-                )
+                ),
             )
         entries.extend(
             _write_generated(staging=staging, file_write=file_write)
@@ -138,7 +140,9 @@ class WorkflowRunner:
             config=self.config,
         )
         _record_phase(
-            record_phase, "transforms", time.perf_counter() - transform_started
+            record_phase,
+            "transforms",
+            time.perf_counter() - transform_started,
         )
         leak_started = time.perf_counter()
         enforce_leak_check(
@@ -157,7 +161,9 @@ class WorkflowRunner:
             for entry in entries_tuple
         )
         _record_phase(
-            record_phase, "final_manifest", time.perf_counter() - manifest_started
+            record_phase,
+            "final_manifest",
+            time.perf_counter() - manifest_started,
         )
         return StagedTree(
             root=staging,
@@ -243,7 +249,7 @@ def _copy_selected(
         if dest.exists() or dest.is_symlink():
             source = _source_path(source_prefix=source_prefix, rel=rel)
             raise ExportError(
-                f"Export destination already exists: {destination} from {source}"
+                f"Export destination already exists: {destination} from {source}",
             )
         dest.parent.mkdir(parents=True, exist_ok=True)
         copy_started = time.perf_counter()
@@ -253,7 +259,7 @@ def _copy_selected(
             _StagedFile(
                 source=_source_path(source_prefix=source_prefix, rel=rel),
                 destination=destination,
-            )
+            ),
         )
     total_sec = time.perf_counter() - started
     _record_phase(
@@ -322,7 +328,7 @@ def _copy_file(
     if dest.exists() or dest.is_symlink():
         source = source_path.relative_to(source_ref).as_posix()
         raise ExportError(
-            f"Export destination already exists: {destination} from {source}"
+            f"Export destination already exists: {destination} from {source}",
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
     _copy_to_staging(source_path, dest)
@@ -360,7 +366,9 @@ def _validate_symlink(path: Path, source_root: Path) -> None:
 
 
 def _record_phase(
-    record_phase: PhaseRecorder | None, phase: str, elapsed_sec: float
+    record_phase: PhaseRecorder | None,
+    phase: str,
+    elapsed_sec: float,
 ) -> None:
     """Record an optional benchmark phase without coupling staging to scripts."""
     if record_phase is not None:
@@ -368,7 +376,9 @@ def _record_phase(
 
 
 def _apply_transform_destinations(
-    entries: tuple[_StagedFile, ...], *, config: WorkflowConfig
+    entries: tuple[_StagedFile, ...],
+    *,
+    config: WorkflowConfig,
 ) -> tuple[_StagedFile, ...]:
     """Update manifest destinations for transforms that relocate staged files."""
     for transform in config.transforms:
@@ -383,6 +393,8 @@ def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _Staged
     return replace(
         entry,
         destination=_relocate_path(
-            entry.destination, source=transform.path, destination=transform.destination
+            entry.destination,
+            source=transform.path,
+            destination=transform.destination,
         ),
     )

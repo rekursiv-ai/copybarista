@@ -73,7 +73,7 @@ def write_folder_destination(
     if destination.exists():
         if not replace_existing:
             raise ExportError(
-                f"Destination already exists; pass --force to replace it: {destination}"
+                f"Destination already exists; pass --force to replace it: {destination}",
             )
         shutil.rmtree(destination)
     validate_staged_symlinks(staged_tree.root)

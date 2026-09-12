@@ -65,7 +65,8 @@ def test_export_git_requires_destination_url(tmp_path: Path):
 
 
 def test_export_git_stages_manifest_without_real_git(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     source_ref = tmp_path / "repo"
     project = source_ref / "project"
@@ -89,7 +90,7 @@ def test_export_git_stages_manifest_without_real_git(
 
     manifest = git.export_git(
         config=_workflow_config(
-            git=GitDestination(url="ssh://example.com/repo.git", branch="main")
+            git=GitDestination(url="ssh://example.com/repo.git", branch="main"),
         ),
         source_ref=source_ref,
     )
@@ -98,7 +99,8 @@ def test_export_git_stages_manifest_without_real_git(
 
 
 def test_write_git_destination_uses_temporary_worktree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     source = tmp_path / "source"
     (source / "pkg").mkdir(parents=True)
@@ -134,7 +136,7 @@ def test_write_git_destination_uses_temporary_worktree(
                 (worktree / ".git").is_dir(),
                 (worktree / "stale.txt").exists(),
                 (worktree / "pkg" / "module.py").is_file(),
-            )
+            ),
         )
         return "abc123"
 
@@ -185,7 +187,8 @@ def test_replace_worktree_contents_rejects_staged_symlink_escape(tmp_path: Path)
 
 
 def test_prepare_destination_checks_out_existing_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
     cache = tmp_path / "cache.git"
@@ -238,7 +241,8 @@ def test_prepare_destination_checks_out_existing_branch(
 
 
 def test_prepare_destination_creates_orphan_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
     cache = tmp_path / "cache.git"
@@ -282,7 +286,8 @@ def test_prepare_destination_creates_orphan_branch(
 
 
 def test_ensure_local_remote_initializes_empty_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
     remote = tmp_path / "remote.git"
@@ -318,7 +323,8 @@ def test_ensure_local_remote_rejects_non_git_directory(tmp_path: Path):
 
 
 def test_sync_cached_bare_repo_clones_missing_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
 
@@ -339,7 +345,8 @@ def test_sync_cached_bare_repo_clones_missing_cache(
 
 
 def test_sync_cached_bare_repo_fetches_existing_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
     cache_root = tmp_path / "cache"
@@ -377,8 +384,8 @@ def test_remote_branch_exists_handles_git_exit_codes():
 def test_remote_branch_exists_reports_unexpected_failure():
     runtime = GitRuntime(
         commands=_FakeCommands(
-            result=CommandResult(returncode=128, stdout="", stderr="bad remote")
-        )
+            result=CommandResult(returncode=128, stdout="", stderr="bad remote"),
+        ),
     )
 
     with pytest.raises(ExportError, match="bad remote"):
@@ -392,8 +399,8 @@ def test_remote_branch_exists_reports_unexpected_failure():
 def test_remote_branch_exists_treats_exit_two_with_stderr_as_failure():
     runtime = GitRuntime(
         commands=_FakeCommands(
-            result=CommandResult(returncode=2, stdout="", stderr="auth failed")
-        )
+            result=CommandResult(returncode=2, stdout="", stderr="auth failed"),
+        ),
     )
 
     with pytest.raises(ExportError, match="auth failed"):
@@ -414,8 +421,8 @@ def test_has_staged_changes_handles_git_exit_codes():
 def test_has_staged_changes_reports_unexpected_failure():
     runtime = GitRuntime(
         commands=_FakeCommands(
-            result=CommandResult(returncode=128, stdout="", stderr="")
-        )
+            result=CommandResult(returncode=128, stdout="", stderr=""),
+        ),
     )
 
     with pytest.raises(ExportError, match="staged"):
@@ -423,7 +430,8 @@ def test_has_staged_changes_reports_unexpected_failure():
 
 
 def test_commit_and_push_uses_configured_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
 
@@ -439,7 +447,9 @@ def test_commit_and_push_uses_configured_identity(
         return CommandResult(returncode=0, stdout=stdout, stderr="")
 
     def has_staged_changes(
-        worktree: Path, *, runtime: GitRuntime | None = None
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
     ) -> bool:
         assert runtime is not None
         assert worktree == tmp_path
@@ -472,7 +482,8 @@ def test_commit_and_push_uses_configured_identity(
 
 
 def test_commit_and_push_returns_noop_without_staged_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[str, ...]] = []
 
@@ -487,7 +498,9 @@ def test_commit_and_push_returns_noop_without_staged_changes(
         return CommandResult(returncode=0, stdout=stdout, stderr="")
 
     def has_staged_changes(
-        worktree: Path, *, runtime: GitRuntime | None = None
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
     ) -> bool:
         assert runtime is not None
         assert worktree == tmp_path
@@ -512,7 +525,8 @@ def test_commit_and_push_returns_noop_without_staged_changes(
 
 
 def test_verify_user_info_configured_rejects_missing_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
         git,

@@ -210,7 +210,10 @@ class PathMapper:
         )
 
     def source_path(
-        self, public_path: str, *, action: ChangeAction = "modified"
+        self,
+        public_path: str,
+        *,
+        action: ChangeAction = "modified",
     ) -> str:
         """Return the source-relative path for a public path.
 
@@ -230,7 +233,7 @@ class PathMapper:
         """
         if _is_metadata_path(public_path):
             raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}"
+                f"Public path is excluded or unmapped: {public_path}",
             )
         source_public_path = _reverse_move_transforms(
             public_path=public_path,
@@ -238,7 +241,7 @@ class PathMapper:
         )
         if self._is_generated_path(source_public_path):
             raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}"
+                f"Public path is excluded or unmapped: {public_path}",
             )
         copied_source = self._copied_source_path(source_public_path)
         if copied_source:
@@ -262,12 +265,12 @@ class PathMapper:
             # whole import exactly as the original CI regression did.
             if action != "deleted" and self.matcher.excludes(source_public_path):
                 raise ImportRequestError(
-                    f"Public path is excluded or unmapped: {public_path}"
+                    f"Public path is excluded or unmapped: {public_path}",
                 )
             return source_public_path
         if not self.matcher.matches(prefixed):
             raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}"
+                f"Public path is excluded or unmapped: {public_path}",
             )
         if not self.config.source_root:
             return prefixed
@@ -291,7 +294,7 @@ class PathMapper:
                 if matcher.matches(Path(file_copy.source).name):
                     return file_copy.source
                 raise ImportRequestError(
-                    f"Public path is excluded or unmapped: {public_path}"
+                    f"Public path is excluded or unmapped: {public_path}",
                 )
             if file_copy.destination in (".", "./"):
                 # A directory copy with ``destination = "."`` lands its tree at
@@ -332,7 +335,7 @@ class PathMapper:
             if matcher.matches(rel):
                 return f"{file_copy.source}/{rel}"
             raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}"
+                f"Public path is excluded or unmapped: {public_path}",
             )
         return ""
 
@@ -410,7 +413,7 @@ class ImportResult:
                     "outcome": change.outcome,
                 }
                 for change in self.changes
-            ]
+            ],
         }
 
 
@@ -450,7 +453,7 @@ class ChangeRequestImporter:
         if self.verify and not self.merge_import:
             self._check_public_base()
         diff = TreeSnapshot.from_root(self.public_base).diff(
-            TreeSnapshot.from_root(self.public_head)
+            TreeSnapshot.from_root(self.public_head),
         )
         mapper = PathMapper(config=self.config)
         changes = tuple(
@@ -578,7 +581,8 @@ class ChangeRequestImporter:
     # (e.g. ``strip_block``) out of the common already-applied path -- a file whose
     # export already equals the public head needs no reversal at all.
     def _merge_changes(
-        self, changes: tuple[ImportChange, ...]
+        self,
+        changes: tuple[ImportChange, ...],
     ) -> tuple[ImportChange, ...]:
         """Reconcile every change by three-way merge, raising on conflicts."""
         with tempfile.TemporaryDirectory(prefix="copybarista-import-merge-") as tmp:
@@ -593,14 +597,15 @@ class ChangeRequestImporter:
             conflicts: list[str] = []
             for change in changes:
                 resolved, conflicted = self._merge_change(
-                    change=change, source_export=source_export
+                    change=change,
+                    source_export=source_export,
                 )
                 applied.append(resolved)
                 if conflicted:
                     conflicts.append(resolved.source)
         if conflicts:
             raise ImportRequestError(
-                "Merge import produced conflicts in: " + ", ".join(sorted(conflicts))
+                "Merge import produced conflicts in: " + ", ".join(sorted(conflicts)),
             )
         return tuple(applied)
 
@@ -644,16 +649,18 @@ class ChangeRequestImporter:
     ) -> bytes:
         """Reverse the public text, then restore lines the edit never touched."""
         reversed_whole = self._reverse_content(
-            public_path=public_path, data=merged_public
+            public_path=public_path,
+            data=merged_public,
         )
         source_file = self.source_base / _source_path(
-            config=self.config, public_path=public_path
+            config=self.config,
+            public_path=public_path,
         )
         if not source_file.is_file() or source_file.is_symlink():
             return reversed_whole
         try:
             source_lines = source_file.read_text(encoding="utf-8").splitlines(
-                keepends=True
+                keepends=True,
             )
             reversed_lines = reversed_whole.decode().splitlines(keepends=True)
         except UnicodeDecodeError:
@@ -687,11 +694,15 @@ class ChangeRequestImporter:
     # are force-propagated from the public head via ``_apply_change`` (matching
     # Copybara, which propagates origin deletions regardless of destination drift).
     def _merge_change(
-        self, *, change: ImportChange, source_export: Path
+        self,
+        *,
+        change: ImportChange,
+        source_export: Path,
     ) -> tuple[ImportChange, bool]:
         """Reconcile one change by three-way merge in public space."""
         target = _validated_target(
-            destination=self.destination, relative_path=change.source
+            destination=self.destination,
+            relative_path=change.source,
         )
         public_path = self.public_head / change.public
         # Not text-mergeable: deletions, symlink/dir heads, and type changes
@@ -705,7 +716,8 @@ class ChangeRequestImporter:
             return self._apply_change(change), False
         head_public = public_path.read_bytes()
         ours_public = self._ours_public_bytes(
-            change=change, source_export=source_export
+            change=change,
+            source_export=source_export,
         )
         if ours_public == head_public:
             return _with_outcome(change, "skipped"), False
@@ -718,7 +730,9 @@ class ChangeRequestImporter:
         if ours_public == base_public:
             return self._apply_change(change), False
         merged_public, conflicted = _three_way_merge(
-            current=ours_public, base=base_public, incoming=head_public
+            current=ours_public,
+            base=base_public,
+            incoming=head_public,
         )
         if conflicted:
             # The caller rolls the whole import back on any conflict, so the
@@ -763,16 +777,22 @@ class ChangeRequestImporter:
                 continue
             if transform.type == "uncomment":
                 content = self._flush_reverse_replaces(
-                    public_path=public_path, transforms=pending, content=content
+                    public_path=public_path,
+                    transforms=pending,
+                    content=content,
                 )
                 pending = []
                 content = self._recomment_source_blocks(
-                    public_path=public_path, transform=transform, content=content
+                    public_path=public_path,
+                    transform=transform,
+                    content=content,
                 )
                 continue
             if transform.type in ("strip_block", "internal_lines"):
                 content = self._flush_reverse_replaces(
-                    public_path=public_path, transforms=pending, content=content
+                    public_path=public_path,
+                    transforms=pending,
+                    content=content,
                 )
                 pending = []
                 # Neither transform is invertible from the public tree: the
@@ -785,16 +805,24 @@ class ChangeRequestImporter:
                 # apply around them. Re-export removes them again, reproducing
                 # the public head; the import PR's CI is the human-review gate.
                 content = self._reinsert_source_only_regions(
-                    public_path=public_path, transform=transform, content=content
+                    public_path=public_path,
+                    transform=transform,
+                    content=content,
                 )
                 continue
             pending.append(transform)
         return self._flush_reverse_replaces(
-            public_path=public_path, transforms=pending, content=content
+            public_path=public_path,
+            transforms=pending,
+            content=content,
         )
 
     def _flush_reverse_replaces(
-        self, *, public_path: str, transforms: list[Transform], content: bytes
+        self,
+        *,
+        public_path: str,
+        transforms: list[Transform],
+        content: bytes,
     ) -> bytes:
         """Reverse one contiguous run of ``replace`` transforms in a single pass."""
         if not transforms:
@@ -803,7 +831,7 @@ class ChangeRequestImporter:
             text = content.decode()
         except UnicodeDecodeError as err:
             raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}"
+                f"Public path requires text reversal but is not UTF-8: {public_path}",
             ) from err
         # Strict imports use this guard as a proxy for "is the reversal
         # unambiguous"; merge imports establish that ground truth directly by
@@ -823,14 +851,18 @@ class ChangeRequestImporter:
         return _reverse_replace_all(transforms=tuple(transforms), text=text).encode()
 
     def _check_injective_reverse(
-        self, *, public_path: str, transform: Transform, text: str
+        self,
+        *,
+        public_path: str,
+        transform: Transform,
+        text: str,
     ) -> None:
         """Reject automatic reversals that cannot be mapped back unambiguously."""
         reverse_before = _reverse_before(transform)
         if not reverse_before:
             raise ImportRequestError(
                 f"Public path requires non-reversible empty replacement "
-                f"for transform '{transform.id}': {public_path}"
+                f"for transform '{transform.id}': {public_path}",
             )
         if _has_explicit_reversal(transform):
             return
@@ -871,7 +903,7 @@ class ChangeRequestImporter:
             if _match_count(transform, reverse_before, source_text) > explained:
                 raise ImportRequestError(
                     f"Source base already contains exported replacement text "
-                    f"for transform '{transform.id}': {public_path}"
+                    f"for transform '{transform.id}': {public_path}",
                 )
         base_path = self.public_base / public_path
         if base_path.exists() and not base_path.is_symlink():
@@ -885,7 +917,7 @@ class ChangeRequestImporter:
         if _match_count(transform, reverse_before, text) > base_count:
             raise ImportRequestError(
                 f"Public path adds exported replacement text for transform "
-                f"'{transform.id}': {public_path}"
+                f"'{transform.id}': {public_path}",
             )
 
     # In merge mode a non-reversible match is not fatal here: a file whose export
@@ -922,11 +954,16 @@ class ChangeRequestImporter:
     # skipping it wrote the uncommented body straight to source, which re-exports to the
     # same public text and so is caught by nothing.
     def _recomment_source_blocks(
-        self, *, public_path: str, transform: Transform, content: bytes
+        self,
+        *,
+        public_path: str,
+        transform: Transform,
+        content: bytes,
     ) -> bytes:
         """Restore an ``uncomment`` transform's commented source form."""
         source_path = self.source_base / _source_path(
-            config=self.config, public_path=public_path
+            config=self.config,
+            public_path=public_path,
         )
         if not source_path.exists() or source_path.is_symlink():
             return content
@@ -938,7 +975,7 @@ class ChangeRequestImporter:
             public_text = content.decode()
         except UnicodeDecodeError as err:
             raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}"
+                f"Public path requires text reversal but is not UTF-8: {public_path}",
             ) from err
         result = public_text
         # Advances past each restored block, so two blocks with identical bodies
@@ -959,7 +996,9 @@ class ChangeRequestImporter:
                 continue
             whole_export, _total = uncomment_source_text(source_text, transform)
             edited = _edited_block_body(
-                result=result, exported=exported, whole_export=whole_export
+                result=result,
+                exported=exported,
+                whole_export=whole_export,
             )
             if edited is None:
                 continue
@@ -989,11 +1028,16 @@ class ChangeRequestImporter:
     # backstop; merge mode folds in source drift and has no such tree-level check, so
     # this per-file gate is its safety net.
     def _reinsert_source_only_regions(
-        self, *, public_path: str, transform: Transform, content: bytes
+        self,
+        *,
+        public_path: str,
+        transform: Transform,
+        content: bytes,
     ) -> bytes:
         """Re-insert a transform's source-only regions into reversed content."""
         source_path = self.source_base / _source_path(
-            config=self.config, public_path=public_path
+            config=self.config,
+            public_path=public_path,
         )
         if not source_path.exists() or source_path.is_symlink():
             return content
@@ -1005,7 +1049,7 @@ class ChangeRequestImporter:
             public_text = content.decode()
         except UnicodeDecodeError as err:
             raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}"
+                f"Public path requires text reversal but is not UTF-8: {public_path}",
             ) from err
         if transform.else_marker and transform.start and transform.start in source_text:
             return _reverse_else_blocks(
@@ -1014,7 +1058,9 @@ class ChangeRequestImporter:
                 transform=transform,
             ).encode()
         rebuilt = _splice_source_only_regions(
-            source_text=source_text, public_text=public_text, transform=transform
+            source_text=source_text,
+            public_text=public_text,
+            transform=transform,
         )
         # The offset splice is exact only when the public edit left the context
         # around each source-only region intact. When it did (the common case),
@@ -1032,7 +1078,7 @@ class ChangeRequestImporter:
                 f"Re-inserting source-only regions for transform '{transform.id}' "
                 f"produced a source tree that cannot be re-exported for "
                 f"{public_path}; a public edit disturbed a stripped region. "
-                "Resolve the import by hand."
+                "Resolve the import by hand.",
             ) from err
         if restripped == public_text:
             return rebuilt.encode()
@@ -1048,7 +1094,9 @@ class ChangeRequestImporter:
         # reviewable source; re-export strips the region again, reproducing the
         # public head around it.
         rebuilt = _anchor_source_only_regions(
-            source_text=source_text, public_text=public_text, transform=transform
+            source_text=source_text,
+            public_text=public_text,
+            transform=transform,
         )
         if rebuilt is None:
             # A source-only run has NO surviving neighbor that aligns to the
@@ -1057,7 +1105,7 @@ class ChangeRequestImporter:
             raise ImportRequestError(
                 f"Re-inserting source-only regions for transform '{transform.id}' "
                 f"cannot place a stripped region in {public_path}: a public edit "
-                "rewrote all of its surrounding context. Resolve by hand."
+                "rewrote all of its surrounding context. Resolve by hand.",
             )
         # The anchored placement is best-effort, but the correctness contract is
         # absolute: re-stripping the rebuilt source MUST reproduce the incoming
@@ -1072,13 +1120,13 @@ class ChangeRequestImporter:
                 f"Re-inserting source-only regions for transform '{transform.id}' "
                 f"produced a source tree that cannot be re-exported for "
                 f"{public_path}; a public edit disturbed a stripped region. "
-                "Resolve the import by hand."
+                "Resolve the import by hand.",
             ) from err
         if reanchored != public_text:
             raise ImportRequestError(
                 f"Re-inserting source-only regions for transform '{transform.id}' "
                 f"disturbed a stripped region in {public_path} so its export no "
-                "longer reproduces the public content. Resolve the import by hand."
+                "longer reproduces the public content. Resolve the import by hand.",
             )
         return rebuilt.encode()
 
@@ -1093,10 +1141,10 @@ class ChangeRequestImporter:
                 force=True,
             )
             if TreeSnapshot.from_root(exported) != TreeSnapshot.from_root(
-                self.public_base
+                self.public_base,
             ):
                 raise ImportRequestError(
-                    "Configured source base does not reproduce public base"
+                    "Configured source base does not reproduce public base",
                 )
 
     def _check_public_head(self) -> None:
@@ -1110,10 +1158,10 @@ class ChangeRequestImporter:
                 force=True,
             )
             if TreeSnapshot.from_root(exported) != TreeSnapshot.from_root(
-                self.public_head
+                self.public_head,
             ):
                 raise ImportRequestError(
-                    "Imported source tree does not reproduce public head"
+                    "Imported source tree does not reproduce public head",
                 )
 
 
@@ -1152,7 +1200,9 @@ def import_change_request(request: ImportRequest) -> ImportResult:
 
 
 def _reverse_move_transforms(
-    *, public_path: str, transforms: tuple[Transform, ...]
+    *,
+    public_path: str,
+    transforms: tuple[Transform, ...],
 ) -> str:
     """Map a post-move public path back to the pre-move staged path."""
     path = PurePosixPath(public_path)
@@ -1175,14 +1225,17 @@ def _reverse_move_transforms(
 # enforces injectivity at load (``config._validate_moves_injective``), so the reverse-
 # order first match is unambiguous for every admitted sequence.
 def _reverse_file_moves(
-    public_path: str, moves: tuple[FileMove, ...]
+    public_path: str,
+    moves: tuple[FileMove, ...],
 ) -> tuple[str, bool]:
     """Invert the ordered ``files.moves`` placement for one public path."""
     path = public_path
     moved = False
     for move in reversed(moves):
         relocated = _reverse_relocation(
-            path, source=move.path, destination=move.destination
+            path,
+            source=move.path,
+            destination=move.destination,
         )
         if relocated is not None:
             path = relocated
@@ -1205,7 +1258,9 @@ def _reverse_relocation(path: str, *, source: str, destination: str) -> str | No
 
 
 def _matches_transform(
-    transform: Transform, public_path: str, globstar: Globstar
+    transform: Transform,
+    public_path: str,
+    globstar: Globstar,
 ) -> bool:
     """Return whether a transform applies to a public path."""
     return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
@@ -1241,7 +1296,9 @@ def _match_count(transform: Transform, template: str, text: str) -> int:
     if not transform.regex_groups:
         return text.count(template)
     return compile_replace(
-        before=template, after=template, regex_groups=transform.regex_groups
+        before=template,
+        after=template,
+        regex_groups=transform.regex_groups,
     ).count(text)
 
 
@@ -1403,13 +1460,15 @@ class _ReverseMatcher:
 # (nothing was rewritten), so it reverses trivially to zero regions; rejecting it would
 # wrongly block importing an unrelated edit to any file the glob happens to match.
 def _removed_regions(
-    *, source_text: str, transform: Transform
+    *,
+    source_text: str,
+    transform: Transform,
 ) -> list[tuple[int, str]]:
     """Return each source-only region a strip transform removes on export."""
     if transform.else_marker and transform.start and transform.start in source_text:
         raise ImportRequestError(
             f"Transform '{transform.id}' has an else branch and rewrites content "
-            "on export; it cannot be reversed by re-insertion"
+            "on export; it cannot be reversed by re-insertion",
         )
     return list(strip_source_regions(source_text, transform)[1])
 
@@ -1421,7 +1480,10 @@ def _removed_regions(
 # region is still restored (possibly displaced) and the import PR's CI is the human-
 # review gate. Re-export removes the regions again, reproducing the public head.
 def _splice_source_only_regions(
-    *, source_text: str, public_text: str, transform: Transform
+    *,
+    source_text: str,
+    public_text: str,
+    transform: Transform,
 ) -> str:
     """Re-insert a strip transform's source-only regions into reversed text."""
     regions = _removed_regions(source_text=source_text, transform=transform)
@@ -1447,7 +1509,10 @@ def _splice_source_only_regions(
 # review item -- never a silently corrupted tree, because the caller's re-strip gate
 # then rejects a source that no longer reproduces public.
 def _reverse_else_blocks(
-    *, source_text: str, public_text: str, transform: Transform
+    *,
+    source_text: str,
+    public_text: str,
+    transform: Transform,
 ) -> str:
     """Reverse an ``if internal / else / endif`` strip block into ``public_text``."""
     result = public_text
@@ -1466,7 +1531,11 @@ def _reverse_else_blocks(
 # restoring several blocks with IDENTICAL bodies advances past each and does not resolve
 # them all to the first occurrence.
 def _replace_whole_lines(
-    *, text: str, needle: str, replacement: str, search_from: int = 0
+    *,
+    text: str,
+    needle: str,
+    replacement: str,
+    search_from: int = 0,
 ) -> tuple[str, int] | None:
     """Replace ``needle`` where it occupies whole lines at/after ``search_from``."""
     needle_lines = needle.splitlines(keepends=True)
@@ -1560,7 +1629,9 @@ def _splice_public_edits(
 ) -> str:
     """Return source with only the public edit's hunks applied."""
     edit = difflib.SequenceMatcher(
-        a=reversed_ours_lines, b=reversed_lines, autojunk=False
+        a=reversed_ours_lines,
+        b=reversed_lines,
+        autojunk=False,
     )
     ours_to_source = _align_kept_to_public(reversed_ours_lines, source_lines)
     # Source lines the export dropped, identified POSITIONALLY: an index that no
@@ -1675,14 +1746,19 @@ def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
 # deleted/rewritten past recognition) has no determined position -- this returns
 # ``None`` so the caller rejects rather than guess.
 def _anchor_source_only_regions(
-    *, source_text: str, public_text: str, transform: Transform
+    *,
+    source_text: str,
+    public_text: str,
+    transform: Transform,
 ) -> str | None:
     """Re-insert source-only regions by aligning the source's export with public."""
     source_lines = source_text.splitlines(keepends=True)
     marks = _source_only_line_mask(source_lines=source_lines, transform=transform)
     if not any(marks):
         return _splice_source_only_regions(
-            source_text=source_text, public_text=public_text, transform=transform
+            source_text=source_text,
+            public_text=public_text,
+            transform=transform,
         )
     kept_lines = [
         line for line, mark in zip(source_lines, marks, strict=True) if not mark
@@ -1803,7 +1879,8 @@ def _min_aligned(kept_to_public: list[int | None], start: int, stop: int) -> int
 # to-one to their public counterparts. A kept line inside a 'replace' or 'delete' block
 # (its public counterpart was rewritten or removed) maps to ``None``.
 def _align_kept_to_public(
-    kept_lines: list[str], public_lines: list[str]
+    kept_lines: list[str],
+    public_lines: list[str],
 ) -> list[int | None]:
     """Return, per kept-source line, the aligned public line index or ``None``."""
     matcher = difflib.SequenceMatcher(a=kept_lines, b=public_lines, autojunk=False)
@@ -1815,7 +1892,9 @@ def _align_kept_to_public(
 
 
 def _source_only_line_mask(
-    *, source_lines: list[str], transform: Transform
+    *,
+    source_lines: list[str],
+    transform: Transform,
 ) -> list[bool]:
     """Return a per-line mask of which source lines the transform removes."""
     if transform.type == "internal_lines":
@@ -1854,7 +1933,10 @@ def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
 # so ``incoming`` is passed first. Conflicting hunks keep both sides wrapped in conflict
 # markers.
 def _three_way_merge(
-    *, current: bytes, base: bytes, incoming: bytes
+    *,
+    current: bytes,
+    base: bytes,
+    incoming: bytes,
 ) -> tuple[bytes, bool]:
     """Three-way merge ``incoming`` onto ``current`` relative to ``base``."""
     git = shutil.which("git")
@@ -1895,7 +1977,7 @@ def _three_way_merge(
         if result.returncode >= 128:
             raise ImportRequestError(
                 f"Three-way merge failed: git merge-file exited "
-                f"{result.returncode}: {result.stderr.decode(errors='replace')}"
+                f"{result.returncode}: {result.stderr.decode(errors='replace')}",
             )
         return result.stdout, result.returncode > 0
 
@@ -1955,7 +2037,9 @@ class _OriginalPath:
 
 
 def _capture_originals(
-    *, destination: Path, changes: tuple[ImportChange, ...]
+    *,
+    destination: Path,
+    changes: tuple[ImportChange, ...],
 ) -> tuple[_OriginalPath, ...]:
     """Snapshot touched destination paths before applying an import plan."""
     originals: list[_OriginalPath] = []
@@ -1965,7 +2049,7 @@ def _capture_originals(
         if path.exists() or path.is_symlink():
             if backup_root is None:
                 backup_root = Path(
-                    tempfile.mkdtemp(prefix="copybarista-import-backup-")
+                    tempfile.mkdtemp(prefix="copybarista-import-backup-"),
                 )
             backup = backup_root / str(idx)
             if path.is_dir() and not path.is_symlink():
@@ -2023,7 +2107,7 @@ def _validated_target(*, destination: Path, relative_path: str) -> Path:
     """Return a destination target after escape and metadata checks."""
     if _is_metadata_path(relative_path):
         raise ImportRequestError(
-            f"Public path is excluded or unmapped: {relative_path}"
+            f"Public path is excluded or unmapped: {relative_path}",
         )
     root = destination.resolve()
     relative = Path(relative_path)
@@ -2035,7 +2119,7 @@ def _validated_target(*, destination: Path, relative_path: str) -> Path:
         current = current / part
         if current.is_symlink():
             raise ImportRequestError(
-                f"Import target escapes destination: {relative_path}"
+                f"Import target escapes destination: {relative_path}",
             )
     parent = target.parent.resolve(strict=False)
     if not parent.is_relative_to(root):
@@ -2044,10 +2128,10 @@ def _validated_target(*, destination: Path, relative_path: str) -> Path:
         try:
             if not target.resolve(strict=False).is_relative_to(root):
                 raise ImportRequestError(
-                    f"Import target escapes destination: {relative_path}"
+                    f"Import target escapes destination: {relative_path}",
                 )
         except RuntimeError as err:
             raise ImportRequestError(
-                f"Import target cannot be resolved: {relative_path}"
+                f"Import target cannot be resolved: {relative_path}",
             ) from err
     return target

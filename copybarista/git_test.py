@@ -85,11 +85,11 @@ def test_write_git_destination_reports_noop_for_unchanged_tree(tmp_path: Path):
     source_ref = _source(tmp_path)
 
     staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
-        tmp_path / "stage1"
+        tmp_path / "stage1",
     )
     first = write_git_destination(staged, destination=config.git)
     staged_again = WorkflowRunner(config=config, source_ref=source_ref).stage(
-        tmp_path / "stage2"
+        tmp_path / "stage2",
     )
     second = write_git_destination(staged_again, destination=config.git)
 

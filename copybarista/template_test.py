@@ -24,14 +24,18 @@ def _reverse(before: str, after: str, groups: tuple[tuple[str, str], ...], text:
 
 def test_literal_segments_match_verbatim_and_group_reemits_capture() -> None:
     template = compile_replace(
-        before="foo${x}bar", after="bar${x}foo", regex_groups=(("x", "[A-Z]+"),)
+        before="foo${x}bar",
+        after="bar${x}foo",
+        regex_groups=(("x", "[A-Z]+"),),
     )
     assert template.apply("fooABCbar") == "barABCfoo"
 
 
 def test_count_reports_number_of_matches() -> None:
     template = compile_replace(
-        before="x.${s}", after="y.${s}", regex_groups=(("s", "[a-z]"),)
+        before="x.${s}",
+        after="y.${s}",
+        regex_groups=(("s", "[a-z]"),),
     )
     assert template.count("x.a and x.b but not xz") == 2
     assert template.count("nothing here") == 0
@@ -73,13 +77,13 @@ def test_literal_import_boundary_leaves_dotted_import_alone() -> None:
     before, after = "from acme.internal.widget ", "from widget "
     assert (
         compile_replace(before=after, after=before, regex_groups=()).apply(
-            "from widget import x"
+            "from widget import x",
         )
         == "from acme.internal.widget import x"
     )
     assert (
         compile_replace(before=after, after=before, regex_groups=()).apply(
-            "from widget.providers import y"
+            "from widget.providers import y",
         )
         == "from widget.providers import y"
     )
@@ -98,7 +102,9 @@ def test_rejects_group_unused_by_before() -> None:
 def test_rejects_after_group_absent_from_before() -> None:
     with pytest.raises(ConfigError, match="absent from before"):
         compile_replace(
-            before="a${x}", after="${y}", regex_groups=(("x", "[0-9]"), ("y", "[0-9]"))
+            before="a${x}",
+            after="${y}",
+            regex_groups=(("x", "[0-9]"), ("y", "[0-9]")),
         )
 
 
@@ -113,13 +119,16 @@ def test_rejects_invalid_group_regex() -> None:
     ("groups", "culprit"),
     [
         pytest.param(
-            (("a", "[unclosed"), ("b", "[^!]*")), "a", id="unterminated-class"
+            (("a", "[unclosed"), ("b", "[^!]*")),
+            "a",
+            id="unterminated-class",
         ),
         pytest.param((("a", "(grp"), ("b", ")x")), "a", id="unbalanced-paren"),
     ],
 )
 def test_rejects_a_malformed_group_masked_by_a_later_group(
-    groups: tuple[tuple[str, str], ...], culprit: str
+    groups: tuple[tuple[str, str], ...],
+    culprit: str,
 ) -> None:
     """Each group must be validated ALONE, not only in the assembled pattern.
 

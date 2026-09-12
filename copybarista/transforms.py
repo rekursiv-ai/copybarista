@@ -75,7 +75,7 @@ def apply_transforms(
                 sources_by_destination=sources_by_destination,
                 globstar=globstar,
                 listing=listing,
-            )
+            ),
         )
         if transform.type == "move":
             listing = _list_staged_files(root)
@@ -202,7 +202,7 @@ def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
                     break
             if end_idx is None:
                 raise TransformError(
-                    f"Transformation '{transform.id}' did not find end marker"
+                    f"Transformation '{transform.id}' did not find end marker",
                 )
             result.extend(_uncomment_line(line) for line in lines[i + 1 : end_idx])
             i = end_idx + 1
@@ -279,7 +279,8 @@ def strip_source_text(text: str, transform: Transform) -> str:
 
 
 def strip_source_regions(
-    text: str, transform: Transform
+    text: str,
+    transform: Transform,
 ) -> tuple[str, tuple[tuple[int, str], ...]]:
     """Return the exported text and the source-only regions it removed.
 
@@ -323,7 +324,7 @@ def strip_source_regions(
                 offset += len(line)
         return "".join(kept), tuple(regions)
     raise TransformError(
-        f"strip_source_text does not support transform type {transform.type!r}"
+        f"strip_source_text does not support transform type {transform.type!r}",
     )
 
 
@@ -332,12 +333,13 @@ def strip_source_regions(
 # in place and re-searched from the cut point, so ``start_idx`` is already an offset in
 # the partially-stripped text -- i.e. the final stripped-form offset of that region.
 def _strip_blocks_regions(
-    text: str, transform: Transform
+    text: str,
+    transform: Transform,
 ) -> tuple[str, tuple[tuple[int, str], ...]]:
     """Strip marker-delimited blocks, reporting each removed region."""
     if not transform.start or not transform.end:
         raise TransformError(
-            f"Transformation '{transform.id}' markers must be non-empty"
+            f"Transformation '{transform.id}' markers must be non-empty",
         )
     updated = text
     search_from = 0
@@ -349,17 +351,17 @@ def _strip_blocks_regions(
         first_end_idx = updated.find(transform.end, search_from)
         if 0 <= first_end_idx < start_idx:
             raise TransformError(
-                f"Transformation '{transform.id}' found end marker before start marker"
+                f"Transformation '{transform.id}' found end marker before start marker",
             )
         end_idx = updated.find(transform.end, start_idx + len(transform.start))
         if end_idx < 0:
             raise TransformError(
-                f"Transformation '{transform.id}' did not find end marker"
+                f"Transformation '{transform.id}' did not find end marker",
             )
         next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
         if 0 <= next_start_idx < end_idx:
             raise TransformError(
-                f"Transformation '{transform.id}' found nested start marker"
+                f"Transformation '{transform.id}' found nested start marker",
             )
         if transform.inclusive:
             end_idx += len(transform.end)
@@ -404,7 +406,7 @@ def _replace(
     """Apply a literal or regex-group replacement and return its change report."""
     if not transform.before:
         raise TransformError(
-            f"Transformation '{transform.id}' before must be non-empty"
+            f"Transformation '{transform.id}' before must be non-empty",
         )
     template = (
         compile_replace(
@@ -416,7 +418,10 @@ def _replace(
         else None
     )
     paths = _matching_files(
-        root=root, listing=listing, pattern=transform.path, globstar=globstar
+        root=root,
+        listing=listing,
+        pattern=transform.path,
+        globstar=globstar,
     )
     matched_files = 0
     skipped_symlinks = 0
@@ -446,7 +451,7 @@ def _replace(
                 path=path,
                 count=replacements,
                 sources_by_destination=sources_by_destination,
-            )
+            ),
         )
     if changed == 0 and transform.required:
         if skipped_symlinks and matched_files == 0:
@@ -456,7 +461,7 @@ def _replace(
         else:
             reason = "matched no files"
         raise TransformError(
-            f"Transformation '{transform.id}' made no changes: {reason}"
+            f"Transformation '{transform.id}' made no changes: {reason}",
         )
     return _TransformResult(changed=changed, count=count, files=tuple(files))
 
@@ -470,7 +475,10 @@ def _strip_block(
 ) -> _TransformResult:
     """Remove marker-delimited blocks from matched files."""
     paths = _matching_files(
-        root=root, listing=listing, pattern=transform.path, globstar=globstar
+        root=root,
+        listing=listing,
+        pattern=transform.path,
+        globstar=globstar,
     )
     changed = 0
     total_count = 0
@@ -491,12 +499,12 @@ def _strip_block(
                 path=path,
                 count=count,
                 sources_by_destination=sources_by_destination,
-            )
+            ),
         )
     if changed == 0 and transform.required:
         if paths:
             raise TransformError(
-                f"Transformation '{transform.id}' did not find start marker"
+                f"Transformation '{transform.id}' did not find start marker",
             )
         raise TransformError(f"Transformation '{transform.id}' matched no files")
     return _TransformResult(changed=changed, count=total_count, files=tuple(files))
@@ -511,7 +519,10 @@ def _internal_lines(
 ) -> _TransformResult:
     """Remove every line containing the start marker from matched files."""
     paths = _matching_files(
-        root=root, listing=listing, pattern=transform.path, globstar=globstar
+        root=root,
+        listing=listing,
+        pattern=transform.path,
+        globstar=globstar,
     )
     changed = 0
     total_count = 0
@@ -536,7 +547,7 @@ def _internal_lines(
                 path=path,
                 count=count,
                 sources_by_destination=sources_by_destination,
-            )
+            ),
         )
     if changed == 0 and transform.required:
         if paths:
@@ -554,7 +565,10 @@ def _uncomment(
 ) -> _TransformResult:
     """Uncomment lines marked for external export."""
     paths = _matching_files(
-        root=root, listing=listing, pattern=transform.path, globstar=globstar
+        root=root,
+        listing=listing,
+        pattern=transform.path,
+        globstar=globstar,
     )
     changed = 0
     total_count = 0
@@ -575,7 +589,7 @@ def _uncomment(
                 path=path,
                 count=count,
                 sources_by_destination=sources_by_destination,
-            )
+            ),
         )
     if changed == 0 and transform.required:
         if paths:
@@ -596,7 +610,9 @@ def _uncomment_line(line: str) -> str:
 
 
 def _move(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
 ) -> _TransformResult:
     """Move or rename a file or directory within the staging tree."""
     source = root / transform.path
@@ -623,13 +639,15 @@ def _move(
                 source=sources_by_destination.get(old_rel, old_rel),
                 destination=new_rel,
                 count=1,
-            )
+            ),
         )
     return _TransformResult(changed=count, count=count, files=tuple(files))
 
 
 def _ruff_format(
-    root: Path, transform: Transform, sources_by_destination: dict[str, str]
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
 ) -> _TransformResult:
     """Run Ruff fixes and formatting inside the staged tree."""
     target = root / transform.path
@@ -659,7 +677,7 @@ def _ruff_format(
         )
     except ExportError as err:
         raise TransformError(
-            f"Transformation '{transform.id}' ruff_format failed: {err}"
+            f"Transformation '{transform.id}' ruff_format failed: {err}",
         ) from err
     after = _snapshot_regular_files(root=root, target=target)
     changed_paths = tuple(
@@ -684,7 +702,7 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
     """Remove every marker-delimited block from text."""
     if not transform.start or not transform.end:
         raise TransformError(
-            f"Transformation '{transform.id}' markers must be non-empty"
+            f"Transformation '{transform.id}' markers must be non-empty",
         )
     if transform.else_marker:
         return _strip_blocks_with_else(text, transform)
@@ -698,17 +716,17 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
         first_end_idx = updated.find(transform.end, search_from)
         if first_end_idx >= 0 and first_end_idx < start_idx:
             raise TransformError(
-                f"Transformation '{transform.id}' found end marker before start marker"
+                f"Transformation '{transform.id}' found end marker before start marker",
             )
         end_idx = updated.find(transform.end, start_idx + len(transform.start))
         if end_idx < 0:
             raise TransformError(
-                f"Transformation '{transform.id}' did not find end marker"
+                f"Transformation '{transform.id}' did not find end marker",
             )
         next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
         if 0 <= next_start_idx < end_idx:
             raise TransformError(
-                f"Transformation '{transform.id}' found nested start marker"
+                f"Transformation '{transform.id}' found nested start marker",
             )
         if transform.inclusive:
             end_idx += len(transform.end)
@@ -720,7 +738,8 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
             if not updated[line_start:start_idx].strip():
                 start_idx = line_start
             updated = _collapse_removed_block_gap(
-                updated[:start_idx], updated[end_idx:]
+                updated[:start_idx],
+                updated[end_idx:],
             )
             search_from = start_idx
         else:
@@ -752,12 +771,12 @@ def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
                     break
             if end_idx is None:
                 raise TransformError(
-                    f"Transformation '{transform.id}' did not find end marker"
+                    f"Transformation '{transform.id}' did not find end marker",
                 )
             if else_idx is None:
                 raise TransformError(
                     f"Transformation '{transform.id}' found block without "
-                    f"else marker '{transform.else_marker}'"
+                    f"else marker '{transform.else_marker}'",
                 )
             for line in lines[else_idx + 1 : end_idx]:
                 stripped = line.lstrip()
@@ -824,7 +843,11 @@ def _path_segments(rel_path: str) -> list[str]:
 
 
 def _matching_files(
-    root: Path, *, listing: tuple[str, ...], pattern: str, globstar: Globstar
+    root: Path,
+    *,
+    listing: tuple[str, ...],
+    pattern: str,
+    globstar: Globstar,
 ) -> tuple[Path, ...]:
     """Return staged files from ``listing`` matched by one supported path glob."""
     matcher = GlobSet(include=(pattern,), globstar=globstar)

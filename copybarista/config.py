@@ -379,10 +379,12 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
     _validate_moves_injective(moves)
     selection = FileSelection(
         include=tuple(
-            _glob_list(_string_list(files, "include", default=("**",)), "files.include")
+            _glob_list(
+                _string_list(files, "include", default=("**",)), "files.include"
+            ),
         ),
         exclude=tuple(
-            _glob_list(_string_list(files, "exclude", default=()), "files.exclude")
+            _glob_list(_string_list(files, "exclude", default=()), "files.exclude"),
         ),
         moves=moves,
         copy=tuple(
@@ -390,7 +392,9 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             for idx, entry in enumerate(_list(files, "copy"), start=1)
         ),
         use_default_python_excludes=_bool(
-            files, "use_default_python_excludes", default=False
+            files,
+            "use_default_python_excludes",
+            default=False,
         ),
         write=tuple(
             _parse_file_write(idx=idx, raw_write=entry)
@@ -450,7 +454,7 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             "[destination.git]",
             f"url = {_toml_string(config.git.url)}",
             f"branch = {_toml_string(config.git.branch)}",
-        ]
+        ],
     )
     if config.git.committer_name:
         lines.append(f"committer_name = {_toml_string(config.git.committer_name)}")
@@ -462,7 +466,7 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             "[files]",
             f"include = {_toml_list(config.files.include)}",
             f"exclude = {_toml_list(config.files.exclude)}",
-        ]
+        ],
     )
     if config.files.use_default_python_excludes:
         lines.append("use_default_python_excludes = true")
@@ -515,7 +519,7 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             lines.append(f"after = {_toml_string(transform.after)}")
             if transform.reverse_before or transform.reverse_after:
                 lines.append(
-                    f"reverse_before = {_toml_string(transform.reverse_before)}"
+                    f"reverse_before = {_toml_string(transform.reverse_before)}",
                 )
                 lines.append(f"reverse_after = {_toml_string(transform.reverse_after)}")
             if not transform.reversible:
@@ -582,7 +586,7 @@ def _parse_forbidden_text_rule(idx: int, raw_rule: object) -> ForbiddenTextRule:
         re.compile(pattern)
     except re.error as err:
         raise ConfigError(
-            f"Invalid leak_check.forbidden_text regex: {pattern}"
+            f"Invalid leak_check.forbidden_text regex: {pattern}",
         ) from err
     return ForbiddenTextRule(
         id=_string(raw_rule, "id", default=f"forbidden-text-{idx}"),
@@ -591,13 +595,13 @@ def _parse_forbidden_text_rule(idx: int, raw_rule: object) -> ForbiddenTextRule:
             _glob_list(
                 _string_list(raw_rule, "paths", default=("**",)),
                 "leak_check.forbidden_text.paths",
-            )
+            ),
         ),
         exclude=tuple(
             _glob_list(
                 _string_list(raw_rule, "exclude", default=()),
                 "leak_check.forbidden_text.exclude",
-            )
+            ),
         ),
         message=_string(raw_rule, "message", default=""),
     )
@@ -617,7 +621,7 @@ def _parse_forbidden_path_rule(idx: int, raw_rule: object) -> ForbiddenPathRule:
         _glob_list(
             _string_list(raw_rule, "paths", default=()),
             "leak_check.forbidden_path.paths",
-        )
+        ),
     )
     if not paths:
         raise ConfigError("leak_check.forbidden_path paths must be non-empty")
@@ -646,7 +650,8 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
     )
     source = _relative_path(_string(raw_copy, "source"), "files.copy.source")
     destination = _relative_path(
-        _string(raw_copy, "destination"), "files.copy.destination"
+        _string(raw_copy, "destination"),
+        "files.copy.destination",
     )
     if not source:
         raise ConfigError("files.copy source must be non-empty")
@@ -659,16 +664,18 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
             _glob_list(
                 _string_list(raw_copy, "include", default=("**",)),
                 "files.copy.include",
-            )
+            ),
         ),
         exclude=tuple(
             _glob_list(
                 _string_list(raw_copy, "exclude", default=()),
                 "files.copy.exclude",
-            )
+            ),
         ),
         use_default_python_excludes=_bool(
-            raw_copy, "use_default_python_excludes", default=False
+            raw_copy,
+            "use_default_python_excludes",
+            default=False,
         ),
     )
 
@@ -695,7 +702,7 @@ def _parse_file_move(idx: int, raw_move: object) -> FileMove:
         # about.
         raise ConfigError(
             f"files.moves[{idx}] path and destination are equal ({path!r});"
-            " a move that relocates nothing is not allowed"
+            " a move that relocates nothing is not allowed",
         )
     return FileMove(path=path, destination=destination)
 
@@ -715,7 +722,7 @@ def _validate_moves_injective(moves: tuple[FileMove, ...]) -> None:
             raise ConfigError(
                 f"files.moves destination {move.destination!r} is claimed by two"
                 f" moves ({prior!r} and {move.path!r}); a non-injective move"
-                " sequence cannot be reversed on import"
+                " sequence cannot be reversed on import",
             )
         seen[move.destination] = move.path
 
@@ -750,7 +757,7 @@ def _parse_regex_groups(
             re.compile(pattern)
         except re.error as err:
             raise ConfigError(
-                f"replace regex_groups.{name} is not valid regex: {pattern}"
+                f"replace regex_groups.{name} is not valid regex: {pattern}",
             ) from err
         groups.append((name, pattern))
     return tuple(groups)
@@ -819,7 +826,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         reverse_after = _string(raw_transform, "reverse_after", default="")
         if bool(reverse_before) != bool(reverse_after):
             raise ConfigError(
-                "replace reverse_before and reverse_after must be set together"
+                "replace reverse_before and reverse_after must be set together",
             )
         if "reverse_before" in raw_transform and not reverse_before:
             raise ConfigError("replace reverse_before must be non-empty")
@@ -827,7 +834,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
         if regex_groups and (reverse_before or reverse_after):
             raise ConfigError(
                 "replace regex_groups and reverse_before/reverse_after are "
-                "mutually exclusive"
+                "mutually exclusive",
             )
         after = _string(raw_transform, "after")
         # Run the interpolation cross-checks (undefined names, unused groups,
@@ -848,7 +855,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             except ConfigError as err:
                 raise ConfigError(
                     f"replace is not reversible: {err}. Set reversible = false "
-                    "to declare it forward-only."
+                    "to declare it forward-only.",
                 ) from err
         return Transform(
             id=transform_id,
@@ -1001,7 +1008,7 @@ def _globstar(value: str) -> Globstar:
     if value == "one_or_more":
         return "one_or_more"
     raise ConfigError(
-        f"workflow.globstar must be 'zero_or_more' or 'one_or_more', got {value!r}"
+        f"workflow.globstar must be 'zero_or_more' or 'one_or_more', got {value!r}",
     )
 
 

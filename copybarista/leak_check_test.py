@@ -21,7 +21,8 @@ from copybarista.leak_check import (
 def test_check_leaks_reports_forbidden_paths_and_text(tmp_path: Path):
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "module.py").write_text(
-        "from internal_pkg.lib import json\n", encoding="utf-8"
+        "from internal_pkg.lib import json\n",
+        encoding="utf-8",
     )
     (tmp_path / "private").mkdir()
     (tmp_path / "private" / "notes.md").write_text("secret\n", encoding="utf-8")

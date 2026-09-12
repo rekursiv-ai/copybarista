@@ -126,7 +126,7 @@ def test_rejects_move_with_empty_destination_and_nonempty_path():
         [[files.moves]]
         path = "sub"
         destination = ""
-        """
+        """,
     )
     with pytest.raises(ConfigError, match="destination"):
         parse_config(raw)
@@ -147,7 +147,7 @@ def test_rejects_move_with_empty_path_and_empty_destination():
         [[files.moves]]
         path = ""
         destination = ""
-        """
+        """,
     )
     with pytest.raises(ConfigError, match="destination"):
         parse_config(raw)
@@ -172,7 +172,7 @@ def test_rejects_identity_move():
         [[files.moves]]
         path = "docs"
         destination = "docs"
-        """
+        """,
     )
     with pytest.raises(ConfigError, match="relocate"):
         parse_config(raw)
@@ -207,7 +207,7 @@ def test_rejects_non_injective_move_sequence():
         [[files.moves]]
         path = "pub/b"
         destination = "z"
-        """
+        """,
     )
     with pytest.raises(ConfigError, match="destination"):
         parse_config(raw)
@@ -235,7 +235,7 @@ def test_rejects_replace_after_interpolating_group_absent_from_before():
         before = "loop.${s}"
         after = "pkg.${t}"
         regex_groups = { s = "[a-z]+", t = "[a-z]+" }
-        """
+        """,
     )
     with pytest.raises(ConfigError, match="before"):
         parse_config(raw)
@@ -823,7 +823,7 @@ def test_parses_and_round_trips_regex_groups(tmp_path: Path):
             'before = "internal.pkg.${s}"\n'
             'after = "pkg.${s}"\n'
             'regex_groups = { s = "[A-Za-z_]" }\n'
-            "required = false\n"
+            "required = false\n",
         ),
         encoding="utf-8",
     )
@@ -852,7 +852,7 @@ def test_rejects_reversible_regex_groups_whose_reverse_cannot_compile(
         _regex_groups_config(
             'before = "start${block}end"\n'
             'after = ""\n'
-            'regex_groups = { block = "[a-z]*" }\n'
+            'regex_groups = { block = "[a-z]*" }\n',
         ),
         encoding="utf-8",
     )
@@ -869,7 +869,7 @@ def test_accepts_forward_only_regex_groups_replace(tmp_path: Path):
             'before = "start${block}end"\n'
             'after = ""\n'
             'regex_groups = { block = "[a-z]*" }\n'
-            "reversible = false\n"
+            "reversible = false\n",
         ),
         encoding="utf-8",
     )
@@ -883,7 +883,7 @@ def test_rejects_invalid_regex_groups_pattern(tmp_path: Path):
         _regex_groups_config(
             'before = "internal.pkg.${s}"\n'
             'after = "pkg.${s}"\n'
-            'regex_groups = { s = "[unterminated" }\n'
+            'regex_groups = { s = "[unterminated" }\n',
         ),
         encoding="utf-8",
     )
@@ -896,7 +896,7 @@ def test_rejects_non_string_regex_groups_pattern(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         _regex_groups_config(
-            'before = "internal.pkg.${s}"\nafter = "pkg.${s}"\nregex_groups = { s = 7 }\n'
+            'before = "internal.pkg.${s}"\nafter = "pkg.${s}"\nregex_groups = { s = 7 }\n',
         ),
         encoding="utf-8",
     )
@@ -913,7 +913,7 @@ def test_rejects_regex_groups_with_explicit_reversal(tmp_path: Path):
             'after = "pkg.${s}"\n'
             'regex_groups = { s = "[A-Za-z_]" }\n'
             'reverse_before = "pkg"\n'
-            'reverse_after = "internal.pkg"\n'
+            'reverse_after = "internal.pkg"\n',
         ),
         encoding="utf-8",
     )

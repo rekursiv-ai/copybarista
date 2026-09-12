@@ -53,7 +53,7 @@ def test_import_public_edit_maps_to_source_root_and_reverses_replace(
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert [
@@ -63,10 +63,10 @@ def test_import_public_edit_maps_to_source_root_and_reverses_replace(
             "pkg/module.py",
             "internal/demo/pkg/module.py",
             "modified",
-        )
+        ),
     ]
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == ("from internal.demo import api\nVALUE = 'head'\n")
 
 
@@ -96,7 +96,7 @@ def test_import_no_verify_ignores_vcs_metadata_changes(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             verify=False,
-        )
+        ),
     )
 
     assert result.changes == ()
@@ -119,7 +119,7 @@ def test_import_root_source_root_keeps_paths_relative(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert result.changes[0].source == "pkg/module.py"
@@ -144,13 +144,13 @@ def test_import_strips_destination_prefix_before_mapping(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert result.changes[0].public == "demo/pkg/module.py"
     assert result.changes[0].source == "internal/demo/pkg/module.py"
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "from internal.demo import api\nVALUE = 'prefixed'\n"
 
 
@@ -483,14 +483,14 @@ def test_import_public_edit_maps_moved_path_to_original_source(tmp_path: Path):
             public_head=public_head,
             source_base=source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert [(change.public, change.source) for change in result.changes] == [
-        ("pkg/__init__.py", "internal/demo/_stubs/pkg/__init__.py")
+        ("pkg/__init__.py", "internal/demo/_stubs/pkg/__init__.py"),
     ]
     assert (destination / "internal/demo/_stubs/pkg/__init__.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "VALUE = 'head'\n"
     assert not (destination / "internal/demo/pkg/__init__.py").exists()
 
@@ -511,7 +511,7 @@ def test_import_created_and_deleted_files(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert [(change.public, change.action) for change in result.changes] == [
@@ -525,7 +525,8 @@ def test_import_created_and_deleted_files(tmp_path: Path):
 
 
 def test_import_rolls_back_when_final_verification_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     paths = _fixture(tmp_path)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
@@ -550,11 +551,11 @@ def test_import_rolls_back_when_final_verification_fails(
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=destination,
-            )
+            ),
         )
 
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == original
 
 
@@ -579,7 +580,7 @@ def test_import_rejects_symlink_ancestor_in_destination(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=destination,
-            )
+            ),
         )
 
     assert not (escape / "pkg/module.py").exists()
@@ -598,7 +599,7 @@ def test_import_rejects_vcs_metadata_destination(tmp_path: Path):
                 public_head=paths.public_base,
                 source_base=paths.source_base,
                 destination=destination,
-            )
+            ),
         )
 
 
@@ -619,7 +620,7 @@ def test_import_rejects_ambiguous_added_exported_text(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -652,7 +653,7 @@ def test_import_rejects_source_base_with_natural_exported_text(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -708,11 +709,11 @@ def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             verify=False,
-        )
+        ),
     )
 
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == (
         "from internal.demo import api\n"
         "MESSAGE = 'from copybarista.public still appears naturally'\n"
@@ -799,7 +800,8 @@ def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     # The source tree's ruff config drives isort grouping; enable it so the
     # post-import reformat re-sorts under the source namespace.
     (destination / "pyproject.toml").write_text(
-        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+        '[tool.ruff.lint]\nselect = ["I"]\n',
+        encoding="utf-8",
     )
     import_change_request(
         ImportRequest(
@@ -809,21 +811,22 @@ def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             verify=False,
-        )
+        ),
     )
 
     written = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
     # The reversed imports must be re-sorted into source-namespace order
     # (providers before lib), not left in public order (lib before providers).
     assert written.index("from deep.pkg.providers") < written.index(
-        "from shallow.lib"
+        "from shallow.lib",
     ), f"imports left unsorted under source namespace:\n{written}"
 
     # Same invariant must hold on the merge-import path, which writes through a
     # separate three-way-merge branch.
     merge_dest = _copy_tree(source_base, tmp_path / "merge-destination")
     (merge_dest / "pyproject.toml").write_text(
-        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+        '[tool.ruff.lint]\nselect = ["I"]\n',
+        encoding="utf-8",
     )
     import_change_request(
         ImportRequest(
@@ -834,7 +837,7 @@ def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
             destination=merge_dest,
             merge_import=True,
             verify=False,
-        )
+        ),
     )
     merged = (merge_dest / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
     assert merged.index("from deep.pkg.providers") < merged.index("from shallow.lib"), (
@@ -872,7 +875,8 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     (public_base / "pkg/module.py").write_text(public_body, encoding="utf-8")
     public_head = _copy_tree(public_base, tmp_path / "public-head")
     (public_head / "pkg/module.py").write_text(
-        public_body + "EXTRA = 1\n", encoding="utf-8"
+        public_body + "EXTRA = 1\n",
+        encoding="utf-8",
     )
     config = tmp_path / "copy.barista.toml"
     config.write_text(
@@ -905,7 +909,8 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     )
     destination = _copy_tree(source_base, tmp_path / "destination")
     (destination / "pyproject.toml").write_text(
-        '[tool.ruff.lint]\nselect = ["I"]\n', encoding="utf-8"
+        '[tool.ruff.lint]\nselect = ["I"]\n',
+        encoding="utf-8",
     )
 
     import_change_request(
@@ -916,12 +921,12 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             verify=False,
-        )
+        ),
     )
 
     written = (destination / "internal/demo/pkg/module.py").read_text(encoding="utf-8")
     assert written.index("from deep.pkg.providers") < written.index(
-        "from shallow.lib"
+        "from shallow.lib",
     ), f"whole-tree ruff_format did not reformat imported file:\n{written}"
 
 
@@ -947,7 +952,9 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     ],
 )
 def test_ruff_format_matches_treats_path_as_subtree(
-    ruff_path: str, public_path: str, expected: bool
+    ruff_path: str,
+    public_path: str,
+    expected: bool,
 ) -> None:
     """``ruff_format`` path matching mirrors the forward whole-subtree format.
 
@@ -957,7 +964,11 @@ def test_ruff_format_matches_treats_path_as_subtree(
     reformat for every file under a non-``"."`` target.
     """
     transform = Transform(
-        id="fmt", type="ruff_format", path=ruff_path, required=False, reversible=True
+        id="fmt",
+        type="ruff_format",
+        path=ruff_path,
+        required=False,
+        reversible=True,
     )
     assert _ruff_format_matches(transform, public_path) is expected
 
@@ -1003,7 +1014,7 @@ def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -1020,11 +1031,11 @@ def test_import_allows_relative_symlink_staying_inside(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     assert [(change.public, change.action) for change in result.changes] == [
-        ("pkg/readme", "created")
+        ("pkg/readme", "created"),
     ]
     assert (destination / "internal/demo/pkg/readme").is_symlink()
 
@@ -1042,7 +1053,7 @@ def test_import_rejects_relative_symlink_escaping_public_tree(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -1059,7 +1070,7 @@ def test_import_rejects_excluded_public_path(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -1086,7 +1097,7 @@ def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=destination,
-        )
+        ),
     )
 
     # The imported README carries the public edit AND the source-only block.
@@ -1121,7 +1132,11 @@ def _internal_lines_config(tmp_path: Path) -> Path:
 
 
 def _run_internal_lines_import(
-    *, tmp_path: Path, config: Path, source_module: str, public_head_module: str
+    *,
+    tmp_path: Path,
+    config: Path,
+    source_module: str,
+    public_head_module: str,
 ) -> Path:
     """Export the source, apply the public edit, import it back, return the dest file."""
     transform = load_config(config).transforms[0]
@@ -1131,7 +1146,8 @@ def _run_internal_lines_import(
     public_base = tmp_path / "public-base"
     (public_base / "pkg").mkdir(parents=True)
     (public_base / "pkg/m.py").write_text(
-        strip_source_text(source_module, transform), encoding="utf-8"
+        strip_source_text(source_module, transform),
+        encoding="utf-8",
     )
     public_head = tmp_path / "public-head"
     (public_head / "pkg").mkdir(parents=True)
@@ -1145,7 +1161,7 @@ def _run_internal_lines_import(
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
     return destination / "internal/demo/pkg/m.py"
 
@@ -1367,7 +1383,7 @@ def test_merge_import_leaves_unedited_lines_alone(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -1434,7 +1450,7 @@ def test_merge_import_preserves_unedited_lines_when_export_reorders(tmp_path: Pa
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -1445,7 +1461,8 @@ def test_merge_import_preserves_unedited_lines_when_export_reorders(tmp_path: Pa
 
 
 def test_successful_import_leaves_no_backup_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """The rollback snapshot must be removed when the import succeeds.
 
@@ -1456,7 +1473,8 @@ def test_successful_import_leaves_no_backup_tree(
     paths = _fixture(tmp_path)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
     (public_head / "pkg/module.py").write_text(
-        "from copybarista.public import api\nVALUE = 2\n", encoding="utf-8"
+        "from copybarista.public import api\nVALUE = 2\n",
+        encoding="utf-8",
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     # Private temp root: globbing the shared one counts a concurrent xdist
@@ -1473,7 +1491,7 @@ def test_successful_import_leaves_no_backup_tree(
             source_base=paths.source_base,
             destination=destination,
             verify=False,
-        )
+        ),
     )
 
     assert not list(scratch.glob("copybarista-import-backup-*"))
@@ -1567,7 +1585,8 @@ def test_recomment_keeps_markers_when_another_line_also_changed(tmp_path: Path):
     transform = loaded.transforms[0]
     exported, _count = uncomment_source_text(source_module, transform)
     edited = exported.replace("PUBLIC_ONLY = 1", "PUBLIC_ONLY = 2").replace(
-        "HEADER = 1", "HEADER = 7"
+        "HEADER = 1",
+        "HEADER = 7",
     )
 
     source_base = tmp_path / "source-base"
@@ -1584,7 +1603,9 @@ def test_recomment_keeps_markers_when_another_line_also_changed(tmp_path: Path):
     )
 
     reversed_text = importer._recomment_source_blocks(
-        public_path="pkg/m.py", transform=transform, content=edited.encode()
+        public_path="pkg/m.py",
+        transform=transform,
+        content=edited.encode(),
     ).decode()
 
     assert "# copybarista:external:start" in reversed_text
@@ -1645,7 +1666,9 @@ def test_uncomment_reverse_anchors_block_to_its_own_line(tmp_path: Path):
         merge_import=True,
     )
     reversed_bytes = importer._recomment_source_blocks(
-        public_path="pkg/m.py", transform=transform, content=exported.encode()
+        public_path="pkg/m.py",
+        transform=transform,
+        content=exported.encode(),
     )
 
     assert reversed_bytes.decode() == source_module
@@ -1707,7 +1730,7 @@ def test_merge_import_recomments_edited_uncomment_block(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -1773,7 +1796,7 @@ def test_merge_import_restores_uncomment_block(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -1846,7 +1869,7 @@ def test_merge_import_reverses_else_block_with_public_edit_below(tmp_path: Path)
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -1934,7 +1957,7 @@ def test_merge_import_reconciles_public_rewrite_of_stripped_region_context(
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/pkg/m.py").read_text(encoding="utf-8")
@@ -2036,7 +2059,9 @@ def test_splice_source_only_regions_reinserts_and_round_trips(
     exported = strip_source_text(source, transform)
     public = exported.replace(edit_from, edit_to)
     reversed_text = _splice_source_only_regions(
-        source_text=source, public_text=public, transform=transform
+        source_text=source,
+        public_text=public,
+        transform=transform,
     )
     assert strip_source_text(reversed_text, transform) == public
 
@@ -2065,7 +2090,9 @@ def test_anchor_preserves_source_order_of_multiple_runs():
     public = "X\ntail\n"
 
     out = _anchor_source_only_regions(
-        source_text=source, public_text=public, transform=_INTERNAL_LINES
+        source_text=source,
+        public_text=public,
+        transform=_INTERNAL_LINES,
     )
     assert out is not None
     assert strip_source_text(out, _INTERNAL_LINES) == public
@@ -2086,7 +2113,9 @@ def test_anchor_rejects_non_monotonic_public_reorder():
     public = "t1\nt2\nh1\nh2\n"  # Blocks reordered.
 
     out = _anchor_source_only_regions(
-        source_text=source, public_text=public, transform=_INTERNAL_LINES
+        source_text=source,
+        public_text=public,
+        transform=_INTERNAL_LINES,
     )
     # The run's slot did not survive as a contiguous region -> reject.
     assert out is None
@@ -2104,7 +2133,9 @@ def test_anchor_places_trailing_run_after_rewritten_neighbor():
     public = "keep_top\nreal = 2\n"  # 'real' rewritten.
 
     out = _anchor_source_only_regions(
-        source_text=source, public_text=public, transform=_INTERNAL_LINES
+        source_text=source,
+        public_text=public,
+        transform=_INTERNAL_LINES,
     )
     assert out is not None
     assert strip_source_text(out, _INTERNAL_LINES) == public
@@ -2180,7 +2211,7 @@ def test_import_allows_strip_block_glob_match_without_block(tmp_path: Path):
             public_head=public_head,
             source_base=paths.source_base,
             destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-        )
+        ),
     )
 
 
@@ -2197,7 +2228,7 @@ def test_import_rejects_public_base_mismatch(tmp_path: Path):
                 public_head=paths.public_base,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -2230,7 +2261,8 @@ def test_path_mapper_rejects_excluded_path(tmp_path: Path):
 
 
 def test_cli_import_change_writes_json_report(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     paths = _fixture(tmp_path)
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
@@ -2253,7 +2285,7 @@ def test_cli_import_change_writes_json_report(
             "--destination",
             str(destination),
             "--json",
-        ]
+        ],
     )
 
     data = json.loads(capsys.readouterr().out)
@@ -2262,7 +2294,8 @@ def test_cli_import_change_writes_json_report(
 
 
 def test_cli_import_change_mismatch_exits_three(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     paths = _fixture(tmp_path)
     bad_base = _copy_tree(paths.public_base, tmp_path / "bad-public-base")
@@ -2280,7 +2313,7 @@ def test_cli_import_change_mismatch_exits_three(
             str(paths.source_base),
             "--destination",
             str(_copy_tree(paths.source_base, tmp_path / "destination")),
-        ]
+        ],
     )
 
     assert code == 3
@@ -2288,7 +2321,8 @@ def test_cli_import_change_mismatch_exits_three(
 
 
 def test_cli_import_change_no_verify_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     paths = _fixture(tmp_path)
 
@@ -2305,7 +2339,7 @@ def test_cli_import_change_no_verify_warns(
             "--destination",
             str(_copy_tree(paths.source_base, tmp_path / "destination")),
             "--no-verify",
-        ]
+        ],
     )
 
     assert "--no-verify disables" in capsys.readouterr().err
@@ -2350,7 +2384,7 @@ def test_merge_import_matches_strict_when_source_has_no_drift(tmp_path: Path):
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=merge_import,
-            )
+            ),
         )
         return destination
 
@@ -2382,7 +2416,7 @@ def test_strict_import_rejects_source_ahead_of_public_base(tmp_path: Path):
                 public_head=public_head,
                 source_base=paths.source_base,
                 destination=_copy_tree(paths.source_base, tmp_path / "destination"),
-            )
+            ),
         )
 
 
@@ -2409,12 +2443,12 @@ def test_merge_import_skips_change_already_applied_in_source(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.outcome for change in result.changes] == ["skipped"]
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "from internal.demo import api\nVALUE = 'head'\n"
 
 
@@ -2449,12 +2483,12 @@ def test_merge_import_three_way_merges_independent_drift(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.outcome for change in result.changes] == ["merged"]
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == (
         "from internal.demo import api\nVALUE = 'head'\n\n\ndef helper():\n    pass\n"
         "\n\ndef local_only():\n    return 1\n"
@@ -2491,13 +2525,15 @@ def test_merge_import_replaces_symlink_target_without_writing_through(
     public_head = _copy_tree(public_base, tmp_path / "public-head")
     (public_head / "pkg/module.py").write_text(
         _numbered_module(first="L0 = 'head'").replace(
-            "from internal.demo", "from copybarista.public"
+            "from internal.demo",
+            "from copybarista.public",
         ),
         encoding="utf-8",
     )
     # Source drifts the bottom line; head drifts the top line -> clean merge.
     (paths.source_base / "internal/demo/pkg/module.py").write_text(
-        _numbered_module(last="L19 = 'srcdrift'"), encoding="utf-8"
+        _numbered_module(last="L19 = 'srcdrift'"),
+        encoding="utf-8",
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     # Destination drift: the imported module became an in-tree symlink.
@@ -2515,7 +2551,7 @@ def test_merge_import_replaces_symlink_target_without_writing_through(
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.outcome for change in result.changes] == ["merged"]
@@ -2546,7 +2582,8 @@ def test_merge_import_type_change_matches_strict(tmp_path: Path):
 
     def run(*, merge_import: bool) -> Path:
         destination = _copy_tree(
-            paths.source_base, tmp_path / ("merge" if merge_import else "strict")
+            paths.source_base,
+            tmp_path / ("merge" if merge_import else "strict"),
         )
         import_change_request(
             ImportRequest(
@@ -2556,7 +2593,7 @@ def test_merge_import_type_change_matches_strict(tmp_path: Path):
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=merge_import,
-            )
+            ),
         )
         return destination
 
@@ -2603,12 +2640,12 @@ def test_merge_import_regex_groups_reverse_only_rewrites_module_tokens(
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.outcome for change in result.changes] == ["merged"]
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == (
         "from acme.internal.widget import api\n"
         "HEAD = 1\n"
@@ -2701,11 +2738,11 @@ def test_import_overlapping_namespace_transforms_do_not_double_prefix(
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == (
         "from loop.acme.errors import FetchError\n"
         "from loop.acme.fetch import fetch\n"
@@ -2780,7 +2817,9 @@ def _regex_groups_fixture(tmp_path: Path) -> _FixturePaths:
         encoding="utf-8",
     )
     return _FixturePaths(
-        config=config, public_base=public_base, source_base=source_base
+        config=config,
+        public_base=public_base,
+        source_base=source_base,
     )
 
 
@@ -2809,12 +2848,12 @@ def test_merge_import_reports_conflicting_drift(tmp_path: Path):
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=True,
-            )
+            ),
         )
 
     assert "conflict" in str(excinfo.value).lower()
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == original
 
 
@@ -2851,7 +2890,7 @@ def test_merge_import_preserves_executable_bit_on_merged_file(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.outcome for change in result.changes] == ["merged"]
@@ -2891,7 +2930,7 @@ def test_merge_import_rolls_back_earlier_merge_on_later_conflict(tmp_path: Path)
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     clean_before = (destination / "internal/demo/pkg/clean.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
     with pytest.raises(ImportRequestError, match="conflict"):
@@ -2903,16 +2942,17 @@ def test_merge_import_rolls_back_earlier_merge_on_later_conflict(tmp_path: Path)
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=True,
-            )
+            ),
         )
 
     assert (destination / "internal/demo/pkg/clean.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == clean_before
 
 
 def test_merge_import_does_not_write_or_reformat_conflict_markers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """A conflicting merge never writes marker bytes or reformats them.
 
@@ -2921,12 +2961,14 @@ def test_merge_import_does_not_write_or_reformat_conflict_markers(
     """
     paths = _fixture(tmp_path)
     (paths.source_base / "internal/demo/pkg/module.py").write_text(
-        "from internal.demo import api\nVALUE = 'local'\n", encoding="utf-8"
+        "from internal.demo import api\nVALUE = 'local'\n",
+        encoding="utf-8",
     )
     public_base = _copy_tree(paths.public_base, tmp_path / "public-base-merge")
     public_head = _copy_tree(public_base, tmp_path / "public-head")
     (public_head / "pkg/module.py").write_text(
-        "from copybarista.public import api\nVALUE = 'head'\n", encoding="utf-8"
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     module = destination / "internal/demo/pkg/module.py"
@@ -2937,7 +2979,9 @@ def test_merge_import_does_not_write_or_reformat_conflict_markers(
         raise AssertionError("reformat must not run on a conflicting merge")
 
     monkeypatch.setattr(
-        ChangeRequestImporter, "_reformat_imported_source", fail_reformat
+        ChangeRequestImporter,
+        "_reformat_imported_source",
+        fail_reformat,
     )
 
     with pytest.raises(ImportRequestError, match="conflict"):
@@ -2949,7 +2993,7 @@ def test_merge_import_does_not_write_or_reformat_conflict_markers(
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=True,
-            )
+            ),
         )
 
     body = module.read_text(encoding="utf-8")
@@ -2976,7 +3020,7 @@ def test_merge_import_propagates_delete_despite_source_drift(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.action for change in result.changes] == ["deleted"]
@@ -2987,7 +3031,7 @@ def test_merge_import_raises_on_binary_conflict(tmp_path: Path):
     """A drifted binary file that cannot be diff3-merged raises, not corrupts."""
     paths = _fixture(tmp_path, with_transform=False)
     (paths.source_base / "internal/demo/pkg/module.py").write_bytes(
-        b"\x00\x01LOCAL\x02\x03\n"
+        b"\x00\x01LOCAL\x02\x03\n",
     )
     public_base = _copy_tree(paths.public_base, tmp_path / "public-base-bin")
     (public_base / "pkg/module.py").write_bytes(b"\x00\x01BASE\x02\x03\n")
@@ -3005,7 +3049,7 @@ def test_merge_import_raises_on_binary_conflict(tmp_path: Path):
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=True,
-            )
+            ),
         )
 
     assert (destination / "internal/demo/pkg/module.py").read_bytes() == original
@@ -3025,7 +3069,10 @@ def test_merge_import_raises_on_binary_conflict(tmp_path: Path):
     ],
 )
 def test_three_way_merge_byte_matches_diff3(
-    current: bytes, base: bytes, incoming: bytes, tmp_path: Path
+    current: bytes,
+    base: bytes,
+    incoming: bytes,
+    tmp_path: Path,
 ) -> None:
     """``_three_way_merge`` reproduces ``diff3 -m`` byte-for-byte.
 
@@ -3200,7 +3247,7 @@ def test_merge_import_strip_block_reexports_to_public_head(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     imported = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
@@ -3227,7 +3274,8 @@ def test_reinsert_gate_rejects_public_edit_that_disturbs_stripped_region(
     # with no matching end marker: re-inserting the source block then re-stripping
     # cannot reproduce this public text.
     (public_head / "README.md").write_text(
-        "public edit <!-- internal:start --> oops\n", encoding="utf-8"
+        "public edit <!-- internal:start --> oops\n",
+        encoding="utf-8",
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
     original = (destination / "internal/demo/README.md").read_text(encoding="utf-8")
@@ -3241,12 +3289,12 @@ def test_reinsert_gate_rejects_public_edit_that_disturbs_stripped_region(
                 source_base=paths.source_base,
                 destination=destination,
                 merge_import=True,
-            )
+            ),
         )
 
     # On failure the destination must be rolled back, never left drifted.
     assert (destination / "internal/demo/README.md").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == original
 
 
@@ -3266,14 +3314,16 @@ def _unmapped_fixture(tmp_path: Path) -> _FixturePaths:
     source_base = tmp_path / "source-base"
     (source_base / "internal/demo/pkg").mkdir(parents=True)
     (source_base / "internal/demo/pkg/module.py").write_text(
-        "VALUE = 'base'\n", encoding="utf-8"
+        "VALUE = 'base'\n",
+        encoding="utf-8",
     )
     public_base = tmp_path / "public-base"
     (public_base / "pub/pkg").mkdir(parents=True)
     (public_base / "pub/pkg/module.py").write_text("VALUE = 'base'\n", encoding="utf-8")
     (public_base / "typings/brotli").mkdir(parents=True)
     (public_base / "typings/brotli/__init__.pyi").write_text(
-        "MODE_GENERIC: int\n", encoding="utf-8"
+        "MODE_GENERIC: int\n",
+        encoding="utf-8",
     )
     config = tmp_path / "copy.barista.toml"
     config.write_text(
@@ -3339,14 +3389,14 @@ def test_merge_import_propagates_delete_of_unmapped_path(tmp_path: Path):
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     # The deletion targets a path absent from source: a no-op that must not raise
     # and must leave the source tree untouched.
     assert [change.action for change in result.changes] == ["deleted"]
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "VALUE = 'base'\n"
 
 
@@ -3437,7 +3487,8 @@ def test_merge_import_propagates_delete_of_excluded_path(tmp_path: Path):
     source_base = tmp_path / "source-base"
     (source_base / "internal/demo/pkg").mkdir(parents=True)
     (source_base / "internal/demo/pkg/module.py").write_text(
-        "VALUE = 'base'\n", encoding="utf-8"
+        "VALUE = 'base'\n",
+        encoding="utf-8",
     )
     destination = _copy_tree(source_base, tmp_path / "destination")
 
@@ -3449,13 +3500,13 @@ def test_merge_import_propagates_delete_of_excluded_path(tmp_path: Path):
             source_base=source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert [change.action for change in result.changes] == ["deleted"]
     # The source tree is untouched: the excluded deletion targets an absent path.
     assert (destination / "internal/demo/pkg/module.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "VALUE = 'base'\n"
 
 
@@ -3469,11 +3520,13 @@ def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path
     # Source carries the unmapped path too (it is shipped, just unmapped by config).
     (paths.source_base / "typings/brotli").mkdir(parents=True)
     (paths.source_base / "typings/brotli/__init__.pyi").write_text(
-        "MODE_GENERIC: int\n", encoding="utf-8"
+        "MODE_GENERIC: int\n",
+        encoding="utf-8",
     )
     public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
     (public_head / "typings/brotli/__init__.pyi").write_text(
-        "MODE_GENERIC: int\nMODE_TEXT: int\n", encoding="utf-8"
+        "MODE_GENERIC: int\nMODE_TEXT: int\n",
+        encoding="utf-8",
     )
     destination = _copy_tree(paths.source_base, tmp_path / "destination")
 
@@ -3485,11 +3538,11 @@ def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path
             source_base=paths.source_base,
             destination=destination,
             merge_import=True,
-        )
+        ),
     )
 
     assert (destination / "typings/brotli/__init__.pyi").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "MODE_GENERIC: int\nMODE_TEXT: int\n"
 
 

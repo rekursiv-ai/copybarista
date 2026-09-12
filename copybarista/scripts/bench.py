@@ -207,7 +207,7 @@ def _print_text_report(report: BenchmarkReport) -> None:
         f"runs={_format_runs(report.copybarista.runs)} "
         f"files={report.copybarista.file_count} "
         f"bytes={report.copybarista.byte_count}\n"
-        f"copybarista phases: {_format_phases(report.copybarista.phase_medians_sec)}\n"
+        f"copybarista phases: {_format_phases(report.copybarista.phase_medians_sec)}\n",
     )
 
 

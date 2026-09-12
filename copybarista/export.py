@@ -41,7 +41,7 @@ def export_folder(
     with tempfile.TemporaryDirectory(prefix="copybarista-") as tmp:
         staging = Path(tmp) / "staging"
         staged_tree = WorkflowRunner(config=config, source_ref=source_ref).stage(
-            staging
+            staging,
         )
         write_folder_destination(
             staged_tree,

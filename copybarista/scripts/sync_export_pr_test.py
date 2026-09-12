@@ -129,7 +129,7 @@ def test_main_accepts_generic_project_validation_args(
             "tests",
             "--smoke-import",
             "configgle",
-        ]
+        ],
     )
 
     assert captured[0].project_path == Path("packages/configgle")
@@ -155,14 +155,15 @@ def test_main_accepts_dry_run(
             "--source-branch",
             "main",
             "--dry-run",
-        ]
+        ],
     )
 
     assert captured[0].dry_run
 
 
 def test_main_derives_request_from_project_positional(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     project_dir, source_dir = _project_with_sync_settings(tmp_path)
     captured: list[ExportRequest] = []
@@ -194,7 +195,8 @@ def test_main_derives_request_from_project_positional(
 
 
 def test_main_explicit_flag_overrides_sync_setting(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     project_dir, source_dir = _project_with_sync_settings(tmp_path)
     captured: list[ExportRequest] = []
@@ -261,7 +263,7 @@ def test_main_accepts_auto_merge_value_arg(
             "--source-branch",
             "main",
             "--auto-merge=false",
-        ]
+        ],
     )
 
     assert not captured[0].auto_merge
@@ -284,7 +286,7 @@ def test_main_accepts_auto_merge_as_boolean_flag(
             "--source-branch",
             "main",
             "--auto-merge",
-        ]
+        ],
     )
 
     assert captured[0].auto_merge
@@ -311,7 +313,7 @@ def test_main_passes_github_source_message(
             "--source-branch",
             "main",
             "--use-source-message-pr-text",
-        ]
+        ],
     )
 
     assert captured[0].pr_title == "Commit title"
@@ -351,7 +353,7 @@ def test_main_accepts_skip_source_validation(
             "--source-branch",
             "main",
             "--skip-source-validation",
-        ]
+        ],
     )
 
     assert captured[0].skip_source_validation
@@ -364,7 +366,7 @@ def test_parse_pr_metadata_accepts_append_body():
             "Copybarista-PR-Title: Public title\n"
             "Copybarista-PR-Body-Mode: append\n"
             "Copybarista-PR-Body:\n"
-            "Public body text.\n"
+            "Public body text.\n",
         ),
         forbidden_text=("private",),
     )
@@ -452,7 +454,7 @@ def test_source_pr_metadata_uses_nul_terminated_git_log(
             "--reverse",
             "--format=%H%x00%aN%x00%aE%x00%B",
             "abcdef123456",
-        ]
+        ],
     ]
     assert patches[0].title == "Public title"
     assert patches[0].author == SourceAuthor(
@@ -466,7 +468,7 @@ def test_parse_pr_metadata_rejects_legacy_author_field():
         _parse_pr_metadata_log(
             _metadata_log(
                 "Copybarista-PR-Title: Public title\n"
-                "Copybarista-PR-Author: Public author\n"
+                "Copybarista-PR-Author: Public author\n",
             ),
             forbidden_text=(),
         )
@@ -478,7 +480,7 @@ def test_parse_pr_metadata_skips_unknown_field(
     patches = _parse_pr_metadata_log(
         _metadata_log(
             "Copybarista-PR-Description: typo'd field\n"
-            "Copybarista-PR-Title: Public title\n"
+            "Copybarista-PR-Title: Public title\n",
         ),
         forbidden_text=(),
     )
@@ -491,7 +493,7 @@ def test_parse_pr_metadata_rejects_duplicate_title():
     with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
         _parse_pr_metadata_log(
             _metadata_log(
-                "Copybarista-PR-Title: First\nCopybarista-PR-Title: Second\n"
+                "Copybarista-PR-Title: First\nCopybarista-PR-Title: Second\n",
             ),
             forbidden_text=(),
         )
@@ -508,7 +510,7 @@ def test_parse_pr_metadata_keeps_matching_scoped_block():
             "Copybarista-PR-Scope: configgle\n"
             "Copybarista-PR-Title: Configgle title\n"
             "Copybarista-PR-Body:\n"
-            "Configgle body.\n"
+            "Configgle body.\n",
         ),
         forbidden_text=(),
         scope="configgle",
@@ -534,7 +536,7 @@ def test_parse_pr_metadata_keeps_unscoped_and_matching_scoped_blocks():
             "Shared body.\n"
             "Copybarista-PR-Scope: sagent\n"
             "Copybarista-PR-Body:\n"
-            "Sagent body.\n"
+            "Sagent body.\n",
         ),
         forbidden_text=(),
         scope="sagent",
@@ -559,7 +561,7 @@ def test_parse_pr_metadata_body_stops_at_blank_line_before_squashed_prose():
             "Copybarista-PR-Body:\n"
             "Public body text.\n"
             "\n"
-            "Second squashed commit: touches TrainLoop.Config internals.\n"
+            "Second squashed commit: touches TrainLoop.Config internals.\n",
         ),
         forbidden_text=("TrainLoop",),
     )
@@ -600,14 +602,18 @@ def test_parse_pr_metadata_rewrites_source_path_via_literal_transform():
     # (Synthetic ``priv``/``pub`` tokens keep this test's own text export-safe.)
     transforms = (
         Transform(
-            id="lib", type="replace", path="**", before="priv.mod", after="pub.mod"
+            id="lib",
+            type="replace",
+            path="**",
+            before="priv.mod",
+            after="pub.mod",
         ),
     )
     patches = _parse_pr_metadata_log(
         _metadata_log(
             "Copybarista-PR-Title: Fix import path\n"
             "Copybarista-PR-Body:\n"
-            "Use submodule path `priv.mod.testing.main`.\n"
+            "Use submodule path `priv.mod.testing.main`.\n",
         ),
         forbidden_text=("priv.", "priv/"),
         text_transforms=transforms,
@@ -633,7 +639,7 @@ def test_parse_pr_metadata_rewrites_source_path_via_regex_group_transform():
     patches = _parse_pr_metadata_log(
         _metadata_log(
             "Copybarista-PR-Title: Touch priv.pkg.fetch\n"
-            "Copybarista-PR-Body:\nBody text.\n"
+            "Copybarista-PR-Body:\nBody text.\n",
         ),
         forbidden_text=("priv.",),
         text_transforms=transforms,
@@ -646,7 +652,11 @@ def test_parse_pr_metadata_leak_check_still_guards_untransformed_text():
     # fails the leak check.
     transforms = (
         Transform(
-            id="lib", type="replace", path="**", before="priv.mod", after="pub.mod"
+            id="lib",
+            type="replace",
+            path="**",
+            before="priv.mod",
+            after="pub.mod",
         ),
     )
     patches = _parse_pr_metadata_log(
@@ -664,7 +674,7 @@ def test_prefix_term_ignores_prose_word():
         _metadata_log(
             "Copybarista-PR-Title: t\n"
             "Copybarista-PR-Body:\nReimplementing the package. Also uses package/ "
-            "style prose here.\n"
+            "style prose here.\n",
         ),
         forbidden_text=("package.", "package/"),
     )
@@ -1072,7 +1082,10 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         return "222222222222"
 
     def fake_current_pr(
-        *, branch: str, repo: str, cwd: Path
+        *,
+        branch: str,
+        repo: str,
+        cwd: Path,
     ) -> sync_export_pr.CurrentPr | None:
         del branch, repo, cwd
         return None
@@ -1453,7 +1466,10 @@ def test_marked_existing_branch_replays_after_applied_source(
     calls: list[str] = []
 
     def fake_resolve_source_marker(
-        *, source_dir: Path, marker: str, marker_source: str
+        *,
+        source_dir: Path,
+        marker: str,
+        marker_source: str,
     ) -> str:
         assert source_dir == tmp_path
         calls.append(f"{marker_source}:{marker}")
@@ -1503,7 +1519,10 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
     )
 
     def fake_resolve_source_marker(
-        *, source_dir: Path, marker: str, marker_source: str
+        *,
+        source_dir: Path,
+        marker: str,
+        marker_source: str,
     ) -> str:
         del marker, marker_source
         assert source_dir == tmp_path
@@ -1515,7 +1534,9 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
         return ancestor == "old-marked-base" and rev == "bootstrap-base"
 
     monkeypatch.setattr(
-        sync_export_pr, "_resolve_source_marker", fake_resolve_source_marker
+        sync_export_pr,
+        "_resolve_source_marker",
+        fake_resolve_source_marker,
     )
     monkeypatch.setattr(sync_export_pr, "_is_source_ancestor", fake_is_ancestor)
 
@@ -1614,7 +1635,7 @@ def test_no_diff_updates_existing_pr_when_replay_text_changed(
     assert calls == ["edit"]
     assert pr_open
     assert (tmp_path / "copybarista-pr-body.md").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "new body\n"
 
 
@@ -1996,7 +2017,9 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     opened: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest, pr_template: str
+        *,
+        request: ExportRequest,
+        pr_template: str,
     ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
         return sync_export_pr.PrReplayPlan(
@@ -2008,7 +2031,11 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
         )
 
     def fake_export_public_tree(
-        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
     ) -> None:
         del project, source_dir, manifest
         (export_dir / ".github").mkdir()
@@ -2027,19 +2054,25 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
         del public_dir, validation_commands
 
     def fake_open_or_update_export_pr(
-        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del request
         opened.append(pr_plan.body)
         return True
 
     monkeypatch.setattr(
-        sync_export_pr, "_resolve_pr_replay_plan", fake_resolve_pr_replay_plan
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
     monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        sync_export_pr, "_open_or_update_export_pr", fake_open_or_update_export_pr
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fake_open_or_update_export_pr,
     )
 
     sync_export_pr.run_export_sync(
@@ -2048,7 +2081,7 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
             source_dir=source_dir,
             public_dir=public_dir,
             skip_source_validation=True,
-        )
+        ),
     )
 
     assert opened
@@ -2068,7 +2101,9 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
     merged: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest, pr_template: str
+        *,
+        request: ExportRequest,
+        pr_template: str,
     ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
         return sync_export_pr.PrReplayPlan(
@@ -2080,7 +2115,11 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         )
 
     def fake_export_public_tree(
-        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
     ) -> None:
         del project, source_dir, export_dir, manifest
 
@@ -2092,7 +2131,9 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         del public_dir, validation_commands
 
     def fake_open_or_update_export_pr(
-        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del request, pr_plan
         return False  # No changes and no existing PR.
@@ -2102,15 +2143,21 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         merged.append("merge")
 
     monkeypatch.setattr(
-        sync_export_pr, "_resolve_pr_replay_plan", fake_resolve_pr_replay_plan
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
     monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        sync_export_pr, "_open_or_update_export_pr", fake_open_or_update_export_pr
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fake_open_or_update_export_pr,
     )
     monkeypatch.setattr(
-        sync_export_pr, "_enable_export_pr_auto_merge", fake_enable_auto_merge
+        sync_export_pr,
+        "_enable_export_pr_auto_merge",
+        fake_enable_auto_merge,
     )
 
     sync_export_pr.run_export_sync(
@@ -2120,7 +2167,7 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
             public_dir=public_dir,
             skip_source_validation=True,
             auto_merge=True,
-        )
+        ),
     )
 
     assert merged == []
@@ -2173,7 +2220,10 @@ def test_enable_auto_merge_reraises_unrelated_failure(
         **_: object,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
-            argv, 1, stdout="", stderr="GraphQL: some other error"
+            argv,
+            1,
+            stdout="",
+            stderr="GraphQL: some other error",
         )
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
@@ -2194,7 +2244,9 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     opened: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest, pr_template: str
+        *,
+        request: ExportRequest,
+        pr_template: str,
     ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
         return sync_export_pr.PrReplayPlan(
@@ -2206,7 +2258,11 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         )
 
     def fake_export_public_tree(
-        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
     ) -> None:
         del project, source_dir, manifest
         (export_dir / "pkg").mkdir()
@@ -2221,7 +2277,9 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         (public_dir / "uv.lock").write_text("validation lock\n", encoding="utf-8")
 
     def fake_open_or_update_export_pr(
-        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del pr_plan
         lockfile = request.public_dir / "uv.lock"
@@ -2247,7 +2305,7 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
             source_dir=source_dir,
             public_dir=public_dir,
             skip_source_validation=True,
-        )
+        ),
     )
 
     assert opened == [""]
@@ -2263,7 +2321,7 @@ def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
     sentinel.write_text("preserve me\n", encoding="utf-8")
 
     dry_public_dir = sync_export_pr._clone_public_checkout_for_dry_run(
-        public_dir=public_dir
+        public_dir=public_dir,
     )
     try:
         assert (dry_public_dir / ".git").is_dir()
@@ -2291,7 +2349,9 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         return dry_public_dir
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest, pr_template: str
+        *,
+        request: ExportRequest,
+        pr_template: str,
     ) -> sync_export_pr.PrReplayPlan:
         calls.append(("resolve", request.public_dir))
         assert pr_template == ""
@@ -2304,7 +2364,11 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         )
 
     def fake_export_public_tree(
-        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
     ) -> None:
         del project, source_dir, manifest
         calls.append(("export", export_dir))
@@ -2320,7 +2384,9 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         assert (public_dir / "exported.txt").read_text(encoding="utf-8") == "exported\n"
 
     def fail_open_or_update_export_pr(
-        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> None:
         del request, pr_plan
         raise AssertionError("dry run must not mutate public PR state")
@@ -2350,7 +2416,7 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
             public_dir=public_dir,
             dry_run=True,
             skip_source_validation=True,
-        )
+        ),
     )
 
     assert (public_dir / "existing.txt").read_text(encoding="utf-8") == "original\n"
@@ -2406,7 +2472,8 @@ def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
     public_dir = tmp_path / "public"
     public_dir.mkdir()
     (public_dir / "pyproject.toml").write_text(
-        '[project]\nname = "configgle"\n', encoding="utf-8"
+        '[project]\nname = "configgle"\n',
+        encoding="utf-8",
     )
     argv: list[list[str]] = []
 
@@ -2432,7 +2499,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
     calls: list[str] = []
 
     def fake_resolve_pr_replay_plan(
-        *, request: ExportRequest, pr_template: str
+        *,
+        request: ExportRequest,
+        pr_template: str,
     ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
         return sync_export_pr.PrReplayPlan(
@@ -2444,7 +2513,11 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         )
 
     def fake_export_public_tree(
-        *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
     ) -> None:
         del project, source_dir, manifest
         (export_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
@@ -2463,7 +2536,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         calls.append("validate")
 
     def fake_open_or_update_export_pr(
-        *, request: ExportRequest, pr_plan: sync_export_pr.PrReplayPlan
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del pr_plan
         assert (request.public_dir / "uv.lock").read_text(encoding="utf-8") == (
@@ -2497,7 +2572,7 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
             public_dir=public_dir,
             refresh_public_lockfile=True,
             skip_source_validation=True,
-        )
+        ),
     )
 
     assert calls == ["lock", "validate", "open"]
@@ -2567,7 +2642,10 @@ def test_validate_public_runs_each_validation_command_via_bash(
     public_dir = Path("/public")
 
     def fake_run(
-        argv: list[str], *, cwd: Path | None = None, **_: object
+        argv: list[str],
+        *,
+        cwd: Path | None = None,
+        **_: object,
     ) -> subprocess.CompletedProcess[str]:
         calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0)
@@ -2626,7 +2704,9 @@ def test_pending_import_branches_lists_open_import_prs(
     monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
 
     pending = _pending_import_prs(
-        prefix="trackinizer/import/", repo="rekursiv-ai/loop", cwd=Path("/src")
+        prefix="trackinizer/import/",
+        repo="rekursiv-ai/loop",
+        cwd=Path("/src"),
     )
 
     assert pending == ("#68 trackinizer/import/sha-abc",)
@@ -2650,7 +2730,9 @@ def test_pending_import_branches_ignores_other_projects(
 
     assert (
         _pending_import_prs(
-            prefix="trackinizer/import/", repo="rekursiv-ai/loop", cwd=Path("/src")
+            prefix="trackinizer/import/",
+            repo="rekursiv-ai/loop",
+            cwd=Path("/src"),
         )
         == ()
     )
@@ -3061,7 +3143,8 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
     # Before the import lands, the human commit is unabsorbed: the guard must
     # block, because force-writing would destroy it.
     source = _git_repo(
-        tmp_path / "source", [("unrelated source work", "dev@example.com")]
+        tmp_path / "source",
+        [("unrelated source work", "dev@example.com")],
     )
     assert (
         sync_export_pr._public_head_unimported(

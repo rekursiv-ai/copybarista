@@ -42,7 +42,8 @@ def test_cli_validate_accepts_valid_config(tmp_path: Path):
 
 
 def test_cli_export_writes_json_manifest(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     source = tmp_path / "repo"
     project = source / "project"
@@ -59,7 +60,7 @@ def test_cli_export_writes_json_manifest(
             "--folder-dir",
             str(tmp_path / "out"),
             "--json",
-        ]
+        ],
     )
 
     manifest = json.loads(capsys.readouterr().out)
@@ -67,7 +68,8 @@ def test_cli_export_writes_json_manifest(
 
 
 def test_cli_reports_copybarista_errors(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     config = tmp_path / "copy.barista.toml"
     _config(config, source_root="missing")
@@ -79,7 +81,7 @@ def test_cli_reports_copybarista_errors(
             str(tmp_path / "repo"),
             "--folder-dir",
             str(tmp_path / "out"),
-        ]
+        ],
     )
 
     assert code == 3
@@ -87,7 +89,8 @@ def test_cli_reports_copybarista_errors(
 
 
 def test_cli_export_requires_folder_destination(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     config = tmp_path / "copy.barista.toml"
     _config(config)
@@ -99,7 +102,8 @@ def test_cli_export_requires_folder_destination(
 
 
 def test_cli_reports_transform_errors_as_release_gate_failures(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     source = tmp_path / "repo"
     project = source / "project"
@@ -132,7 +136,7 @@ def test_cli_reports_transform_errors_as_release_gate_failures(
             str(source),
             "--folder-dir",
             str(tmp_path / "out"),
-        ]
+        ],
     )
 
     assert code == 2
@@ -140,12 +144,14 @@ def test_cli_reports_transform_errors_as_release_gate_failures(
 
 
 def test_cli_check_leaks_reports_policy_violations(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     root = tmp_path / "out"
     root.mkdir()
     (root / "module.py").write_text(
-        "from internal_pkg.lib import json\n", encoding="utf-8"
+        "from internal_pkg.lib import json\n",
+        encoding="utf-8",
     )
     config = tmp_path / "copy.barista.toml"
     config.write_text(
@@ -173,7 +179,8 @@ def test_cli_check_leaks_reports_policy_violations(
 
 
 def test_cli_check_leaks_honors_config_globstar(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     """`check-leaks` must apply the config's ``globstar``, like the export path.
 
@@ -258,7 +265,7 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
             "configgle",
             "--type-check-target",
             "tests",
-        ]
+        ],
     )
 
     assert (tmp_path / "copy.barista.toml").exists()
@@ -297,11 +304,11 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
             "uv sync --all-groups",
             "--validation-command",
             "uv run pytest",
-        ]
+        ],
     )
 
     workflow = (tmp_path / ".github/workflows/package-validation.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     assert 'python-version: ["3.12", "3.13"]' in workflow
     assert "uv sync --all-groups" in workflow
@@ -329,7 +336,7 @@ def test_cli_init_sync_can_refresh_public_lockfile(
             "--smoke-import",
             "sagent",
             "--refresh-public-lockfile",
-        ]
+        ],
     )
 
     sync_config = (tmp_path / "copybarista.sync.toml").read_text(encoding="utf-8")
@@ -363,7 +370,7 @@ def test_cli_init_sync_can_add_release_check_script(
             "copybarista",
             "--release-check-script",
             "scripts/check_release_tree.py",
-        ]
+        ],
     )
 
     sync_config = (tmp_path / "copybarista.sync.toml").read_text(encoding="utf-8")
@@ -392,14 +399,15 @@ def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
             "tools/copybarista",
             "--smoke-import",
             "configgle",
-        ]
+        ],
     )
 
     assert main(["check-sync-config", str(tmp_path)]) == 0
 
 
 def test_cli_write_export_workflow_uses_sync_metadata(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     main(
         [
@@ -417,7 +425,7 @@ def test_cli_write_export_workflow_uses_sync_metadata(
             "tools/copybarista",
             "--smoke-import",
             "configgle",
-        ]
+        ],
     )
 
     capsys.readouterr()
@@ -429,7 +437,8 @@ def test_cli_write_export_workflow_uses_sync_metadata(
 
 
 def test_cli_write_public_workflows_rewrites_both_generated_files(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     """Both ``.export/`` workflows embed ``validation_commands``.
 
@@ -452,7 +461,7 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
             "tools/copybarista",
             "--smoke-import",
             "configgle",
-        ]
+        ],
     )
     workflows = tmp_path / ".export/.github/workflows"
     workflows.mkdir(parents=True, exist_ok=True)
@@ -463,11 +472,11 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     main(["write-public-workflows", str(tmp_path / "copybarista.sync.toml")])
 
     assert "stale" not in (workflows / "package-validation.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     assert "stale" not in (workflows / "sync-to-source.yml").read_text(encoding="utf-8")
     assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
 

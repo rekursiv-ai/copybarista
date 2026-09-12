@@ -58,7 +58,7 @@ def test_python_package_example_exports_and_imports_public_change(
             str(source_repo),
             "--destination",
             str(destination),
-        ]
+        ],
     )
 
     assert 'DESCRIPTION = "Public package example."' in (
@@ -70,10 +70,10 @@ def test_python_package_example_exports_and_imports_public_change(
 def test_github_workflow_examples_call_copybarista_commands():
     github_example = _CWD / "python-package" / "github"
     source_to_public = (github_example / "source-to-public.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     public_to_source = (github_example / "public-to-source.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
     assert 'uvx copybarista export "source/$PROJECT_PATH/copy.barista.toml"' in (
@@ -128,7 +128,7 @@ def _export(*, source_ref: Path, destination: Path) -> None:
             "--folder-dir",
             str(destination),
             "--force",
-        ]
+        ],
     )
 
 

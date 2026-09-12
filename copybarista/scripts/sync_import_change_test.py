@@ -95,7 +95,7 @@ def test_main_accepts_generic_project_validation_args(
             "uv sync --all-groups",
             "--validation-command",
             "uv run pytest",
-        ]
+        ],
     )
 
     assert captured[0].project_path == Path("packages/configgle")
@@ -104,7 +104,8 @@ def test_main_accepts_generic_project_validation_args(
 
 
 def test_export_copybarista_requirements_uses_frozen(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The copybarista-group export must not re-resolve the monorepo lock.
 
@@ -124,7 +125,8 @@ def test_export_copybarista_requirements_uses_frozen(
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     sync_import_change._export_copybarista_requirements(
-        target_dir=tmp_path, runner_temp=tmp_path
+        target_dir=tmp_path,
+        runner_temp=tmp_path,
     )
 
     assert captured, "expected an uv export invocation"
@@ -163,7 +165,7 @@ def test_main_resolves_filesystem_inputs_to_absolute(
             "base",
             "--public-head-ref",
             "head",
-        ]
+        ],
     )
 
     req = captured[0]
@@ -196,7 +198,7 @@ def test_main_accepts_refresh_public_lockfile_arg(
             "--public-head-ref",
             "head",
             "--refresh-public-lockfile",
-        ]
+        ],
     )
 
     assert captured[0].refresh_public_lockfile
@@ -284,10 +286,13 @@ def test_run_import_sync_imports_then_validates(
         return runner_temp / "copybarista-requirements.txt"
 
     def fake_import_change(
-        *, request: ImportRequest, project: Path, requirements: Path
+        *,
+        request: ImportRequest,
+        project: Path,
+        requirements: Path,
     ) -> None:
         calls.append(
-            ["import", str(project), str(request.target_dir), str(requirements)]
+            ["import", str(project), str(request.target_dir), str(requirements)],
         )
 
     # Signature must match _validate_target for monkeypatch; some args unused here.
@@ -307,12 +312,14 @@ def test_run_import_sync_imports_then_validates(
                 str(runner_temp),
                 str(requirements),
                 *validation_commands,
-            ]
+            ],
         )
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr(
-        sync_import_change, "_export_copybarista_requirements", fake_export_requirements
+        sync_import_change,
+        "_export_copybarista_requirements",
+        fake_export_requirements,
     )
     monkeypatch.setattr(sync_import_change, "_run_import_change", fake_import_change)
     monkeypatch.setattr(sync_import_change, "_validate_target", fake_validate_target)
@@ -339,7 +346,7 @@ def test_run_import_sync_imports_then_validates(
             runner_temp=tmp_path,
             validation_commands=("uv run pytest",),
             refresh_public_lockfile=False,
-        )
+        ),
     )
 
     # Requirements are exported (stubbed), then import, then validate -- both
@@ -380,7 +387,9 @@ def test_failed_import_annotates_the_stalled_export(
 
     monkeypatch.setattr(sync_import_change, "_run", unused_run)
     monkeypatch.setattr(
-        sync_import_change, "_export_copybarista_requirements", fake_export_requirements
+        sync_import_change,
+        "_export_copybarista_requirements",
+        fake_export_requirements,
     )
     monkeypatch.setattr(sync_import_change, "_run_import_change", boom)
 
@@ -573,7 +582,10 @@ def test_validate_target_runs_checks_against_exported_tree(
     tree = Path("/sentinel/validation-tree")
 
     def fake_run(
-        argv: list[str], *, cwd: Path | None = None, **_: object
+        argv: list[str],
+        *,
+        cwd: Path | None = None,
+        **_: object,
     ) -> subprocess.CompletedProcess[str]:
         calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0)
@@ -608,7 +620,8 @@ def test_validate_target_runs_checks_against_exported_tree(
 
 
 def test_export_public_tree_runs_copybarista_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
 
@@ -648,14 +661,17 @@ def test_export_public_tree_runs_copybarista_export(
 
 
 def test_export_copybarista_requirements_exports_group_from_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
 
     def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
         return subprocess.CompletedProcess(
-            argv, 0, stdout="pyyaml==6.0.3\nruff==0.15.17\n"
+            argv,
+            0,
+            stdout="pyyaml==6.0.3\nruff==0.15.17\n",
         )
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
@@ -665,7 +681,8 @@ def test_export_copybarista_requirements_exports_group_from_lock(
     runner_temp.mkdir()
 
     requirements = sync_import_change._export_copybarista_requirements(
-        target_dir=target, runner_temp=runner_temp
+        target_dir=target,
+        runner_temp=runner_temp,
     )
 
     assert requirements == (runner_temp / "copybarista-requirements.txt").resolve()
@@ -699,7 +716,9 @@ def test_import_commit_subject_round_trips_through_baseline_walk(
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == sha
     )
@@ -731,7 +750,9 @@ def test_import_commit_subject_round_trips_a_full_sha(tmp_path: Path) -> None:
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Wesearch", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Wesearch",
+            base_branch="main",
         )
         == sha
     )
@@ -752,7 +773,9 @@ def test_last_synced_public_sha_returns_newest_imported_sha(tmp_path: Path) -> N
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == newer
     )
@@ -781,7 +804,9 @@ def test_last_synced_public_sha_reads_a_squash_merged_subject(
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == newer
     )
@@ -800,7 +825,9 @@ def test_last_synced_public_sha_ignores_trailing_prose(tmp_path: Path) -> None:
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == good
     )
@@ -819,7 +846,9 @@ def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == sagent
     )
@@ -830,7 +859,9 @@ def test_last_synced_public_sha_raises_without_prior_import(tmp_path: Path) -> N
 
     with pytest.raises(ImportBaseError, match="No landed 'Sagent' import commit"):
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
 
 
@@ -864,7 +895,9 @@ def test_last_synced_public_sha_matches_label_literally(tmp_path: Path) -> None:
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="C++.NET", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="C++.NET",
+            base_branch="main",
         )
         == sha
     )
@@ -887,7 +920,9 @@ def test_last_synced_public_sha_ignores_incidental_sha_in_subject(
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == landed
     )
@@ -900,7 +935,8 @@ def test_main_print_synced_base_prints_and_skips_import(
 ) -> None:
     sha = "e" * 40
     _git_repo_with_commits(
-        root=tmp_path, subjects=[f"Import Sagent public changes {sha}"]
+        root=tmp_path,
+        subjects=[f"Import Sagent public changes {sha}"],
     )
 
     def fail_run_import_sync(_: ImportRequest) -> None:
@@ -917,7 +953,7 @@ def test_main_print_synced_base_prints_and_skips_import(
             "Sagent",
             "--base-branch",
             "main",
-        ]
+        ],
     )
 
     assert capsys.readouterr().out.strip() == sha
@@ -947,14 +983,15 @@ def test_main_print_synced_base_emits_fallback_without_history(
             "main",
             "--fallback-sha",
             parent,
-        ]
+        ],
     )
 
     assert capsys.readouterr().out.strip() == parent
 
 
 def test_import_pr_auto_merges_when_enabled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A clean import merges itself; a human adds nothing to that decision.
 
@@ -985,7 +1022,8 @@ def test_import_pr_auto_merges_when_enabled(
 
 
 def test_import_pr_merges_directly_when_auto_merge_unavailable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Without branch protection, ``--auto`` fails; merge immediately instead."""
     calls: list[list[str]] = []
@@ -994,7 +1032,10 @@ def test_import_pr_merges_directly_when_auto_merge_unavailable(
         calls.append(argv)
         if "--auto" in argv:
             return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr="Protected branch rules not configured."
+                argv,
+                1,
+                stdout="",
+                stderr="Protected branch rules not configured.",
             )
         return subprocess.CompletedProcess(argv, 0, stdout="")
 
@@ -1026,7 +1067,9 @@ def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
 
     assert (
         last_synced_public_sha(
-            target_dir=tmp_path, sync_label="Sagent", base_branch="main"
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == full
     )
@@ -1054,7 +1097,9 @@ def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
     # The ledger the guard reads.
     assert (
         last_synced_public_sha(
-            target_dir=source, sync_label="Sagent", base_branch="main"
+            target_dir=source,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == public_sha
     ), "the import's title must parse as the marker the guard reads"
@@ -1072,14 +1117,17 @@ def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> No
 
     assert (
         last_synced_public_sha(
-            target_dir=source, sync_label="Sagent", base_branch="main"
+            target_dir=source,
+            sync_label="Sagent",
+            base_branch="main",
         )
         == public_sha
     )
 
 
 def test_export_public_tree_initializes_git_repo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The exported tree must be a git repo before validation runs in it.
 

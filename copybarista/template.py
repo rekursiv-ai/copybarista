@@ -81,7 +81,10 @@ class ReplaceTemplate:
 
 
 def compile_replace(
-    *, before: str, after: str, regex_groups: tuple[tuple[str, str], ...]
+    *,
+    before: str,
+    after: str,
+    regex_groups: tuple[tuple[str, str], ...],
 ) -> ReplaceTemplate:
     """Compile a replacement template pair, mirroring Copybara semantics.
 
@@ -112,17 +115,19 @@ def compile_replace(
     undefined = (before_names | after_names) - set(groups)
     if undefined:
         raise ConfigError(
-            "replace references undefined regex_groups: " + ", ".join(sorted(undefined))
+            "replace references undefined regex_groups: "
+            + ", ".join(sorted(undefined)),
         )
     if after_names - before_names:
         raise ConfigError(
             "replace after interpolates groups absent from before: "
-            + ", ".join(sorted(after_names - before_names))
+            + ", ".join(sorted(after_names - before_names)),
         )
     unused = set(groups) - before_names
     if unused:
         raise ConfigError(
-            "replace regex_groups never matched by before: " + ", ".join(sorted(unused))
+            "replace regex_groups never matched by before: "
+            + ", ".join(sorted(unused)),
         )
     pattern = _build_pattern(tokens=before_tokens, groups=groups)
     return ReplaceTemplate(pattern=pattern, after_tokens=after_tokens)
@@ -157,7 +162,7 @@ def _parse(template: str) -> tuple[_Token, ...]:
     for match in _INTERPOLATION.finditer(template):
         if match.start() > cursor:
             tokens.append(
-                _Token(value=template[cursor : match.start()], is_group=False)
+                _Token(value=template[cursor : match.start()], is_group=False),
             )
         tokens.append(_Token(value=match.group("name"), is_group=True))
         cursor = match.end()
@@ -180,12 +185,14 @@ def _check_group_patterns(regex_groups: tuple[tuple[str, str], ...]) -> None:
             re.compile(pattern)
         except re.error as err:
             raise ConfigError(
-                f"replace regex_groups.{name} is not valid regex: {pattern}"
+                f"replace regex_groups.{name} is not valid regex: {pattern}",
             ) from err
 
 
 def _build_pattern(
-    *, tokens: tuple[_Token, ...], groups: dict[str, str]
+    *,
+    tokens: tuple[_Token, ...],
+    groups: dict[str, str],
 ) -> re.Pattern[str]:
     """Compile a ``before`` token sequence into a single regex."""
     parts: list[str] = []
@@ -198,5 +205,5 @@ def _build_pattern(
         return re.compile("".join(parts))
     except re.error as err:
         raise ConfigError(
-            f"replace regex_groups produce an invalid pattern: {err}"
+            f"replace regex_groups produce an invalid pattern: {err}",
         ) from err
