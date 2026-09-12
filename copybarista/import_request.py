@@ -1651,7 +1651,7 @@ def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
             while index < total and end not in lines[index]:
                 index += 1
             if index < total:
-                index += 1  # include the end-marker line.
+                index += 1  # `include` the end-marker line.
                 blocks.append("".join(lines[block_start:index]))
             continue
         index += 1

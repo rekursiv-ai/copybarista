@@ -730,12 +730,12 @@ def test_prefix_matcher_catches_real_references(text: str) -> None:
     "text",
     [
         "reimplementing the walk loop.",  # sentence-final period.
-        "the walk loop. Eliminates bugs",  # period + space.
-        "uses loop/ style prose",  # slash + space.
-        "the event loop",  # no separator at all.
-        "backtick ``loop.``",  # separator then closing backtick.
-        "(see the loop.)",  # separator then closing paren.
-        "the loop/",  # slash at end-of-string.
+        "the walk loop. Eliminates bugs",  # Period + space.
+        "uses loop/ style prose",  # Slash + space.
+        "the event loop",  # No separator at all.
+        "backtick ``loop.``",  # Separator then closing backtick.
+        "(see the loop.)",  # Separator then closing paren.
+        "the loop/",  # Slash at end-of-string.
     ],
 )
 def test_prefix_matcher_allows_prose(text: str) -> None:
@@ -2156,7 +2156,7 @@ def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
     sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
 
     merge_calls = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
-    assert len(merge_calls) == 2  # the --auto attempt, then the direct fallback.
+    assert len(merge_calls) == 2  # The --auto attempt, then the direct fallback.
     assert "--auto" in merge_calls[0]
     assert "--auto" not in merge_calls[1]
 

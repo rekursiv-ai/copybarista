@@ -280,7 +280,7 @@ def test_run_import_sync_imports_then_validates(
         return subprocess.CompletedProcess(argv, 0)
 
     def fake_export_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
-        del target_dir  # signature must match for monkeypatch; unused here.
+        del target_dir  # Signature must match for monkeypatch; unused here.
         return runner_temp / "copybarista-requirements.txt"
 
     def fake_import_change(
@@ -299,7 +299,7 @@ def test_run_import_sync_imports_then_validates(
         runner_temp: Path,
         requirements: Path,
     ) -> None:
-        del request  # unused here; present to match the patched signature.
+        del request  # Unused here; present to match the patched signature.
         calls.append(
             [
                 "validate",

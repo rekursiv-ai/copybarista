@@ -2083,7 +2083,7 @@ def test_anchor_rejects_non_monotonic_public_reorder():
     landed at end-of-file, detached from its true neighbors.
     """
     source = "h1\nh2\nnote = 0  # INT\nt1\nt2\n"
-    public = "t1\nt2\nh1\nh2\n"  # blocks reordered.
+    public = "t1\nt2\nh1\nh2\n"  # Blocks reordered.
 
     out = _anchor_source_only_regions(
         source_text=source, public_text=public, transform=_INTERNAL_LINES
