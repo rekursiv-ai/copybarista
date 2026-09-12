@@ -46,7 +46,9 @@ class StagedTree:
     """A transformed tree plus manifest metadata for destination publishing."""
 
     root: Path
+
     files: tuple[ManifestEntry, ...]
+
     transforms: tuple[TransformReport, ...]
 
 
@@ -55,6 +57,7 @@ class _StagedFile:
     """Source and destination pair for files copied into staging."""
 
     source: str
+
     destination: str
 
 
@@ -63,6 +66,7 @@ class WorkflowRunner:
     """Prepare the transformed staged tree for one workflow run."""
 
     config: WorkflowConfig
+
     source_ref: Path
 
     def stage(
@@ -180,7 +184,15 @@ class MoveSequence:
     moves: tuple[FileMove, ...]
 
     def destination_path(self, rel: str) -> str:
-        """Return the exported destination path for a source-relative path."""
+        """Return the exported destination path for a source-relative path.
+
+        Args:
+          rel: Rel.
+
+        Returns:
+          rel: The str.
+
+        """
         for move in self.moves:
             rel = _relocate_path(rel, source=move.path, destination=move.destination)
         return rel

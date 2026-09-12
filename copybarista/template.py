@@ -45,14 +45,31 @@ class ReplaceTemplate:
     """
 
     pattern: re.Pattern[str]
+
     after_tokens: tuple[_Token, ...]
 
     def apply(self, text: str) -> str:
-        """Return ``text`` with every ``before`` match rendered as ``after``."""
+        """Return ``text`` with every ``before`` match rendered as ``after``.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The str.
+
+        """
         return self.pattern.sub(self._render, text)
 
     def count(self, text: str) -> int:
-        """Return how many non-overlapping ``before`` matches occur in ``text``."""
+        """Return how many non-overlapping ``before`` matches occur in ``text``.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The int.
+
+        """
         return sum(1 for _ in self.pattern.finditer(text))
 
     def _render(self, match: re.Match[str]) -> str:

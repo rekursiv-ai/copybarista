@@ -47,10 +47,15 @@ class GlobSet:
     """
 
     include: tuple[str, ...]
+
     exclude: tuple[str, ...] = ()
+
     globstar: Globstar = "one_or_more"
+
     min_brace_choices: int = 2
+
     _include_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
+
     _exclude_regex: tuple[re.Pattern[str], ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -75,7 +80,15 @@ class GlobSet:
         )
 
     def matches(self, path: str) -> bool:
-        """Return whether a path is included and not excluded."""
+        """Return whether a path is included and not excluded.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         normalized = path.replace("\\", "/").strip("/")
         return any(r.fullmatch(normalized) for r in self._include_regex) and not any(
             r.fullmatch(normalized) for r in self._exclude_regex

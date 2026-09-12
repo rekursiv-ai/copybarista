@@ -11,7 +11,9 @@ class ActionPin:
     """One action's immutable revision, plus the version humans read."""
 
     action: str
+
     sha: str
+
     version: str
 
     @property
@@ -129,5 +131,13 @@ release line while the runner consumes the immutable commit.
 
 
 def action_ref(action: str) -> str:
-    """Return the pinned ``owner/name@sha`` reference for one action."""
+    """Return the pinned ``owner/name@sha`` reference for one action.
+
+    Args:
+      action: Action.
+
+    Returns:
+      result: The str.
+
+    """
     return GITHUB_ACTION_PINS[action].ref
