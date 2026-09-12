@@ -14,8 +14,11 @@ class ManifestEntry:
     """Source-to-destination mapping and stable identity for one exported file."""
 
     source: str
+
     destination: str
+
     size: int
+
     sha256: str
 
 
@@ -24,7 +27,9 @@ class TransformFileReport:
     """Per-file transform change report for manifest consumers."""
 
     source: str
+
     destination: str
+
     count: int
 
 
@@ -38,10 +43,15 @@ class TransformReport:
     """
 
     id: str
+
     type: str
+
     path: str
+
     changed: int
+
     count: int
+
     files: tuple[TransformFileReport, ...]
 
 
@@ -54,11 +64,18 @@ class ExportManifest:
     """
 
     files: tuple[ManifestEntry, ...]
+
     transforms: tuple[TransformReport, ...]
+
     elapsed_sec: float
 
     def to_json(self) -> str:
-        """Serialize manifest as deterministic JSON."""
+        """Serialize manifest as deterministic JSON.
+
+        Returns:
+          result: The str.
+
+        """
         data = asdict(self)
         del data["elapsed_sec"]
         return json.dumps(data, indent=2, sort_keys=True) + "\n"

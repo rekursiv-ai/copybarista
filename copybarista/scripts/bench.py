@@ -34,8 +34,11 @@ class BenchmarkSample:
     """One timed benchmark run."""
 
     total_sec: float
+
     phases_sec: dict[str, float]
+
     file_count: int
+
     byte_count: int
 
 
@@ -44,14 +47,23 @@ class BenchmarkResult:
     """Timing summary for one benchmark target."""
 
     name: str
+
     runs: tuple[float, ...]
+
     median_sec: float
+
     samples: tuple[BenchmarkSample, ...] = ()
+
     phase_medians_sec: dict[str, float] = field(default_factory=dict)
+
     file_count: int = 0
+
     byte_count: int = 0
+
     destination_mode: str = "cold"
+
     platform: str = field(default_factory=platform_lib.platform)
+
     python: str = field(default_factory=platform_lib.python_version)
 
 
@@ -62,7 +74,12 @@ class BenchmarkReport:
     copybarista: BenchmarkResult
 
     def to_json(self) -> str:
-        """Serialize the benchmark report as deterministic JSON."""
+        """Serialize the benchmark report as deterministic JSON.
+
+        Returns:
+          result: The str.
+
+        """
         return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
 
 
