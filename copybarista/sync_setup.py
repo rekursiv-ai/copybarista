@@ -61,6 +61,14 @@ DEFAULT_SYSTEM_PACKAGES: Final = (
     "fd-find",
 )
 
+# The PostgreSQL major a generated workflow installs from PGDG when a package
+# lists ``postgresql`` in ``system_packages``. Mirrors PG_MAJOR in
+# ops/github/shared/install-postgres.sh, which every monorepo provisioner
+# runs; the two are pinned together by ops/github/ci_image_test.py. The public
+# workflow cannot run that script (the public repo has no ops/ tree), so the
+# value is restated here and the test keeps them in step.
+PG_MAJOR: Final = "18"
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SyncSettings:
@@ -946,7 +954,10 @@ def _assert_installs_system_packages(
         _workflow_step_run(steps, "Install system packages", workflow=workflow)
     )
     for package in packages:
-        if package not in installed:
+        # ``postgresql`` renders as the PGDG-pinned server, never the bare
+        # metapackage (see ``_system_deps_step``).
+        expected = f"postgresql-{PG_MAJOR}" if package == "postgresql" else package
+        if expected not in installed:
             raise ConfigError(
                 f"{workflow} must install system package {package!r} "
                 "(see system_packages)."
@@ -1299,7 +1310,9 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
     if not packages:
         return ""
     guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
-    names = " ".join(packages)
+    # ``postgresql`` is a request, not an apt name to pass through: it is
+    # served from PGDG below, never the distro metapackage (see there).
+    names = " ".join(package for package in packages if package != "postgresql")
     lines = [
         # Cache the downloaded .debs, so a warm run never reaches the mirror
         # that stalled below. Keyed on the package list, so adding one busts it;
@@ -1330,19 +1343,30 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
         f"          timeout 300 sudo apt-get install -y --no-install-recommends {names}\n",
     ]
     if "postgresql" in packages:
-        # ``pgvector`` ships as `postgresql-<major>-pgvector`, so the name depends
-        # on which server apt resolved and cannot sit in the flat list. Without
-        # it a runner that HAS Postgres (ubuntu-latest preinstalls 16) fails
-        # every integration test with `extension "vector" is not available`
-        # rather than skipping -- the capability gate in the shared pre-commit
-        # config deliberately runs when `pg_config` is present.
+        # ``postgresql`` in the list means "this package needs a real Postgres
+        # WITH pgvector" (trackinizer's schema.sql runs `CREATE EXTENSION
+        # vector`). The distro's apt packages are frozen per release and lag
+        # what the schema needs (halfvec, pgvector >=0.7), so the server comes
+        # from the PGDG repo instead, pinned to the same major every other box
+        # runs. Inline rather than a shipped script: the public repo has no
+        # ops/ tree, and `postgresql` itself is NOT installed from the distro
+        # list above -- the metapackage would pull Ubuntu's older major beside
+        # PGDG's. Without pgvector a runner that HAS Postgres (ubuntu-latest
+        # preinstalls 16) fails every integration test with `extension
+        # "vector" is not available` rather than skipping -- the capability
+        # gate in the shared pre-commit config runs when `pg_config` is present.
         lines.append(
-            '          PG_MAJOR="$(apt-cache depends postgresql '
-            "| grep -m1 -oP 'postgresql-\\K\\d+' || true)\"\n"
+            "          sudo apt-get install -y --no-install-recommends "
+            "postgresql-common ca-certificates curl gnupg\n"
         )
         lines.append(
-            '          if [ -n "$PG_MAJOR" ]; then sudo apt-get install -y '
-            '--no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi\n'
+            "          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y\n"
+        )
+        lines.append("          timeout 120 sudo apt-get update\n")
+        lines.append(
+            "          timeout 300 sudo apt-get install -y --no-install-recommends "
+            f"postgresql-{PG_MAJOR} postgresql-client-{PG_MAJOR} "
+            f"postgresql-{PG_MAJOR}-pgvector\n"
         )
     return "".join(lines)
 
