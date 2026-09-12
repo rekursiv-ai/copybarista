@@ -79,7 +79,9 @@ class CopySpec:
 
 
 def translate_copy_bara_sky_to_toml(
-    path: Path, *, workflow_name: str = "export"
+    path: Path,
+    *,
+    workflow_name: str = "export",
 ) -> str:
     """Translate a supported `copy.bara.sky` workflow into Copybarista TOML.
 
@@ -99,7 +101,9 @@ def translate_copy_bara_sky_to_toml(
 
 
 def load_copy_bara_sky_config(
-    path: Path, *, workflow_name: str = "export"
+    path: Path,
+    *,
+    workflow_name: str = "export",
 ) -> WorkflowConfig:
     """Load a supported `copy.bara.sky` workflow through the TOML config path.
 
@@ -115,7 +119,7 @@ def load_copy_bara_sky_config(
 
     """
     return parse_config(
-        _load_translated_workflow(path, workflow_name=workflow_name).to_raw_config()
+        _load_translated_workflow(path, workflow_name=workflow_name).to_raw_config(),
     )
 
 
@@ -229,7 +233,9 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
 
 
 def _load_translated_workflow(
-    path: Path, *, workflow_name: str = "export"
+    path: Path,
+    *,
+    workflow_name: str = "export",
 ) -> TranslatedWorkflow:
     """Load a supported `copy.bara.sky` workflow as a translated workflow."""
     try:
@@ -272,17 +278,19 @@ class _CopyBaraSkyParser:
             elif isinstance(statement, ast.FunctionDef):
                 self.functions[statement.name] = statement
             elif isinstance(statement, ast.Expr) and isinstance(
-                statement.value, ast.Call
+                statement.value,
+                ast.Call,
             ):
                 workflows.extend(self._evaluate_top_level_call(statement.value))
             elif isinstance(statement, ast.Expr) and isinstance(
-                statement.value, ast.Constant
+                statement.value,
+                ast.Constant,
             ):
                 continue
             else:
                 raise ConfigError(
                     f"Unsupported top-level copy.bara.sky statement: "
-                    f"{type(statement).__name__}"
+                    f"{type(statement).__name__}",
                 )
         return workflows
 
@@ -293,11 +301,13 @@ class _CopyBaraSkyParser:
         if isinstance(call.func, ast.Name) and call.func.id in self.functions:
             return self._evaluate_helper_call(call, self.env)
         raise ConfigError(
-            f"Unsupported top-level call in copy.bara.sky: {_call_name(call)}"
+            f"Unsupported top-level call in copy.bara.sky: {_call_name(call)}",
         )
 
     def _evaluate_helper_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> list[TranslatedWorkflow]:
         """Evaluate a simple helper function that emits workflow calls."""
         if not isinstance(call.func, ast.Name):
@@ -316,37 +326,41 @@ class _CopyBaraSkyParser:
         missing = [name for name in params if name not in local_env]
         if missing:
             raise ConfigError(
-                f"Missing helper args for {function.name}: {', '.join(missing)}"
+                f"Missing helper args for {function.name}: {', '.join(missing)}",
             )
 
         workflows: list[TranslatedWorkflow] = []
         for statement in function.body:
             if isinstance(statement, ast.Expr) and isinstance(
-                statement.value, ast.Call
+                statement.value,
+                ast.Call,
             ):
                 if _call_name(statement.value) != "core.workflow":
                     raise ConfigError(
                         f"Unsupported helper call in {function.name}: "
-                        f"{_call_name(statement.value)}"
+                        f"{_call_name(statement.value)}",
                     )
                 workflows.append(self._workflow_from_call(statement.value, local_env))
             else:
                 raise ConfigError(
                     f"Unsupported helper body in {function.name}: "
-                    f"{type(statement).__name__}"
+                    f"{type(statement).__name__}",
                 )
         return workflows
 
     def _assign(self, statement: ast.Assign, env: dict[str, object]) -> None:
         """Evaluate one supported assignment into an environment."""
         if len(statement.targets) != 1 or not isinstance(
-            statement.targets[0], ast.Name
+            statement.targets[0],
+            ast.Name,
         ):
             raise ConfigError("Only simple NAME = value assignments are supported")
         env[statement.targets[0].id] = self._eval(statement.value, env)
 
     def _workflow_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> TranslatedWorkflow:
         """Translate a supported `core.workflow` call."""
         if call.args:
@@ -373,7 +387,7 @@ class _CopyBaraSkyParser:
         destination = kwargs.get("destination")
         if not isinstance(destination, DestinationSpec):
             raise ConfigError(
-                "Only folder.destination() or git.destination() is supported"
+                "Only folder.destination() or git.destination() is supported",
             )
         origin_files = kwargs.get("origin_files", GlobSpec(include=("**",)))
         if not isinstance(origin_files, GlobSpec):
@@ -382,7 +396,8 @@ class _CopyBaraSkyParser:
         if destination_files is not None:
             _validate_destination_files(destination_files)
         transformations = _object_list(
-            kwargs.get("transformations", []), "core.workflow.transformations"
+            kwargs.get("transformations", []),
+            "core.workflow.transformations",
         )
         (
             source_root_move,
@@ -391,7 +406,8 @@ class _CopyBaraSkyParser:
             subtree_copies,
             sweep_excludes,
         ) = self._parse_transformations(
-            transformations, origin_roots=_origin_move_roots(origin_files.include)
+            transformations,
+            origin_roots=_origin_move_roots(origin_files.include),
         )
         if "authoring" not in kwargs:
             raise ConfigError("core.workflow.authoring is required")
@@ -405,15 +421,17 @@ class _CopyBaraSkyParser:
         )
 
         include, origin_copies = _strip_prefixes_and_file_copies(
-            origin_files.include, source_root
+            origin_files.include,
+            source_root,
         )
         origin_copies, transforms = _fuse_renamed_origin_copies(
-            copies=origin_copies, transforms=transforms
+            copies=origin_copies,
+            transforms=transforms,
         )
         copies = (*origin_copies, *subtree_copies)
         if source_root and not include:
             raise ConfigError(
-                f"origin_files pattern is outside core.move source root: {source_root}"
+                f"origin_files pattern is outside core.move source root: {source_root}",
             )
         exclude = _strip_prefixes(origin_files.exclude, source_root)
         # A subtree shipped verbatim to root by its own copy must not ALSO be
@@ -429,7 +447,8 @@ class _CopyBaraSkyParser:
             destination=destination,
         )
         workflow_name = _require_string(
-            kwargs.get("name", "export"), "core.workflow.name"
+            kwargs.get("name", "export"),
+            "core.workflow.name",
         )
         # Structural 1:1 with the .sky move sequence: the source-root move becomes
         # the whole-tree placement ``{path="", destination=<prefix>}`` and each
@@ -510,7 +529,7 @@ class _CopyBaraSkyParser:
                             source=item.source,
                             destination=".",
                             use_default_python_excludes=True,
-                        )
+                        ),
                     )
                     _add_sweep_exclude(sweep_excludes, item.source, root, ("**",))
                     continue
@@ -524,7 +543,7 @@ class _CopyBaraSkyParser:
                         # a non-empty destination, so name it explicitly rather
                         # than emit one the config parser rejects.
                         destination=item.destination or PurePosixPath(item.source).name,
-                    )
+                    ),
                 )
                 continue
             if isinstance(item, CopySpec):
@@ -533,7 +552,7 @@ class _CopyBaraSkyParser:
                         source=item.source,
                         destination=item.destination,
                         include=item.include,
-                    )
+                    ),
                 )
                 if item.relocate:
                     _add_sweep_exclude(sweep_excludes, item.source, root, item.include)
@@ -575,7 +594,9 @@ class _CopyBaraSkyParser:
     # moves are expressed relative to; a vendored tree's rename has no such dependents.
     # A whole-tree selection names no root, so an empty source stands in for it.
     def _source_root_move(
-        self, transformations: list[object], origin_roots: frozenset[str]
+        self,
+        transformations: list[object],
+        origin_roots: frozenset[str],
     ) -> MoveSpec | None:
         """Return the single source-root move, or None; reject duplicates."""
         moves = [item for item in transformations if isinstance(item, MoveSpec)]
@@ -624,7 +645,7 @@ class _CopyBaraSkyParser:
         if isinstance(node, ast.Call):
             return self._eval_call(node, env)
         raise ConfigError(
-            f"Unsupported copy.bara.sky expression: {type(node).__name__}"
+            f"Unsupported copy.bara.sky expression: {type(node).__name__}",
         )
 
     def _eval_dict(self, node: ast.Dict, env: dict[str, object]) -> dict[str, str]:
@@ -678,7 +699,9 @@ class _CopyBaraSkyParser:
         )
 
     def _git_destination_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> DestinationSpec:
         """Evaluate a supported `git.destination(...)` call."""
         kwargs = self._kwargs(call, env, allowed={"url", "fetch", "push"})
@@ -694,7 +717,8 @@ class _CopyBaraSkyParser:
         return DestinationSpec(
             kind="git",
             url=_require_string(
-                kwargs.get("url", positional_url), "git.destination.url"
+                kwargs.get("url", positional_url),
+                "git.destination.url",
             ),
             branch=_require_string(
                 kwargs.get("push", kwargs.get("fetch", DEFAULT_GIT_BRANCH)),
@@ -707,14 +731,17 @@ class _CopyBaraSkyParser:
     # files, mapping to a copy-with-include plus a sweep-exclude (CopySpec with
     # ``relocate=True``).
     def _move_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> MoveSpec | CopySpec:
         """Evaluate a supported `core.move(...)` call."""
         if len(call.args) != 2:
             raise ConfigError("core.move requires source and destination args")
         source = _require_string(self._eval(call.args[0], env), "core.move source")
         destination = _require_string(
-            self._eval(call.args[1], env), "core.move destination"
+            self._eval(call.args[1], env),
+            "core.move destination",
         )
         kwargs = self._kwargs(call, env, allowed={"paths"})
         paths = kwargs.get("paths")
@@ -747,13 +774,16 @@ class _CopyBaraSkyParser:
         return CopySpec(
             source=_require_string(self._eval(call.args[0], env), "core.copy source"),
             destination=_require_string(
-                self._eval(call.args[1], env), "core.copy destination"
+                self._eval(call.args[1], env),
+                "core.copy destination",
             ),
             include=include,
         )
 
     def _pass_thru_author_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> AuthorSpec:
         """Evaluate a supported `authoring.pass_thru(...)` call."""
         kwargs = self._kwargs(call, env, allowed={"default"})
@@ -768,15 +798,19 @@ class _CopyBaraSkyParser:
             _require_string(
                 value,
                 "authoring.pass_thru author",
-            )
+            ),
         )
 
     def _transform_group_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> list[object]:
         """Evaluate a supported `core.transform([...])` wrapper."""
         kwargs = self._kwargs(
-            call, env, allowed={"transformations", "reversal", "ignore_noop"}
+            call,
+            env,
+            allowed={"transformations", "reversal", "ignore_noop"},
         )
         if len(call.args) > 1:
             raise ConfigError("core.transform accepts one transformation list")
@@ -793,10 +827,11 @@ class _CopyBaraSkyParser:
         # the wrapper has three exits, and applying a wrapper-level kwarg inside
         # one of them silently discards it on the other two.
         forward = _flatten_transform_items(
-            _object_list(transformations, "core.transform transformations")
+            _object_list(transformations, "core.transform transformations"),
         )
         if _require_bool(
-            kwargs.get("ignore_noop", False), "core.transform.ignore_noop"
+            kwargs.get("ignore_noop", False),
+            "core.transform.ignore_noop",
         ):
             forward = [
                 replace(item, required=False) if isinstance(item, Transform) else item
@@ -828,7 +863,9 @@ class _CopyBaraSkyParser:
         return _transforms_with_explicit_reversal(forward=forward, reversal=reversal)
 
     def _reverse_group_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> list[object]:
         """Evaluate supported reversible transform groups."""
         if len(call.args) != 1 or call.keywords:
@@ -849,14 +886,16 @@ class _CopyBaraSkyParser:
                 if item.type != "replace":
                     raise ConfigError("core.reverse only supports core.replace")
                 reversed_items.append(
-                    replace(item, before=item.after, after=item.before)
+                    replace(item, before=item.after, after=item.before),
                 )
                 continue
             raise ConfigError("core.reverse only supports reversible transforms")
         return reversed_items
 
     def _replace_from_call(
-        self, call: ast.Call, env: dict[str, object]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
     ) -> Transform | list[Transform]:
         """Translate a supported `core.replace` call."""
         kwargs = self._kwargs(
@@ -889,7 +928,7 @@ class _CopyBaraSkyParser:
                     # 2, no output), so accepting it admits a config that cannot
                     # run in the tool this file mirrors.
                     raise ConfigError(
-                        "core.replace on a marker requires multiline = True"
+                        "core.replace on a marker requires multiline = True",
                     )
                 return replace(marker, path=paths.include[0])
             # Group patterns decide newline spanning here, so honouring
@@ -898,7 +937,7 @@ class _CopyBaraSkyParser:
             if multiline:
                 raise ConfigError(
                     "core.replace multiline is not supported with regex_groups; "
-                    "the group patterns control newline spanning"
+                    "the group patterns control newline spanning",
                 )
             return [
                 Transform(
@@ -939,7 +978,7 @@ class _CopyBaraSkyParser:
             ]
         if "\n" in before:
             raise ConfigError(
-                "core.replace before containing newlines requires multiline = True"
+                "core.replace before containing newlines requires multiline = True",
             )
         if not before:
             raise ConfigError("core.replace.before must be non-empty")
@@ -963,7 +1002,11 @@ class _CopyBaraSkyParser:
         ]
 
     def _kwargs(
-        self, call: ast.Call, env: dict[str, object], *, allowed: set[str]
+        self,
+        call: ast.Call,
+        env: dict[str, object],
+        *,
+        allowed: set[str],
     ) -> dict[str, object]:
         """Evaluate supported keyword args and reject unknown kwargs."""
         values: dict[str, object] = {}
@@ -972,7 +1015,7 @@ class _CopyBaraSkyParser:
                 raise ConfigError(f"Unsupported **kwargs in {_call_name(call)}")
             if keyword.arg not in allowed:
                 raise ConfigError(
-                    f"Unsupported argument for {_call_name(call)}: {keyword.arg}"
+                    f"Unsupported argument for {_call_name(call)}: {keyword.arg}",
                 )
             values[keyword.arg] = self._eval(keyword.value, env)
         return values
@@ -1060,7 +1103,9 @@ def _origin_move_roots(include: tuple[str, ...]) -> frozenset[str]:
 # never recognized as the source-root move in either case, so a guard reading the
 # classification would never see one.
 def _reject_unrepresentable_flatten(
-    *, moves: list[MoveSpec], origin_include: tuple[str, ...]
+    *,
+    moves: list[MoveSpec],
+    origin_include: tuple[str, ...],
 ) -> None:
     """Reject a ``core.move(SRC, "")`` the selection cannot account for."""
     roots = _origin_move_roots(origin_include)
@@ -1074,7 +1119,7 @@ def _reject_unrepresentable_flatten(
                     "core.move flattening a subtree under a whole-tree origin "
                     "selection (glob(['**'])) is unsupported: it mixes "
                     "lifted-subtree and identity-kept paths, which has no single "
-                    "source_root/destination_prefix"
+                    "source_root/destination_prefix",
                 )
             continue
         if (
@@ -1083,7 +1128,7 @@ def _reject_unrepresentable_flatten(
             and not _is_subpath_of_any(move.source, roots)
         ):
             raise ConfigError(
-                f"origin_files pattern is outside core.move source root: {move.source}"
+                f"origin_files pattern is outside core.move source root: {move.source}",
             )
 
 
@@ -1145,7 +1190,9 @@ def _replace_paths(value: object) -> GlobSpec:
 
 
 def _transforms_with_explicit_reversal(
-    *, forward: list[object], reversal: list[object]
+    *,
+    forward: list[object],
+    reversal: list[object],
 ) -> list[object]:
     """Attach an explicit literal replacement reversal to one forward replace."""
     forward = _flatten_transform_items(forward)
@@ -1155,7 +1202,8 @@ def _transforms_with_explicit_reversal(
     forward_transform = forward[0]
     reverse_transform = reversal[0]
     if not isinstance(forward_transform, Transform) or not isinstance(
-        reverse_transform, Transform
+        reverse_transform,
+        Transform,
     ):
         raise ConfigError("core.transform explicit reversal supports core.replace")
     if forward_transform.type != "replace" or reverse_transform.type != "replace":
@@ -1165,7 +1213,7 @@ def _transforms_with_explicit_reversal(
             forward_transform,
             reverse_before=reverse_transform.before,
             reverse_after=reverse_transform.after,
-        )
+        ),
     ]
 
 
@@ -1181,7 +1229,9 @@ def _flatten_transform_items(items: list[object]) -> list[object]:
 
 
 def _git_author_fields(
-    *, authoring: object, destination: DestinationSpec
+    *,
+    authoring: object,
+    destination: DestinationSpec,
 ) -> tuple[str, str]:
     """Return author fields only for Git destinations."""
     if authoring is None:
@@ -1244,12 +1294,13 @@ def _validate_destination_files(value: object) -> None:
     if value.include != ("**",) or value.exclude:
         raise ConfigError(
             'Only destination_files = glob(["**"]) is supported because '
-            "Copybarista rewrites the whole destination tree"
+            "Copybarista rewrites the whole destination tree",
         )
 
 
 def _strip_prefixes_and_file_copies(
-    patterns: tuple[str, ...], source_root: str
+    patterns: tuple[str, ...],
+    source_root: str,
 ) -> tuple[tuple[str, ...], tuple[FileCopy, ...]]:
     """Strip source-root globs and preserve extra roots as file-copy entries."""
     if not source_root:
@@ -1274,7 +1325,9 @@ def _strip_prefixes_and_file_copies(
 # Copybara emits none, because its move relocates the selection itself rather than a
 # staged copy.
 def _fuse_renamed_origin_copies(
-    *, copies: tuple[FileCopy, ...], transforms: list[Transform]
+    *,
+    copies: tuple[FileCopy, ...],
+    transforms: list[Transform],
 ) -> tuple[tuple[FileCopy, ...], list[Transform]]:
     """Fold a ``move`` that renames an origin copy into the copy's destination."""
     renames = {
@@ -1306,7 +1359,7 @@ def _fuse_renamed_origin_copies(
         if prior is not None:
             raise ConfigError(
                 f"export destination {file_copy.destination!r} is claimed by two"
-                f" origin files ({prior!r} and {file_copy.source!r})"
+                f" origin files ({prior!r} and {file_copy.source!r})",
             )
         claimed[file_copy.destination] = file_copy.source
     return fused, [
@@ -1337,7 +1390,7 @@ def _strip_prefixes(patterns: tuple[str, ...], source_root: str) -> tuple[str, .
             stripped.append(pattern.removeprefix(prefix))
         else:
             raise ConfigError(
-                f"origin_files exclude pattern is outside core.move source root: {pattern}"
+                f"origin_files exclude pattern is outside core.move source root: {pattern}",
             )
     return tuple(stripped)
 
@@ -1359,7 +1412,7 @@ def _strip_markers(before: str) -> tuple[str, str]:
 # per line rather than substring-tested: prose merely CONTAINING ``copybara:`` is
 # not a marker, and a marker on a middle line is still a marker.
 _MARKER_LINE = re.compile(
-    r"^\s*(?:#|<!--)\s*(?:copybarista|copybara):(?P<kind>[\w:-]*)"
+    r"^\s*(?:#|<!--)\s*(?:copybarista|copybara):(?P<kind>[\w:-]*)",
 )
 
 
@@ -1409,7 +1462,7 @@ def _marker_transform(
         raise ConfigError(
             "core.replace marker replacement spans more than one marker kind "
             f"({', '.join(f':{kind}' for kind in sorted(kinds))}); a replacement "
-            "means one thing, so it must carry one kind"
+            "means one thing, so it must carry one kind",
         )
     if len(markers) > 2 and not conditional:
         # Two markers delimit a block and one is a per-line rule; a third has no
@@ -1417,14 +1470,14 @@ def _marker_transform(
         # silently discard the middle marker, so reject instead.
         raise ConfigError(
             "core.replace marker replacement supports at most a start and end "
-            f"marker, got {len(markers)}"
+            f"marker, got {len(markers)}",
         )
     if uncomment_kind in kinds:
         if not after:
             raise ConfigError(
                 f"core.replace on a ':{uncomment_kind}' marker with an empty "
                 "after would delete the lines the marker exists to uncomment; "
-                "re-emit the captured group instead"
+                "re-emit the captured group instead",
             )
         if len(markers) < 2:
             # An empty ``end`` is the INLINE uncomment form: it splits each line
@@ -1432,7 +1485,7 @@ def _marker_transform(
             # with one marker would silently take that reading instead.
             raise ConfigError(
                 f"core.replace on a ':{uncomment_kind}' marker requires a start "
-                "and end marker to delimit the block it uncomments"
+                "and end marker to delimit the block it uncomments",
             )
         return Transform(
             id="",
@@ -1458,7 +1511,9 @@ def _marker_transform(
 
 
 def _conditional_transform(
-    markers: list[str], *, conditional_kinds: tuple[str, str, str]
+    markers: list[str],
+    *,
+    conditional_kinds: tuple[str, str, str],
 ) -> Transform:
     """Return the ``if``/``else``/``endif`` strip that keeps the else branch."""
     by_kind = {_marker_kind(line): line for line in markers}
@@ -1467,7 +1522,7 @@ def _conditional_transform(
         raise ConfigError(
             "core.replace conditional marker block requires "
             f"{', '.join(f':{kind}' for kind in conditional_kinds)}; "
-            f"missing {', '.join(f':{kind}' for kind in missing)}"
+            f"missing {', '.join(f':{kind}' for kind in missing)}",
         )
     return Transform(
         id="",
@@ -1501,5 +1556,6 @@ def _marker_strip_from_regex_groups(*, before: str, after: str) -> Transform | N
     # two markers into one line and the pair would read as a single per-line
     # marker.
     return _marker_transform(
-        before=literal_segments(before, separator="\n"), after=after
+        before=literal_segments(before, separator="\n"),
+        after=after,
     )

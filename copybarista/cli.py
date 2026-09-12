@@ -204,7 +204,7 @@ def _run_export(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config), workflow_name=args.workflow)
     if not args.folder_dir and not config.folder.path:
         raise ConfigError(
-            "copybarista export requires --folder-dir or destination.folder.path"
+            "copybarista export requires --folder-dir or destination.folder.path",
         )
     manifest = export_folder(
         config=config,
@@ -242,7 +242,7 @@ def _run_import_change(args: argparse.Namespace) -> None:
     config = load_config(Path(args.config), workflow_name=args.workflow)
     if args.no_verify:
         sys.stderr.write(
-            "Warning: --no-verify disables public-base and final re-export checks.\n"
+            "Warning: --no-verify disables public-base and final re-export checks.\n",
         )
     result = import_change_request(
         ImportRequest(
@@ -253,7 +253,7 @@ def _run_import_change(args: argparse.Namespace) -> None:
             destination=Path(args.destination),
             verify=not args.no_verify,
             merge_import=args.merge_import,
-        )
+        ),
     )
     if args.json:
         sys.stdout.write(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")

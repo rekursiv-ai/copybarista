@@ -277,7 +277,7 @@ def test_check_sync_config_rejects_parent_based_import_baseline(tmp_path: Path):
     text = workflow.read_text(encoding="utf-8")
     start = text.index('base_ref="$(uv')
     end = text.index('github.event.before }}")', start) + len(
-        'github.event.before }}")'
+        'github.event.before }}")',
     )
     workflow.write_text(
         text[:start] + 'base_ref="${{ github.event.before }}"' + text[end:],
@@ -304,7 +304,9 @@ def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path:
     block = text[start:end]
     workflow.write_text(
         (text[:start] + text[end:]).replace(
-            "      - id: settings\n", block + "      - id: settings\n", 1
+            "      - id: settings\n",
+            block + "      - id: settings\n",
+            1,
         ),
         encoding="utf-8",
     )
@@ -466,7 +468,8 @@ def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
 
 def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
     write_sync_scaffold(
-        root=tmp_path, settings=_settings(import_branch_prefix="configgle/import/")
+        root=tmp_path,
+        settings=_settings(import_branch_prefix="configgle/import/"),
     )
     config = tmp_path / "copybarista.sync.toml"
     config.write_text(
@@ -491,7 +494,7 @@ def test_package_validation_workflow_runs_configured_commands():
                 "uv sync --all-groups",
                 "uv run pytest",
             ),
-        )
+        ),
     )
 
     assert 'python-version: ["3.12", "3.13"]' in workflow
@@ -555,7 +558,8 @@ def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
     workflow = tmp_path / ".github/workflows/package-validation.yml"
     workflow.write_text(
         workflow.read_text(encoding="utf-8").replace(
-            "contents: read", "contents: write"
+            "contents: read",
+            "contents: write",
         ),
         encoding="utf-8",
     )
@@ -592,7 +596,7 @@ def test_export_workflow_passes_pr_replay_flags():
             require_pr_metadata=True,
             replay_bootstrap_base="main~10",
             publish_source_rev=True,
-        )
+        ),
     )
 
     assert "--require-pr-metadata" in workflow
@@ -685,7 +689,8 @@ def test_import_workflow_resolves_push_baseline_from_the_ledger():
     steps = _import_steps(import_workflow(_settings()))
     refs = _step_index(steps, lambda step: step.get("id") == "refs")
     helper = _step_index(
-        steps, lambda step: step.get("name") == "Capture trusted import helper"
+        steps,
+        lambda step: step.get("name") == "Capture trusted import helper",
     )
     ledger = _step_index(steps, lambda step: _checkout_path(step) == "target")
     public_base = _step_index(steps, lambda step: _checkout_path(step) == "public-base")
@@ -754,7 +759,7 @@ def test_export_workflow_watches_source_and_sync_helpers():
 
 def test_export_workflow_watches_additional_source_paths():
     workflow = export_workflow(
-        _settings(export_watch_paths=(".codespell-ignore", "docs/POLICY.md"))
+        _settings(export_watch_paths=(".codespell-ignore", "docs/POLICY.md")),
     )
 
     assert '      - ".codespell-ignore"' in workflow
@@ -795,7 +800,8 @@ def _import_steps(workflow: str) -> list[dict[str, Any]]:
 
 
 def _step_index(
-    steps: list[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]
+    steps: list[dict[str, Any]],
+    predicate: Callable[[dict[str, Any]], bool],
 ) -> int:
     """Return the position of the one step matching `predicate`."""
     matches = [index for index, step in enumerate(steps) if predicate(step)]

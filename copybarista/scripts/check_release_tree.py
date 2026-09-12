@@ -34,14 +34,14 @@ BLOCKED_DIR_NAMES = frozenset(
         "build",
         "dist",
         "htmlcov",
-    )
+    ),
 )
 BLOCKED_ROOT_PATHS = frozenset(
     (
         "copy.bara.sky",
         "copy.barista.toml",
         "site",
-    )
+    ),
 )
 BLOCKED_EXACT_PATHS = frozenset((".github/workflows/pages.yml",))
 TEXT_SCAN_NAMES = frozenset((".gitignore", ".pre-commit-config.yaml"))
@@ -51,7 +51,7 @@ TEXT_SCAN_SKIP_PATHS = frozenset(
         "copybarista/scripts/check_pr_text_test.py",
         "copybarista/scripts/check_release_tree.py",
         "copybarista/scripts/check_release_tree_test.py",
-    )
+    ),
 )
 
 

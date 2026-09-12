@@ -46,7 +46,7 @@ def test_workflow_runner_allows_empty_selection(tmp_path: Path):
     (source_ref / "project").mkdir(parents=True)
 
     staged = WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-        tmp_path / "stage"
+        tmp_path / "stage",
     )
 
     assert staged.files == ()
@@ -59,11 +59,12 @@ def test_workflow_runner_keeps_root_sources_relative(tmp_path: Path):
     (source_ref / "README.md").write_text("hello\n", encoding="utf-8")
 
     staged = WorkflowRunner(
-        config=_config(source_root=""), source_ref=source_ref
+        config=_config(source_root=""),
+        source_ref=source_ref,
     ).stage(tmp_path / "stage")
 
     assert [(entry.source, entry.destination) for entry in staged.files] == [
-        ("README.md", "README.md")
+        ("README.md", "README.md"),
     ]
 
 
@@ -85,7 +86,7 @@ def test_workflow_runner_can_transform_read_only_source_snapshot(tmp_path: Path)
                     before="from private import",
                     after="from public import",
                 ),
-            )
+            ),
         ),
         source_ref=source_ref,
     ).stage(tmp_path / "stage")
@@ -105,7 +106,7 @@ def test_workflow_runner_rejects_symlink_outside_source_root(tmp_path: Path):
 
     with pytest.raises(ExportError, match="Symlink points outside"):
         WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-            tmp_path / "stage"
+            tmp_path / "stage",
         )
 
 
@@ -135,7 +136,7 @@ def test_default_python_excludes_skip_out_of_root_venv_symlink(tmp_path: Path):
     )
 
     staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
-        tmp_path / "stage"
+        tmp_path / "stage",
     )
 
     destinations = {entry.destination for entry in staged.files}
@@ -155,7 +156,7 @@ def test_venv_symlink_rejected_when_default_excludes_disabled(tmp_path: Path):
 
     with pytest.raises(ExportError, match="Symlink points outside"):
         WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-            tmp_path / "stage"
+            tmp_path / "stage",
         )
 
 
@@ -168,7 +169,7 @@ def test_workflow_runner_rejects_source_root_symlink_escape(tmp_path: Path):
 
     with pytest.raises(ExportError, match="escapes source checkout"):
         WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-            tmp_path / "stage"
+            tmp_path / "stage",
         )
 
 
@@ -180,7 +181,7 @@ def test_workflow_runner_preserves_internal_symlink(tmp_path: Path):
     (project / "link.txt").symlink_to(project / "target.txt")
 
     staged = WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-        tmp_path / "stage"
+        tmp_path / "stage",
     )
 
     assert (staged.root / "link.txt").is_symlink()
@@ -201,7 +202,7 @@ def test_workflow_runner_copies_extra_file_from_repo_root(tmp_path: Path):
                     source="shared/lib/json.py",
                     destination="project/lib/json.py",
                 ),
-            )
+            ),
         ),
         source_ref=source_ref,
     ).stage(tmp_path / "stage")
@@ -220,7 +221,8 @@ def test_workflow_runner_copies_extra_directory_with_filters(tmp_path: Path):
     (source_ref / "shared/lib/web").mkdir(parents=True)
     (source_ref / "shared/lib/web/search.py").write_text("search\n", encoding="utf-8")
     (source_ref / "shared/lib/web/search_test.py").write_text(
-        "test\n", encoding="utf-8"
+        "test\n",
+        encoding="utf-8",
     )
 
     staged = WorkflowRunner(
@@ -232,7 +234,7 @@ def test_workflow_runner_copies_extra_directory_with_filters(tmp_path: Path):
                     include=("*.py",),
                     exclude=("*_test.py",),
                 ),
-            )
+            ),
         ),
         source_ref=source_ref,
     ).stage(tmp_path / "stage")
@@ -255,16 +257,16 @@ def test_workflow_runner_writes_generated_file(tmp_path: Path):
                     path="project/lib/web/__init__.py",
                     content='"""Web helpers."""\n',
                 ),
-            )
+            ),
         ),
         source_ref=source_ref,
     ).stage(tmp_path / "stage")
 
     assert (staged.root / "project/lib/web/__init__.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == '"""Web helpers."""\n'
     assert [(entry.source, entry.destination) for entry in staged.files] == [
-        ("<generated:project/lib/web/__init__.py>", "project/lib/web/__init__.py")
+        ("<generated:project/lib/web/__init__.py>", "project/lib/web/__init__.py"),
     ]
 
 
@@ -278,7 +280,7 @@ def test_workflow_runner_rejects_extra_copy_collision(tmp_path: Path):
     with pytest.raises(ExportError, match="already exists"):
         WorkflowRunner(
             config=_config(
-                copies=(FileCopy(source="shared/lib/app.py", destination="app.py"),)
+                copies=(FileCopy(source="shared/lib/app.py", destination="app.py"),),
             ),
             source_ref=source_ref,
         ).stage(tmp_path / "stage")
@@ -296,7 +298,7 @@ def test_workflow_runner_rejects_missing_extra_copy_source(tmp_path: Path):
                         source="shared/lib/missing.py",
                         destination="project/lib/missing.py",
                     ),
-                )
+                ),
             ),
             source_ref=source_ref,
         ).stage(tmp_path / "stage")
@@ -318,7 +320,8 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
     source_ref = tmp_path / "repo"
     (source_ref / "project/_stubs/pkg").mkdir(parents=True)
     (source_ref / "project/_stubs/pkg/__init__.py").write_text(
-        "value = 1\n", encoding="utf-8"
+        "value = 1\n",
+        encoding="utf-8",
     )
 
     staged = WorkflowRunner(
@@ -330,7 +333,7 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
                     path="_stubs/pkg",
                     destination="pkg",
                 ),
-            )
+            ),
         ),
         source_ref=source_ref,
     ).stage(tmp_path / "stage")
@@ -338,7 +341,7 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
     assert not (staged.root / "_stubs/pkg/__init__.py").exists()
     assert (staged.root / "pkg/__init__.py").is_file()
     assert [(entry.source, entry.destination) for entry in staged.files] == [
-        ("project/_stubs/pkg/__init__.py", "pkg/__init__.py")
+        ("project/_stubs/pkg/__init__.py", "pkg/__init__.py"),
     ]
 
 

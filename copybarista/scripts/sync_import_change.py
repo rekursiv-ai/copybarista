@@ -64,7 +64,7 @@ def run(argv: list[str] | None = None) -> int:
                 base_branch=args.base_branch,
                 fallback=args.fallback_sha,
             )
-            + "\n"
+            + "\n",
         )
         return 0
     for name in ("project_path", "public_base_ref", "public_head_ref"):
@@ -144,7 +144,8 @@ def run_import_sync(request: ImportRequest) -> None:
         _open_or_update_target_pr(request=request)
         return
     requirements = _export_copybarista_requirements(
-        target_dir=request.target_dir, runner_temp=request.runner_temp
+        target_dir=request.target_dir,
+        runner_temp=request.runner_temp,
     )
     # A failure anywhere below lands no ledger marker, and the export guard
     # reads that ledger -- so this failing does not merely lose one import, it
@@ -167,7 +168,7 @@ def run_import_sync(request: ImportRequest) -> None:
             f"{request.public_sha[:12]} failed, so no import is recorded for "
             "it. Until one lands, the export guard blocks every "
             f"{request.sync_label} export and the public repository stops "
-            "receiving updates."
+            "receiving updates.",
         )
         raise
     if request.open_pr:
@@ -258,13 +259,17 @@ def import_commit_subject(sync_label: str, public_sha: str) -> str:
         raise ImportBaseError(
             f"Refusing to write an unreadable import ledger subject: "
             f"{subject!r}. The baseline walk requires the full 40-character "
-            f"SHA, so this would silently wedge {sync_label} exports."
+            f"SHA, so this would silently wedge {sync_label} exports.",
         )
     return subject
 
 
 def last_synced_public_sha(
-    *, target_dir: Path, sync_label: str, base_branch: str, fallback: str = ""
+    *,
+    target_dir: Path,
+    sync_label: str,
+    base_branch: str,
+    fallback: str = "",
 ) -> str:
     """Return the newest public SHA already imported into the target branch.
 
@@ -325,7 +330,7 @@ def last_synced_public_sha(
         return fallback
     raise ImportBaseError(
         f"No landed '{sync_label}' import commit found on "
-        f"'{base_branch}'; cannot resolve the merge baseline."
+        f"'{base_branch}'; cannot resolve the merge baseline.",
     )
 
 
@@ -461,7 +466,7 @@ def _run_gh(
         _log(
             "GitHub CLI command failed with a transient API error; "
             f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
-            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
+            f"({attempt}/{GITHUB_RETRY_ATTEMPTS}).",
         )
         time.sleep(GITHUB_RETRY_DELAY_SEC)
     raise AssertionError("unreachable")
@@ -658,7 +663,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_import_change(
-    *, request: ImportRequest, project: Path, requirements: Path
+    *,
+    request: ImportRequest,
+    project: Path,
+    requirements: Path,
 ) -> None:
     """Run `copybarista import-change` and capture its JSON report."""
     request.report.parent.mkdir(parents=True, exist_ok=True)
@@ -767,7 +775,11 @@ def _validate_target(
 # producing the transformed public package (``sagent.*`` imports, public
 # ``pyproject.toml`` / ``uv.lock``) under a fresh directory.
 def _export_public_tree(
-    *, request: ImportRequest, project: Path, runner_temp: Path, requirements: Path
+    *,
+    request: ImportRequest,
+    project: Path,
+    runner_temp: Path,
+    requirements: Path,
 ) -> Path:
     """Export the public-form tree for the imported project and return its path."""
     tree = runner_temp / "copybarista-validation-tree"
@@ -923,7 +935,12 @@ def _pr_title_sha(public_sha: str) -> str:
 # protection or pending checks), so a repo with neither rejects it and the merge is
 # issued directly instead.
 def _merge_import_pr(
-    *, branch: str, target_repo: str, title: str, sync_label: str, cwd: Path
+    *,
+    branch: str,
+    target_repo: str,
+    title: str,
+    sync_label: str,
+    cwd: Path,
 ) -> None:
     """Merge the import PR, preferring auto-merge."""
     merge_argv = [
@@ -949,7 +966,7 @@ def _merge_import_pr(
     ):
         _log(
             "Auto-merge unavailable (no branch protection / pending checks); "
-            "merging the import PR directly."
+            "merging the import PR directly.",
         )
         _run_gh(merge_argv, cwd=cwd)
         return

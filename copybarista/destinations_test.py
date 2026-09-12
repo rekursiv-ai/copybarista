@@ -150,7 +150,8 @@ def test_folder_destination_rejects_staged_symlink_escape(tmp_path: Path):
 
 
 def test_folder_destination_rejects_paths_inside_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     home = tmp_path / "home"
     home.mkdir()

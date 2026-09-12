@@ -183,11 +183,11 @@ class SyncSettings:
 def _branch_slug(value: str) -> str:
     """Return the generated branch slug for a package name."""
     slug = "".join(char if char.isalnum() else "-" for char in value.casefold()).strip(
-        "-"
+        "-",
     )
     if not slug:
         raise ConfigError(
-            "sync.package_name must contain at least one alphanumeric character."
+            "sync.package_name must contain at least one alphanumeric character.",
         )
     return slug
 
@@ -266,7 +266,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
             sync,
             "validation_commands",
             default=_default_validation_commands(
-                smoke_import=_required_str(sync, "smoke_import")
+                smoke_import=_required_str(sync, "smoke_import"),
             ),
         ),
         validation_commands_comment=_optional_str_tuple(
@@ -285,10 +285,14 @@ def load_sync_settings(path: Path) -> SyncSettings:
             default=False,
         ),
         sync_user_name=_optional_str(
-            sync, "sync_user_name", default=DEFAULT_SYNC_USER_NAME
+            sync,
+            "sync_user_name",
+            default=DEFAULT_SYNC_USER_NAME,
         ),
         sync_user_email=_optional_str(
-            sync, "sync_user_email", default=DEFAULT_SYNC_USER_EMAIL
+            sync,
+            "sync_user_email",
+            default=DEFAULT_SYNC_USER_EMAIL,
         ),
         sync_token_login=_optional_str(sync, "sync_token_login", default=""),
         export_branch_prefix=_optional_str(sync, "export_branch_prefix", default=""),
@@ -334,7 +338,10 @@ def load_sync_settings(path: Path) -> SyncSettings:
 
 
 def write_sync_scaffold(
-    *, root: Path, settings: SyncSettings, force: bool = False
+    *,
+    root: Path,
+    settings: SyncSettings,
+    force: bool = False,
 ) -> list[Path]:
     """Write reusable package sync scaffolding into a package root.
 
@@ -355,7 +362,7 @@ def write_sync_scaffold(
         root / "copy.barista.toml": copy_barista_toml(settings),
         root / "copybarista.sync.toml": sync_toml(settings),
         root / ".github" / "workflows" / "sync-to-source.yml": import_workflow(
-            settings
+            settings,
         ),
         root / ".github" / "workflows" / "package-validation.yml": (
             package_validation_workflow(settings)
@@ -364,7 +371,7 @@ def write_sync_scaffold(
     existing = [str(path.relative_to(root)) for path in files if path.exists()]
     if existing and not force:
         raise ConfigError(
-            "Refusing to overwrite existing sync files: " + ", ".join(existing)
+            "Refusing to overwrite existing sync files: " + ", ".join(existing),
         )
     written: list[Path] = []
     for path, content in files.items():
@@ -394,13 +401,13 @@ def check_sync_config(*, root: Path) -> None:
     settings = load_sync_settings(root / "copybarista.sync.toml")
     config = load_config(root / "copy.barista.toml")
     workflow_text = (workflow_dir(root) / "sync-to-source.yml").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     # Managed configs opt into the shared Python-artifact default rather than
     # enumerating caches/venvs; without it the export would leak them.
     if not config.files.use_default_python_excludes:
         raise ConfigError(
-            "copy.barista.toml [files] must set use_default_python_excludes = true."
+            "copy.barista.toml [files] must set use_default_python_excludes = true.",
         )
     # The copybarista control files are not covered by the default set, so they
     # must still appear in the selection's exclude list.
@@ -412,7 +419,7 @@ def check_sync_config(*, root: Path) -> None:
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
     _validate_package_validation_workflow_yaml(
         workflow_text=(workflow_dir(root) / "package-validation.yml").read_text(
-            encoding="utf-8"
+            encoding="utf-8",
         ),
         settings=settings,
     )
@@ -554,7 +561,7 @@ def package_validation_workflow(settings: SyncSettings) -> str:
                 "      matrix:",
                 f"        python-version: [{python_versions}]",
                 "",
-            )
+            ),
         )
     return _render_template(
         "package-validation.yml.tmpl",
@@ -637,10 +644,10 @@ def export_workflow(settings: SyncSettings) -> str:
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/sync_export_pr.py"
+                f"{settings.copybarista_project_path}/scripts/sync_export_pr.py",
             ),
             "IMPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/sync_import_change.py"
+                f"{settings.copybarista_project_path}/scripts/sync_import_change.py",
             ),
             "PUBLIC_REPO": _yaml_str(settings.public_repo),
             "EXPORT_BRANCH": _yaml_str(f"{settings.export_prefix}main"),
@@ -706,7 +713,7 @@ def import_workflow(settings: SyncSettings) -> str:
             "EXPORT_PREFIX_EXPR": _github_expr_str(settings.export_prefix),
             "SYNC_USER_EMAIL_EXPR": _github_expr_str(settings.sync_user_email),
             "EXPORT_BRANCH_MESSAGE_EXPR": _github_expr_str(
-                f"{settings.sync_label} export branch:"
+                f"{settings.sync_label} export branch:",
             ),
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
@@ -757,7 +764,9 @@ def _required_paths(root: Path) -> tuple[Path, ...]:
 
 
 def _validate_import_workflow_yaml(
-    *, workflow_text: str, settings: SyncSettings
+    *,
+    workflow_text: str,
+    settings: SyncSettings,
 ) -> None:
     """Validate the exported public-to-source workflow matches settings."""
     try:
@@ -782,7 +791,7 @@ def _validate_import_workflow_yaml(
     for key, expected in expected_env.items():
         if env.get(key) != expected:
             raise ConfigError(
-                f"sync-to-source.yml jobs.import-change.env.{key} must be {expected}."
+                f"sync-to-source.yml jobs.import-change.env.{key} must be {expected}.",
             )
     job_if = job.get("if", "")
     if not isinstance(job_if, str):
@@ -796,17 +805,18 @@ def _validate_import_workflow_yaml(
     ):
         if text not in job_if:
             raise ConfigError(
-                f"sync-to-source.yml jobs.import-change.if must contain {text}."
+                f"sync-to-source.yml jobs.import-change.if must contain {text}.",
             )
     steps = _yaml_list(job.get("steps"), "jobs.import-change.steps")
     setup_step = _workflow_uses_step(steps, action_ref("actions/setup-python"))
     with_config = _yaml_mapping(
-        setup_step.get("with"), "jobs.import-change.steps.setup-python.with"
+        setup_step.get("with"),
+        "jobs.import-change.steps.setup-python.with",
     )
     if with_config.get("python-version") != settings.validation_python_versions[0]:
         raise ConfigError(
             "sync-to-source.yml setup-python python-version must match "
-            "validation_python_versions[0]."
+            "validation_python_versions[0].",
         )
     import_step = _workflow_step_run(steps, "Import public tree into target repository")
     pr_step = _workflow_step_run(steps, "Open or update target import PR")
@@ -846,7 +856,9 @@ def _validate_import_workflow_yaml(
             raise ConfigError(f"sync-to-source.yml must reference {text}.")
     _assert_resolves_baseline_from_ledger(steps)
     _assert_installs_system_packages(
-        steps=steps, packages=settings.system_packages, workflow="sync-to-source.yml"
+        steps=steps,
+        packages=settings.system_packages,
+        workflow="sync-to-source.yml",
     )
 
 
@@ -864,7 +876,7 @@ def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
         if text not in refs_run:
             raise ConfigError(
                 "sync-to-source.yml step 'Resolve public refs' must resolve the "
-                f"push baseline from the import ledger; {text} is missing."
+                f"push baseline from the import ledger; {text} is missing.",
             )
     refs = _workflow_step_index(steps, lambda step: step.get("id") == "refs")
     for name, index in (
@@ -875,19 +887,20 @@ def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
         (
             "the trusted import helper installed from it",
             _workflow_step_index(
-                steps, lambda step: step.get("name") == "Capture trusted import helper"
+                steps,
+                lambda step: step.get("name") == "Capture trusted import helper",
             ),
         ),
     ):
         if index > refs:
             raise ConfigError(
                 f"sync-to-source.yml must place {name} before the step that "
-                "resolves the merge baseline."
+                "resolves the merge baseline.",
             )
     if _checkout_index(steps, "public-base") < refs:
         raise ConfigError(
             "sync-to-source.yml must check out public-base after the step that "
-            "resolves the merge baseline."
+            "resolves the merge baseline.",
         )
 
 
@@ -903,7 +916,8 @@ def _checkout_index(steps: list[object], path: str) -> int:
 
 
 def _workflow_step_index(
-    steps: list[object], predicate: Callable[[dict[str, object]], bool]
+    steps: list[object],
+    predicate: Callable[[dict[str, object]], bool],
 ) -> int:
     """Return the position of the one step matching `predicate`."""
     matches = [
@@ -914,7 +928,7 @@ def _workflow_step_index(
     if len(matches) != 1:
         raise ConfigError(
             "sync-to-source.yml must define exactly one step matching each "
-            f"import ordering role; found {len(matches)}."
+            f"import ordering role; found {len(matches)}.",
         )
     return matches[0]
 
@@ -926,14 +940,16 @@ def _workflow_step_index(
 # accepted. The export and import workflows were already guarded this way
 # (``sync_workflow_identity_test.py``); this closes the third file.
 def _validate_package_validation_workflow_yaml(
-    *, workflow_text: str, settings: SyncSettings
+    *,
+    workflow_text: str,
+    settings: SyncSettings,
 ) -> None:
     """Assert the workflow is byte-identical to what the generator produces."""
     if workflow_text == package_validation_workflow(settings):
         return
     raise ConfigError(
         "package-validation.yml is not what the generator produces; regenerate "
-        "it with `copybarista write-public-workflows <sync_config>`."
+        "it with `copybarista write-public-workflows <sync_config>`.",
     )
 
 
@@ -941,7 +957,10 @@ def _validate_package_validation_workflow_yaml(
 # system tools; this check fails the config if either workflow drifts from
 # ``system_packages``.
 def _assert_installs_system_packages(
-    *, steps: list[object], packages: tuple[str, ...], workflow: str
+    *,
+    steps: list[object],
+    packages: tuple[str, ...],
+    workflow: str,
 ) -> None:
     """Assert a workflow's steps install every configured system package."""
     if not packages:
@@ -951,7 +970,7 @@ def _assert_installs_system_packages(
     # or as a substring of another package used to satisfy this check with no
     # apt-get anywhere in the workflow.
     installed = shlex.split(
-        _workflow_step_run(steps, "Install system packages", workflow=workflow)
+        _workflow_step_run(steps, "Install system packages", workflow=workflow),
     )
     for package in packages:
         # ``postgresql`` renders as the PGDG-pinned server, never the bare
@@ -960,7 +979,7 @@ def _assert_installs_system_packages(
         if expected not in installed:
             raise ConfigError(
                 f"{workflow} must install system package {package!r} "
-                "(see system_packages)."
+                "(see system_packages).",
             )
 
 
@@ -968,7 +987,10 @@ def _assert_installs_system_packages(
 # workflows, and hardcoding one name sent operators debugging a broken ``package-
 # validation.yml`` to ``sync-to-source.yml`` instead.
 def _workflow_step_run(
-    steps: list[object], name: str, *, workflow: str = "sync-to-source.yml"
+    steps: list[object],
+    name: str,
+    *,
+    workflow: str = "sync-to-source.yml",
 ) -> str:
     """Return the shell script for a named workflow step."""
     for step in steps:
@@ -1033,25 +1055,31 @@ def _optional_pr_str(pull_request: dict[str, object], key: str, *, default: str)
     value = pull_request.get(key, default)
     if not isinstance(value, str):
         raise ConfigError(
-            f"copybarista.sync.toml [pull_request].{key} must be a string."
+            f"copybarista.sync.toml [pull_request].{key} must be a string.",
         )
     return value
 
 
 def _optional_pr_bool(
-    pull_request: dict[str, object], key: str, *, default: bool
+    pull_request: dict[str, object],
+    key: str,
+    *,
+    default: bool,
 ) -> bool:
     """Read an optional boolean from the pull_request table."""
     value = pull_request.get(key, default)
     if not isinstance(value, bool):
         raise ConfigError(
-            f"copybarista.sync.toml [pull_request].{key} must be a boolean."
+            f"copybarista.sync.toml [pull_request].{key} must be a boolean.",
         )
     return value
 
 
 def _optional_str_tuple(
-    sync: dict[str, object], key: str, *, default: tuple[str, ...]
+    sync: dict[str, object],
+    key: str,
+    *,
+    default: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Read an optional list of strings from the sync table."""
     if key not in sync:
@@ -1064,21 +1092,21 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
     value = sync.get(key, [])
     if not isinstance(value, list):
         raise ConfigError(
-            f"copybarista.sync.toml sync.{key} must be a list of strings."
+            f"copybarista.sync.toml sync.{key} must be a list of strings.",
         )
     value = cast(list[object], value)
     if not all(isinstance(item, str) for item in value):
         raise ConfigError(
-            f"copybarista.sync.toml sync.{key} must be a list of strings."
+            f"copybarista.sync.toml sync.{key} must be a list of strings.",
         )
     strings = [item for item in value if isinstance(item, str)]
     if len(strings) != len(value):
         raise ConfigError(
-            f"copybarista.sync.toml sync.{key} must be a list of strings."
+            f"copybarista.sync.toml sync.{key} must be a list of strings.",
         )
     if not strings and key == "type_check_targets":
         raise ConfigError(
-            "copybarista.sync.toml sync.type_check_targets cannot be empty."
+            "copybarista.sync.toml sync.type_check_targets cannot be empty.",
         )
     return tuple(strings)
 
@@ -1121,7 +1149,7 @@ def _validate_settings(settings: SyncSettings) -> None:
     if floor not in settings.validation_python_versions:
         raise ConfigError(
             f"sync.validation_python_versions must include the published floor "
-            f"{floor!r}; got {settings.validation_python_versions!r}."
+            f"{floor!r}; got {settings.validation_python_versions!r}.",
         )
     if not settings.validation_commands:
         raise ConfigError("sync.validation_commands cannot be empty.")
@@ -1135,25 +1163,25 @@ def _validate_settings(settings: SyncSettings) -> None:
         if command.lstrip().startswith("#"):
             raise ConfigError(
                 "sync.validation_commands entries must be executable commands; "
-                "put explanatory text in sync.validation_commands_comment."
+                "put explanatory text in sync.validation_commands_comment.",
             )
     if not settings.pr_default_title.strip():
         raise ConfigError(
-            "copybarista.sync.toml [pull_request].default_title cannot be empty."
+            "copybarista.sync.toml [pull_request].default_title cannot be empty.",
         )
     if not settings.pr_default_body.strip():
         raise ConfigError(
-            "copybarista.sync.toml [pull_request].default_body cannot be empty."
+            "copybarista.sync.toml [pull_request].default_body cannot be empty.",
         )
     if settings.pr_metadata_source != "commit_messages":
         raise ConfigError(
             "copybarista.sync.toml [pull_request].metadata_source must be "
-            "'commit_messages'."
+            "'commit_messages'.",
         )
     if any(ord(char) < CONTROL_CHAR_BOUND for char in settings.replay_bootstrap_base):
         raise ConfigError(
             "copybarista.sync.toml [pull_request].replay_bootstrap_base must not "
-            "contain control characters."
+            "contain control characters.",
         )
     _validate_branch_prefix(settings.export_prefix, name="export_branch_prefix")
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
@@ -1168,7 +1196,7 @@ def _validate_apt_package(value: str, *, name: str) -> None:
     if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", value):
         raise ConfigError(
             f"sync.{name} entries must be Debian package names "
-            f"([a-z0-9][a-z0-9+.-]*); got {value!r}."
+            f"([a-z0-9][a-z0-9+.-]*); got {value!r}.",
         )
 
 
@@ -1357,16 +1385,16 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
         # gate in the shared pre-commit config runs when `pg_config` is present.
         lines.append(
             "          sudo apt-get install -y --no-install-recommends "
-            "postgresql-common ca-certificates curl gnupg\n"
+            "postgresql-common ca-certificates curl gnupg\n",
         )
         lines.append(
-            "          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y\n"
+            "          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y\n",
         )
         lines.append("          timeout 120 sudo apt-get update\n")
         lines.append(
             "          timeout 300 sudo apt-get install -y --no-install-recommends "
             f"postgresql-{PG_MAJOR} postgresql-client-{PG_MAJOR} "
-            f"postgresql-{PG_MAJOR}-pgvector\n"
+            f"postgresql-{PG_MAJOR}-pgvector\n",
         )
     return "".join(lines)
 

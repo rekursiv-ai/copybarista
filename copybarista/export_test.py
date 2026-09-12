@@ -147,10 +147,12 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
     project.mkdir(parents=True)
     (project / "pkg").mkdir()
     (project / "__init__.py").write_text(
-        "from internal.demo import api\n", encoding="utf-8"
+        "from internal.demo import api\n",
+        encoding="utf-8",
     )
     (project / "pkg" / "module.py").write_text(
-        "from internal.demo import api\n", encoding="utf-8"
+        "from internal.demo import api\n",
+        encoding="utf-8",
     )
     (project / "README.md").write_text("readme\n", encoding="utf-8")
     (project / ".gitignore").write_text(".venv/\n", encoding="utf-8")
@@ -202,7 +204,7 @@ def test_folder_export_can_prefix_package_files(tmp_path: Path):
     assert (tmp_path / "out" / ".gitignore").read_text(encoding="utf-8") == ".venv/\n"
     assert (tmp_path / "out" / "README.md").read_text(encoding="utf-8") == "readme\n"
     assert (tmp_path / "out" / "demo" / "__init__.py").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     ) == "from demo import api\n"
 
 
@@ -360,7 +362,8 @@ def test_folder_export_runs_leak_checks_after_transforms(tmp_path: Path):
     project = source_ref / "project"
     project.mkdir(parents=True)
     (project / "module.py").write_text(
-        "from internal_pkg.demo import api\n", encoding="utf-8"
+        "from internal_pkg.demo import api\n",
+        encoding="utf-8",
     )
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
@@ -404,7 +407,8 @@ def test_folder_export_fails_on_leak_check_violation(tmp_path: Path):
     project = source_ref / "project"
     project.mkdir(parents=True)
     (project / "module.py").write_text(
-        "from internal_pkg.demo import api\n", encoding="utf-8"
+        "from internal_pkg.demo import api\n",
+        encoding="utf-8",
     )
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(

@@ -307,7 +307,7 @@ def run_export_sync(request: ExportRequest) -> None:
             _warn(
                 f"Skipping {request.sync_label} export: import PR(s) still open, "
                 "so the source tree does not yet contain the public changes: "
-                f"{', '.join(pending)}."
+                f"{', '.join(pending)}.",
             )
             return
         # An import that failed (merge conflict, validation error) opens no PR
@@ -334,12 +334,12 @@ def run_export_sync(request: ExportRequest) -> None:
                 f"{unimported[:12]} has not been imported into the source "
                 "(no landed import records it), so exporting would revert it. "
                 "Land that import -- check the public repository's import "
-                "workflow for a failure -- then re-run this export."
+                "workflow for a failure -- then re-run this export.",
             )
     dry_public_dir = None
     if request.dry_run:
         dry_public_dir = _clone_public_checkout_for_dry_run(
-            public_dir=request.public_dir
+            public_dir=request.public_dir,
         )
         _log(f"Dry run: using temporary public checkout at {dry_public_dir}.")
         request = replace(request, public_dir=dry_public_dir)
@@ -396,7 +396,9 @@ def export_pr_text(
 
 
 def replay_pr_metadata(
-    *, base: PrReplayState, patches: tuple[PrMetadataPatch, ...]
+    *,
+    base: PrReplayState,
+    patches: tuple[PrMetadataPatch, ...],
 ) -> PrReplayState:
     """Apply source commit PR metadata patches in chronological order.
 
@@ -442,7 +444,11 @@ def replay_pr_metadata(
 
 
 def export_branch_name(
-    *, explicit: str, source_branch: str, source_sha: str, prefix: str
+    *,
+    explicit: str,
+    source_branch: str,
+    source_sha: str,
+    prefix: str,
 ) -> str:
     """Return the source-to-public sync branch name.
 
@@ -463,7 +469,7 @@ def export_branch_name(
     else:
         if source_sha == "manual":
             sys.stderr.write(
-                "--branch or --source-branch is required for manual runs.\n"
+                "--branch or --source-branch is required for manual runs.\n",
             )
             raise SystemExit(2)
         branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
@@ -476,7 +482,10 @@ def _commit_author(name: str, email: str) -> str:
 
 
 def _generated_commit_author(
-    *, authors: tuple[SourceAuthor, ...], fallback_name: str, fallback_email: str
+    *,
+    authors: tuple[SourceAuthor, ...],
+    fallback_name: str,
+    fallback_email: str,
 ) -> str:
     """Return the primary generated commit author identity."""
     if authors:
@@ -677,7 +686,7 @@ def _run_gh(
         _log(
             "GitHub CLI command failed with a transient API error; "
             f"retrying in {GITHUB_RETRY_DELAY_SEC} seconds "
-            f"({attempt}/{GITHUB_RETRY_ATTEMPTS})."
+            f"({attempt}/{GITHUB_RETRY_ATTEMPTS}).",
         )
         time.sleep(GITHUB_RETRY_DELAY_SEC)
     raise AssertionError("unreachable")
@@ -1048,7 +1057,7 @@ def _git_toplevel(start: Path) -> Path:
     if result.returncode != 0:
         raise SystemExit(
             f"Cannot find Git repository containing {start}: "
-            "pass --source-dir or run from within a Git checkout."
+            "pass --source-dir or run from within a Git checkout.",
         )
     return Path(result.stdout.strip())
 
@@ -1089,7 +1098,11 @@ def _postleakcheck_validation(*, project: Path) -> None:
 
 
 def _export_public_tree(
-    *, project: Path, source_dir: Path, export_dir: Path, manifest: Path
+    *,
+    project: Path,
+    source_dir: Path,
+    export_dir: Path,
+    manifest: Path,
 ) -> None:
     """Export the public tree and write the machine-readable manifest."""
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -1256,7 +1269,9 @@ def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
 
 
 def _resolve_pr_replay_plan(
-    *, request: ExportRequest, pr_template: str
+    *,
+    request: ExportRequest,
+    pr_template: str,
 ) -> PrReplayPlan:
     """Resolve the PR title/body by replaying source commit metadata."""
     current_source_rev = _current_source_rev(
@@ -1279,7 +1294,7 @@ def _resolve_pr_replay_plan(
     _log(
         "PR replay source range: "
         f"base={_short_rev(replay_base)} head={_short_rev(current_source_rev)} "
-        f"scope={request.replay_settings.scope or '<all>'} branch={request.branch}"
+        f"scope={request.replay_settings.scope or '<all>'} branch={request.branch}",
     )
     patches = _source_pr_metadata(
         source_dir=request.source_dir,
@@ -1288,18 +1303,19 @@ def _resolve_pr_replay_plan(
         forbidden_text=request.forbidden_pr_text,
         scope=request.replay_settings.scope,
         text_transforms=_load_pr_text_transforms(
-            source_dir=request.source_dir, project_path=request.project_path
+            source_dir=request.source_dir,
+            project_path=request.project_path,
         ),
     )
     _log(
         "PR metadata replay: "
-        f"patches={len(patches)} commits={len({patch.commit_sha for patch in patches})}"
+        f"patches={len(patches)} commits={len({patch.commit_sha for patch in patches})}",
     )
     if request.replay_settings.require_metadata and not patches:
         raise PrReplayError(
             "PR metadata replay found no Copybarista-PR-* fields in "
             f"{_short_rev(replay_base)}..{_short_rev(current_source_rev)}. "
-            "Add commit metadata or disable [pull_request].require_pr_metadata."
+            "Add commit metadata or disable [pull_request].require_pr_metadata.",
         )
     state = replay_pr_metadata(
         base=_base_pr_state(
@@ -1323,7 +1339,7 @@ def _resolve_pr_replay_plan(
         "PR replay result: "
         f"title={state.title!r} entries={len(state.body_entries)} "
         f"authors={_format_source_authors(state.authors)} "
-        f"applied=sha256:{state.applied_source_digest[:12]}"
+        f"applied=sha256:{state.applied_source_digest[:12]}",
     )
     return _render_pr_replay_plan_body(
         request=request,
@@ -1339,7 +1355,10 @@ def _resolve_pr_replay_plan(
 
 
 def _render_pr_replay_plan_body(
-    *, request: ExportRequest, pr_plan: PrReplayPlan, pr_template: str
+    *,
+    request: ExportRequest,
+    pr_plan: PrReplayPlan,
+    pr_template: str,
 ) -> PrReplayPlan:
     """Render PR body text from resolved replay state."""
     return replace(
@@ -1357,7 +1376,10 @@ def _render_pr_replay_plan_body(
 def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
     """Return the current private source checkout revision."""
     result = _run(
-        ["git", "rev-parse", "HEAD"], cwd=source_dir, check=False, capture=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=source_dir,
+        check=False,
+        capture=True,
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
@@ -1383,7 +1405,9 @@ def _public_head_unimported(
     if not head:
         return ""
     synced = _last_synced_public_sha(
-        target_dir=source_dir, sync_label=sync_label, base_branch=base_branch
+        target_dir=source_dir,
+        sync_label=sync_label,
+        base_branch=base_branch,
     )
     if not synced:
         # No landed import at all. That is a genuine bootstrap only when the
@@ -1404,7 +1428,10 @@ def _public_head_unimported(
     # written by someone other than the export. A commit the export authored is
     # already a render of this source; overwriting it loses nothing.
     foreign = _foreign_commits_since(
-        base=synced, head=head, author_email=sync_user_email, cwd=public_dir
+        base=synced,
+        head=head,
+        author_email=sync_user_email,
+        cwd=public_dir,
     )
     return head if foreign else ""
 
@@ -1427,7 +1454,10 @@ def _public_head_sha(*, cwd: Path) -> str:
 
 
 def _last_synced_public_sha(
-    *, target_dir: Path, sync_label: str, base_branch: str
+    *,
+    target_dir: Path,
+    sync_label: str,
+    base_branch: str,
 ) -> str:
     """Return the newest public SHA the source has imported, or ``""`` when none."""
     try:
@@ -1447,12 +1477,16 @@ def _last_synced_public_sha(
         # guard must stop the export rather than wave it through.
         raise ExportGuardError(
             f"Cannot read the {sync_label} import ledger, so whether this "
-            f"export would revert public work is unknown: {err}"
+            f"export would revert public work is unknown: {err}",
         ) from err
 
 
 def _foreign_commits_since(
-    *, base: str, head: str, author_email: str, cwd: Path
+    *,
+    base: str,
+    head: str,
+    author_email: str,
+    cwd: Path,
 ) -> tuple[str, ...]:
     """Return commits in ``base..head`` not authored by the export bot."""
     # Filter by author in Python rather than with ``--author``: git has no
@@ -1531,7 +1565,8 @@ def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
         capture=True,
     )
     parsed = _json_from_gh(
-        result.stdout, context=f"GitHub PR state for branch {branch}"
+        result.stdout,
+        context=f"GitHub PR state for branch {branch}",
     )
     if not isinstance(parsed, dict):
         raise PrReplayError(f"GitHub PR state for branch {branch} is not a mapping.")
@@ -1588,7 +1623,7 @@ def _resolved_replay_base(
         raise PrReplayError(
             "Existing generated PR has no Copybarista replay marker. "
             f"Branch: {request.branch}. Configure replay_bootstrap_base or rerun "
-            "with manual PR text once to migrate the PR."
+            "with manual PR text once to migrate the PR.",
         )
     if branch_markers.source_digest:
         return _resolve_source_marker(
@@ -1675,7 +1710,10 @@ def _source_pr_metadata(
 
 
 def _require_source_history(
-    *, source_dir: Path, replay_base: str, current_source_rev: str
+    *,
+    source_dir: Path,
+    replay_base: str,
+    current_source_rev: str,
 ) -> None:
     """Fail if the source checkout cannot replay the requested commit range."""
     result = _run(
@@ -1689,7 +1727,7 @@ def _require_source_history(
             "Source checkout history is insufficient for PR metadata replay. "
             f"Missing base {_short_rev(replay_base)} before "
             f"{_short_rev(current_source_rev)} in {source_dir}. Use fetch-depth: 0 "
-            "or fetch the replay range before running Copybarista."
+            "or fetch the replay range before running Copybarista.",
         )
 
 
@@ -1771,7 +1809,7 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
                 fallback_email=request.sync_user_email,
             )
         } "
-        f"coauthors={_format_source_authors(pr_plan.state.authors[1:])}"
+        f"coauthors={_format_source_authors(pr_plan.state.authors[1:])}",
     )
 
     _run(["git", "config", "user.name", request.sync_user_name], cwd=request.public_dir)
@@ -1851,7 +1889,10 @@ def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> No
         f"{request.sync_label} export branch: {request.branch}",
     ]
     result = _run_gh(
-        [*merge_argv, "--auto"], cwd=request.public_dir, capture=True, check=False
+        [*merge_argv, "--auto"],
+        cwd=request.public_dir,
+        capture=True,
+        check=False,
     )
     if result.returncode == 0:
         _write_process_output(result)
@@ -1859,7 +1900,7 @@ def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> No
     if _auto_merge_unavailable(result):
         _log(
             "Auto-merge unavailable (no branch protection / pending checks); "
-            "merging the export PR directly."
+            "merging the export PR directly.",
         )
         _run_gh(merge_argv, cwd=request.public_dir)
         return
@@ -1943,7 +1984,7 @@ def _parse_pr_metadata_message(
             body_lines, next_idx = _body_lines_until_next_scope(lines, start=idx + 1)
             for body_line in body_lines:
                 if body_line.startswith("Copybarista-PR-") and not body_line.startswith(
-                    "Copybarista-PR-Scope:"
+                    "Copybarista-PR-Scope:",
                 ):
                     raise _metadata_error(
                         commit_sha,
@@ -1981,7 +2022,7 @@ def _parse_pr_metadata_message(
                 # typo'd field must not wedge the whole export. Skip with a
                 # warning instead of aborting.
                 sys.stderr.write(
-                    f"{_metadata_error(commit_sha, name, 'unknown field; ignored')}\n"
+                    f"{_metadata_error(commit_sha, name, 'unknown field; ignored')}\n",
                 )
                 idx += 1
                 continue
@@ -2039,10 +2080,16 @@ def _patch_from_metadata_block(
     # a commit message is immutable once pushed, so there was no other remedy,
     # and the "fix" was always just discarding the same description this drops.
     title = _scrubbed_or_dropped(
-        commit_sha=commit_sha, field="Title", value=title, forbidden_text=forbidden_text
+        commit_sha=commit_sha,
+        field="Title",
+        value=title,
+        forbidden_text=forbidden_text,
     )
     body = _scrubbed_or_dropped(
-        commit_sha=commit_sha, field="Body", value=body, forbidden_text=forbidden_text
+        commit_sha=commit_sha,
+        field="Body",
+        value=body,
+        forbidden_text=forbidden_text,
     )
     return PrMetadataPatch(
         commit_sha=commit_sha,
@@ -2066,7 +2113,9 @@ def _patch_from_metadata_block(
 # commit's ordinary prose. Without the blank-line stop the body would greedily absorb
 # that unrelated prose (and leak-check it).
 def _body_lines_until_next_scope(
-    lines: list[str], *, start: int
+    lines: list[str],
+    *,
+    start: int,
 ) -> tuple[list[str], int]:
     """Return body lines up to the next scoped block or blank separator."""
     body_lines: list[str] = []
@@ -2080,7 +2129,10 @@ def _body_lines_until_next_scope(
 
 
 def _validated_source_author(
-    *, commit_sha: str, author: SourceAuthor, forbidden_text: tuple[str, ...]
+    *,
+    commit_sha: str,
+    author: SourceAuthor,
+    forbidden_text: tuple[str, ...],
 ) -> SourceAuthor:
     """Return a source author suitable for public git attribution."""
     if not author.name.strip() or not author.email.strip():
@@ -2119,7 +2171,7 @@ def _recover_body_entries(
         if not commit_sha:
             _log(
                 "Dropped stale PR entry marker: "
-                f"marker={_short_source_marker(entry.commit_sha)}"
+                f"marker={_short_source_marker(entry.commit_sha)}",
             )
             continue
         recovered.append(entry)
@@ -2136,13 +2188,16 @@ def _recover_body_entries(
             "Recovered PR entry author: "
             f"marker={_short_source_marker(entry.commit_sha)} "
             f"commit={_short_rev(commit_sha)} "
-            f"author={_format_source_authors((author,))}"
+            f"author={_format_source_authors((author,))}",
         )
     return tuple(recovered), authors
 
 
 def _source_author(
-    *, source_dir: Path, commit_sha: str, forbidden_text: tuple[str, ...]
+    *,
+    source_dir: Path,
+    commit_sha: str,
+    forbidden_text: tuple[str, ...],
 ) -> SourceAuthor:
     """Read and validate the git author for one source commit."""
     result = _run(
@@ -2153,7 +2208,7 @@ def _source_author(
     parts = result.stdout.rstrip("\n").split("\0")
     if len(parts) != 2:
         raise PrReplayError(
-            f"Cannot parse source author for commit {_short_rev(commit_sha)}."
+            f"Cannot parse source author for commit {_short_rev(commit_sha)}.",
         )
     return _validated_source_author(
         commit_sha=commit_sha,
@@ -2168,7 +2223,9 @@ def _normalized_scope(scope: str) -> str:
 
 
 def _append_source_author(
-    *, authors: tuple[SourceAuthor, ...], author: SourceAuthor
+    *,
+    authors: tuple[SourceAuthor, ...],
+    author: SourceAuthor,
 ) -> tuple[SourceAuthor, ...]:
     """Append one source author unless an equivalent email is already present."""
     normalized_email = author.email.casefold()
@@ -2215,7 +2272,7 @@ def _render_pr_body(
             ),
             "",
             f"{PR_MARKER_PREFIX}version={PR_STATE_VERSION} applied={marker_value} -->",
-        )
+        ),
     )
     body = (
         _render_pr_template_body(template=pr_template, summary_lines=lines)
@@ -2370,7 +2427,10 @@ def _branch_markers(*, branch: str, cwd: Path) -> BranchMarkers:
     _fetch_branch(branch=branch, cwd=cwd)
     ref = f"refs/remotes/origin/{branch}"
     exists = _run(
-        ["git", "rev-parse", "--verify", ref], cwd=cwd, check=False, capture=True
+        ["git", "rev-parse", "--verify", ref],
+        cwd=cwd,
+        check=False,
+        capture=True,
     )
     if exists.returncode != 0:
         return BranchMarkers(source_digest="", replay_base_digest="", exists=False)
@@ -2401,12 +2461,15 @@ def _resolve_source_marker(*, source_dir: Path, marker: str, marker_source: str)
         return commit_sha
     raise PrReplayError(
         f"Cannot resolve {marker_source} digest "
-        f"{marker.removeprefix('sha256:')[:12]} in {source_dir}."
+        f"{marker.removeprefix('sha256:')[:12]} in {source_dir}.",
     )
 
 
 def _maybe_resolve_source_marker(
-    *, source_dir: Path, marker: str, marker_source: str
+    *,
+    source_dir: Path,
+    marker: str,
+    marker_source: str,
 ) -> str:
     """Resolve a public marker to a source commit if it remains reachable."""
     if marker.startswith("sha:"):
@@ -2445,7 +2508,10 @@ def _maybe_resolve_source_rev(*, source_dir: Path, rev: str) -> str:
 def _source_parent(*, source_dir: Path, rev: str) -> str:
     """Return the source parent revision, or empty string for a root commit."""
     result = _run(
-        ["git", "rev-parse", f"{rev}^"], cwd=source_dir, check=False, capture=True
+        ["git", "rev-parse", f"{rev}^"],
+        cwd=source_dir,
+        check=False,
+        capture=True,
     )
     if result.returncode == 0:
         return result.stdout.strip()
@@ -2460,7 +2526,7 @@ def _source_rev_digest(rev: str) -> str:
 def _metadata_error(commit_sha: str, field: str, reason: str) -> PrMetadataError:
     """Build a commit-specific PR metadata error."""
     return PrMetadataError(
-        f"Commit {_short_rev(commit_sha)} Copybarista-PR-{field}: {reason}."
+        f"Commit {_short_rev(commit_sha)} Copybarista-PR-{field}: {reason}.",
     )
 
 
@@ -2471,7 +2537,9 @@ def _metadata_error(commit_sha: str, field: str, reason: str) -> PrMetadataError
 # scrubbed per commit -- before the leak check runs. A missing or unparseable config
 # yields no transforms (the leak check still guards).
 def _load_pr_text_transforms(
-    *, source_dir: Path, project_path: Path
+    *,
+    source_dir: Path,
+    project_path: Path,
 ) -> tuple[Transform, ...]:
     """Load the project's ``replace`` transforms for rewriting PR metadata text."""
     config_path = source_dir / project_path / "copy.barista.toml"
@@ -2506,7 +2574,11 @@ def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
 # typically a slash path -- which cannot be published and cannot be edited (the commit
 # is pushed). Dropping it loses a description; raising loses every subsequent export.
 def _scrubbed_or_dropped(
-    *, commit_sha: str, field: str, value: str, forbidden_text: tuple[str, ...]
+    *,
+    commit_sha: str,
+    field: str,
+    value: str,
+    forbidden_text: tuple[str, ...],
 ) -> str:
     """Return ``value``, or ``""`` when it still carries a forbidden term."""
     if not value:
@@ -2519,13 +2591,17 @@ def _scrubbed_or_dropped(
     _log(
         f"::warning::Commit {commit_sha} Copybarista-PR-{field} names a private "
         f"path no export transform rewrites; dropping it and using the default "
-        f"text. Describe changes with bare module names to keep the field."
+        f"text. Describe changes with bare module names to keep the field.",
     )
     return ""
 
 
 def _validate_metadata_text(
-    *, commit_sha: str, field: str, value: str, forbidden_text: tuple[str, ...]
+    *,
+    commit_sha: str,
+    field: str,
+    value: str,
+    forbidden_text: tuple[str, ...],
 ) -> None:
     """Reject source-specific text in one public metadata field."""
     if not value:
@@ -2535,7 +2611,9 @@ def _validate_metadata_text(
         _forbidden_term_present(term.casefold(), lowered) for term in forbidden_text
     ):
         raise _metadata_error(
-            commit_sha, field, "contains restricted source-specific text"
+            commit_sha,
+            field,
+            "contains restricted source-specific text",
         )
 
 
@@ -2646,7 +2724,10 @@ def _parse_body_entries(entries_text: str) -> tuple[PrBodyEntry, ...]:
 
 
 def _append_parsed_body_entry(
-    *, entries: list[PrBodyEntry], commit_sha: str | None, lines: list[str]
+    *,
+    entries: list[PrBodyEntry],
+    commit_sha: str | None,
+    lines: list[str],
 ) -> None:
     """Append a parsed body entry if one is in progress."""
     if not lines or commit_sha is None:

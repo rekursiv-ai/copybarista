@@ -27,7 +27,11 @@ class CommandRunner:
     """Run external commands without invoking a shell."""
 
     def run(
-        self, argv: list[str], *, check: bool = True, cwd: Path | None = None
+        self,
+        argv: list[str],
+        *,
+        check: bool = True,
+        cwd: Path | None = None,
     ) -> CommandResult:
         """Run a command and return captured output.
 
@@ -59,7 +63,7 @@ class CommandRunner:
         )
         if check and command_result.returncode != 0:
             raise ExportError(
-                command_result.stderr.strip() or f"Command failed: {' '.join(argv)}"
+                command_result.stderr.strip() or f"Command failed: {' '.join(argv)}",
             )
         return command_result
 

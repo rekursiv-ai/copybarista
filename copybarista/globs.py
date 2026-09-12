@@ -233,7 +233,11 @@ def _escape_char_class(content: str) -> str:
 
 
 def _brace_regex(
-    *, pattern: str, start: int, globstar: Globstar, min_brace_choices: int
+    *,
+    pattern: str,
+    start: int,
+    globstar: Globstar,
+    min_brace_choices: int,
 ) -> tuple[str, int]:
     """Translate one supported brace alternation."""
     end = pattern.find("}", start + 1)
@@ -246,7 +250,9 @@ def _brace_regex(
         "(?:"
         + "|".join(
             _glob_to_regex(
-                choice, globstar=globstar, min_brace_choices=min_brace_choices
+                choice,
+                globstar=globstar,
+                min_brace_choices=min_brace_choices,
             )
             for choice in choices
         )
@@ -256,14 +262,19 @@ def _brace_regex(
 
 
 def _compile_all(
-    patterns: tuple[str, ...], *, globstar: Globstar, min_brace_choices: int
+    patterns: tuple[str, ...],
+    *,
+    globstar: Globstar,
+    min_brace_choices: int,
 ) -> tuple[re.Pattern[str], ...]:
     """Compile supported glob patterns to full-match regexes."""
     return tuple(
         re.compile(
             _glob_to_regex(
-                pattern, globstar=globstar, min_brace_choices=min_brace_choices
-            )
+                pattern,
+                globstar=globstar,
+                min_brace_choices=min_brace_choices,
+            ),
         )
         for pattern in patterns
     )

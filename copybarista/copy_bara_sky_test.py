@@ -989,7 +989,8 @@ def test_regex_groups_survive_sky_translation_and_apply(tmp_path: Path):
     # round trip proves the serializer wrote a form the parser reads back.
     round_tripped = tmp_path / "round-trip.toml"
     round_tripped.write_text(
-        translate_copy_bara_sky_to_toml(config_path), encoding="utf-8"
+        translate_copy_bara_sky_to_toml(config_path),
+        encoding="utf-8",
     )
     assert load_config(round_tripped).transforms[0].regex_groups == (
         ("block", "[\\s\\S]*?"),
@@ -998,7 +999,8 @@ def test_regex_groups_survive_sky_translation_and_apply(tmp_path: Path):
     root = tmp_path / "staged"
     root.mkdir()
     (root / "conf.yaml").write_text(
-        "keep: 1\n# x:start\ndrop: 2\n# x:end\nkeep: 3\n", encoding="utf-8"
+        "keep: 1\n# x:start\ndrop: 2\n# x:end\nkeep: 3\n",
+        encoding="utf-8",
     )
     apply_transform(root=root, transform=transform, sources_by_destination={})
 
@@ -1023,7 +1025,8 @@ def test_regex_groups_survive_sky_translation_and_apply(tmp_path: Path):
     ],
 )
 def test_ignore_noop_reaches_every_transform_group_exit(
-    tmp_path: Path, wrapper_args: str
+    tmp_path: Path,
+    wrapper_args: str,
 ):
     """``ignore_noop`` must take effect on every path out of ``core.transform``.
 
@@ -1280,7 +1283,8 @@ def test_marker_strip_regex_groups_strips_the_whole_line(tmp_path: Path):
     root = tmp_path / "staged"
     root.mkdir()
     (root / "conf.yaml").write_text(
-        "keep: 1\n  |drop/me/  # copybarista:internal\n  )\n", encoding="utf-8"
+        "keep: 1\n  |drop/me/  # copybarista:internal\n  )\n",
+        encoding="utf-8",
     )
 
     apply_transform(
@@ -1293,7 +1297,12 @@ def test_marker_strip_regex_groups_strips_the_whole_line(tmp_path: Path):
 
 
 def _marker_sky(
-    tmp_path: Path, *, before: str, after: str = "", groups: str, multiline: str = ""
+    tmp_path: Path,
+    *,
+    before: str,
+    after: str = "",
+    groups: str,
+    multiline: str = "",
 ) -> Path:
     """Write a one-transform sky config for the marker-recovery tests."""
     return _write_sky(
@@ -1337,7 +1346,9 @@ def _marker_sky(
     ],
 )
 def test_marker_recovery_validates_the_groups_it_discards(
-    tmp_path: Path, groups: str, match: str
+    tmp_path: Path,
+    groups: str,
+    match: str,
 ):
     """Recovering a marker type must not silently drop unchecked groups.
 
@@ -1714,7 +1725,8 @@ def test_rejects_multiline_with_regex_groups(tmp_path: Path):
         ),
         pytest.param(Transform(id="t", type="ruff_format", path="."), id="ruff_format"),
         pytest.param(
-            Transform(id="t", type="move", path="a.md", destination="b.md"), id="move"
+            Transform(id="t", type="move", path="a.md", destination="b.md"),
+            id="move",
         ),
     ],
 )
@@ -1780,7 +1792,8 @@ def test_cli_translate_writes_output(tmp_path: Path):
 
 
 def test_cli_translate_prints_to_stdout(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ):
     config_path = _write_sky(
         tmp_path,
@@ -1833,7 +1846,7 @@ def test_cli_export_accepts_sky_config(tmp_path: Path):
             str(source),
             "--folder-dir",
             str(output_path),
-        ]
+        ],
     )
 
     assert (output_path / "README.md").read_text(encoding="utf-8") == "hello\n"
@@ -2063,7 +2076,9 @@ def test_rejects_unsupported_sky_helper_calls(tmp_path: Path, body: str, match: 
     ],
 )
 def test_rejects_unsupported_sky_helper_bodies(
-    tmp_path: Path, helper_body: str, match: str
+    tmp_path: Path,
+    helper_body: str,
+    match: str,
 ):
     config_path = _write_sky(
         tmp_path,
@@ -2140,7 +2155,9 @@ def test_rejects_unsupported_sky_helper_bodies(
     ],
 )
 def test_rejects_unsupported_sky_workflows(
-    tmp_path: Path, workflow_kwargs: str, match: str
+    tmp_path: Path,
+    workflow_kwargs: str,
+    match: str,
 ):
     if "authoring" not in workflow_kwargs and not workflow_kwargs.startswith("'"):
         workflow_kwargs = (
