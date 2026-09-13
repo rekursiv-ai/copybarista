@@ -49,7 +49,7 @@ class CommandRunner:
 
         """
         # The caller provides an argument vector, not a shell string.
-        result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
+        result = subprocess.run(  # noqa: S603 -- The runner receives an argument vector and never passes a shell string, so command structure is not user-controlled.
             argv,
             check=False,
             capture_output=True,

@@ -26,7 +26,7 @@ from copybarista.manifest import (
     TransformFileReport,
     TransformReport,
 )
-from copybarista.template import compile_replace
+from copybarista.template import replace_template
 
 
 class _FileMapping(Protocol):
@@ -408,14 +408,11 @@ def _replace(
         raise TransformError(
             f"Transformation '{transform.id}' before must be non-empty",
         )
-    template = (
-        compile_replace(
-            before=transform.before,
-            after=transform.after,
-            regex_groups=transform.regex_groups,
-        )
-        if transform.regex_groups
-        else None
+    template = replace_template(
+        before=transform.before,
+        after=transform.after,
+        regex_groups=transform.regex_groups,
+        module=transform.module,
     )
     paths = _matching_files(
         root=root,

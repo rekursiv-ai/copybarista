@@ -43,7 +43,7 @@ def _git_repo_with_commits(*, root: Path, subjects: list[str]) -> None:
 def _git(root: Path, *args: str) -> None:
     """Run a Git command in root for test fixture setup."""
     argv = ["git"] if args[0] == "init" else ["git", "-C", str(root)]
-    subprocess.run([*argv, *args], check=True)  # noqa: S603 -- fixed argv, test-only
+    subprocess.run([*argv, *args], check=True)  # noqa: S603 -- The test constructs the Git fixture argv from fixed subcommands and paths.
 
 
 # For tests that only care about target_dir / project routing.

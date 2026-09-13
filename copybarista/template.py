@@ -23,9 +23,6 @@ import re
 from copybarista.errors import ConfigError
 
 
-_INTERPOLATION = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}")
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Token:
     """One literal or interpolation segment of a template."""
@@ -48,6 +45,12 @@ class ReplaceTemplate:
 
     after_tokens: tuple[_Token, ...]
 
+    # ``(sentinel_group, token_count)`` runs of ``after_tokens``: when set, only the
+    # run whose sentinel group participated in the match is rendered. This is how
+    # one compiled pattern carries two alternatives (``compile_module_replace``)
+    # while ``apply``/``count`` stay a single ``re`` pass.
+    alternatives: tuple[tuple[str, int], ...] = ()
+
     def apply(self, text: str) -> str:
         """Return ``text`` with every ``before`` match rendered as ``after``.
 
@@ -58,7 +61,7 @@ class ReplaceTemplate:
           result: The str.
 
         """
-        return self.pattern.sub(self._render, text)
+        return self.pattern.sub(self.render, text)
 
     def count(self, text: str) -> int:
         """Return how many non-overlapping ``before`` matches occur in ``text``.
@@ -72,11 +75,26 @@ class ReplaceTemplate:
         """
         return sum(1 for _ in self.pattern.finditer(text))
 
-    def _render(self, match: re.Match[str]) -> str:
-        """Render the ``after`` template for one ``before`` match."""
+    def render(self, match: re.Match[str]) -> str:
+        """Render the ``after`` template for one ``before`` match.
+
+        Args:
+          match: A match of ``pattern``.
+
+        Returns:
+          text: The replacement for that match.
+
+        """
+        tokens = self.after_tokens
+        start = 0
+        for sentinel, count in self.alternatives:
+            if match.group(sentinel) is not None:
+                tokens = self.after_tokens[start : start + count]
+                break
+            start += count
         return "".join(
             match.group(token.value) if token.is_group else token.value
-            for token in self.after_tokens
+            for token in tokens
         )
 
 
@@ -133,6 +151,99 @@ def compile_replace(
     return ReplaceTemplate(pattern=pattern, after_tokens=after_tokens)
 
 
+# Python spells one module two ways: the dotted token (``import a.b.c``,
+# ``from a.b.c import x``, ``lazy_import("a.b.c")``, ``a.b.c.attr``) and the
+# ``from a.b import c`` form. A literal rule on the dotted token misses the second,
+# so every shipping config carried a hand-written twin per leaf -- and the leaf nobody
+# twinned shipped a monorepo import. Deriving both from ONE dotted path removes the
+# per-leaf maintenance: ``parent`` and ``leaf`` are split here and each alternative
+# is anchored so an identifier that merely starts with the leaf (``userdirs_fixture``)
+# or ends with the parent (``my_a.b``) is left alone.
+_MODULE_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def compile_module_replace(*, before: str, after: str) -> ReplaceTemplate:
+    """Compile a dotted-module rename that covers every import spelling.
+
+    Args:
+      before: Dotted source module path (``a.b.c``).
+      after: Dotted public module path (``x.c``).
+
+    Returns:
+      template: Compiled template; ``apply`` rewrites the dotted token wherever
+        it stands as a whole name and the ``from a.b import c`` form, including
+        ``c`` inside a comma list or a parenthesised block.
+
+    Raises:
+      ConfigError: If either side is not a dotted module path.
+
+    """
+    for label, value in (("before", before), ("after", after)):
+        if _MODULE_PATH.fullmatch(value) is None:
+            raise ConfigError(
+                f"module replace {label} must be a dotted module path: {value!r}",
+            )
+    before_parent, _, before_leaf = before.rpartition(".")
+    after_parent, _, after_leaf = after.rpartition(".")
+    # Two alternatives share one compiled pattern so ``re.sub`` walks the text once.
+    # ``names`` absorbs everything between ``import`` and the leaf inside a comma
+    # list or an open paren, so the leaf is matched as a whole word wherever it
+    # sits in the list; a leaf that is a prefix of a longer name is not it.
+    dotted = rf"(?P<dl>(?<![A-Za-z0-9_.])){re.escape(before)}(?P<dt>(?![A-Za-z0-9_]))"
+    from_form = (
+        rf"(?P<fl>(?<![A-Za-z0-9_.]))from[ \t]+{re.escape(before_parent)}"
+        rf"(?P<fg1>[ \t]+)import(?P<fg2>[ \t]+)"
+        rf"(?P<fn>\([^)]*?\b|(?:[A-Za-z_][A-Za-z0-9_]*[ \t]*,[ \t]*)*)"
+        rf"{re.escape(before_leaf)}(?P<ft>(?![A-Za-z0-9_]))"
+    )
+    return ReplaceTemplate(
+        pattern=re.compile(f"{dotted}|{from_form}"),
+        after_tokens=(
+            _Token(value="dl", is_group=True),
+            _Token(value=after, is_group=False),
+            _Token(value="dt", is_group=True),
+            _Token(value="fl", is_group=True),
+            _Token(value=f"from {after_parent}", is_group=False),
+            _Token(value="fg1", is_group=True),
+            _Token(value="import", is_group=False),
+            _Token(value="fg2", is_group=True),
+            _Token(value="fn", is_group=True),
+            _Token(value=after_leaf, is_group=False),
+            _Token(value="ft", is_group=True),
+        ),
+        alternatives=(("dl", 3), ("fl", 8)),
+    )
+
+
+def replace_template(
+    *,
+    before: str,
+    after: str,
+    regex_groups: tuple[tuple[str, str], ...],
+    module: bool,
+) -> ReplaceTemplate | None:
+    """Return the compiled template for a ``replace``, or ``None`` for a literal.
+
+    One dispatch shared by export, reverse import, and PR-text rewriting, so a
+    new replace flavour is honoured everywhere or nowhere.
+
+    Args:
+      before: Transform ``before`` text.
+      after: Transform ``after`` text.
+      regex_groups: Transform ``regex_groups`` bindings.
+      module: Transform ``module`` flag.
+
+    Returns:
+      template: A compiled template, or ``None`` when ``str.replace`` is exact.
+
+    """
+    if module:
+        return compile_module_replace(before=before, after=after)
+    if regex_groups:
+        return compile_replace(before=before, after=after, regex_groups=regex_groups)
+    return None
+
+
 def literal_segments(template: str, *, separator: str) -> str:
     """Return a template's literal text with interpolations replaced.
 
@@ -159,7 +270,7 @@ def _parse(template: str) -> tuple[_Token, ...]:
     """Split a template into literal and interpolation tokens."""
     tokens: list[_Token] = []
     cursor = 0
-    for match in _INTERPOLATION.finditer(template):
+    for match in re.finditer(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}", template):
         if match.start() > cursor:
             tokens.append(
                 _Token(value=template[cursor : match.start()], is_group=False),

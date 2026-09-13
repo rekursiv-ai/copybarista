@@ -25,7 +25,7 @@ from copybarista.config import FileMove, Transform, WorkflowConfig
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
-from copybarista.template import ReplaceTemplate, compile_replace
+from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
     line_has_marker_token,
@@ -1293,13 +1293,13 @@ def _has_explicit_reversal(transform: Transform) -> bool:
 # needs to respect.
 def _match_count(transform: Transform, template: str, text: str) -> int:
     """Count occurrences of one side of a transform in ``text``."""
-    if not transform.regex_groups:
-        return text.count(template)
-    return compile_replace(
+    compiled = replace_template(
         before=template,
         after=template,
         regex_groups=transform.regex_groups,
-    ).count(text)
+        module=transform.module,
+    )
+    return text.count(template) if compiled is None else compiled.count(text)
 
 
 def _reverse_before(transform: Transform) -> str:
@@ -1327,13 +1327,15 @@ def _reverse_replace(*, transform: Transform, text: str) -> str:
     """Apply one transform's reverse replacement to public text."""
     reverse_before = _reverse_before(transform)
     reverse_after = _reverse_after(transform)
-    if transform.regex_groups:
-        return compile_replace(
-            before=reverse_before,
-            after=reverse_after,
-            regex_groups=transform.regex_groups,
-        ).apply(text)
-    return text.replace(reverse_before, reverse_after)
+    compiled = replace_template(
+        before=reverse_before,
+        after=reverse_after,
+        regex_groups=transform.regex_groups,
+        module=transform.module,
+    )
+    if compiled is None:
+        return text.replace(reverse_before, reverse_after)
+    return compiled.apply(text)
 
 
 # Applying reverse replacements one after another (each fed the previous one's output)
@@ -1414,12 +1416,13 @@ class _ReverseMatcher:
 
         """
         reverse_before = _reverse_before(transform)
-        if transform.regex_groups:
-            template = compile_replace(
-                before=reverse_before,
-                after=_reverse_after(transform),
-                regex_groups=transform.regex_groups,
-            )
+        template = replace_template(
+            before=reverse_before,
+            after=_reverse_after(transform),
+            regex_groups=transform.regex_groups,
+            module=transform.module,
+        )
+        if template is not None:
             return cls(pattern=template.pattern, template=template, literal_after="")
         return cls(
             pattern=re.compile(re.escape(reverse_before)),
@@ -1439,10 +1442,7 @@ class _ReverseMatcher:
         """
         if self.template is None:
             return self.literal_after
-        return "".join(
-            match.group(token.value) if token.is_group else token.value
-            for token in self.template.after_tokens
-        )
+        return self.template.render(match)
 
 
 # Each entry is ``(offset_in_stripped, verbatim_text)``: the region's exact removed text
@@ -2093,7 +2093,7 @@ def _validate_import_destination(destination: Path) -> None:
     if not destination.is_dir():
         raise ImportRequestError(f"Import destination must exist: {destination}")
     resolved = destination.resolve()
-    home = Path.home().resolve()  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- safety check against deleting $HOME itself, not a path we own
+    home = Path.home().resolve()  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Safety check against deleting $HOME itself, not a path we own.
     if resolved in {Path("/").resolve(), home}:
         raise ImportRequestError(f"Refusing dangerous destination: {destination}")
     if VCS_DIRS.intersection(resolved.parts):

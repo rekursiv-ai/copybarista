@@ -40,7 +40,7 @@ from copybarista.sync_setup import (
     SyncSettings,
     load_sync_settings,
 )
-from copybarista.template import compile_replace
+from copybarista.template import replace_template
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -646,7 +646,7 @@ def _run(
     """Run a subprocess while streaming commands for Action logs."""
     _log("+ " + shlex.join(argv))
     # The caller provides an argument vector, not a shell string.
-    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
+    result = subprocess.run(  # noqa: S603 -- GitHub operations use validated argv assembled by this trusted tool.
         argv,
         cwd=cwd,
         check=False,
@@ -2557,15 +2557,16 @@ def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
     for transform in transforms:
         if not transform.before:
             continue
-        if transform.regex_groups:
-            template = compile_replace(
-                before=transform.before,
-                after=transform.after,
-                regex_groups=transform.regex_groups,
-            )
-            value = template.apply(value)
-        else:
+        template = replace_template(
+            before=transform.before,
+            after=transform.after,
+            regex_groups=transform.regex_groups,
+            module=transform.module,
+        )
+        if template is None:
             value = value.replace(transform.before, transform.after)
+        else:
+            value = template.apply(value)
     return value
 
 

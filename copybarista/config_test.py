@@ -835,6 +835,56 @@ def test_parses_and_round_trips_regex_groups(tmp_path: Path):
     assert 'regex_groups = { s = "[A-Za-z_]" }' in workflow_to_toml(config)
 
 
+def test_parses_and_round_trips_module_replace(tmp_path: Path):
+    """``module = true`` lowers to the template pair the export machinery runs."""
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        _regex_groups_config(
+            'before = "internal.lib.userdirs"\n'
+            'after = "pkg.lib.userdirs"\n'
+            "module = true\n"
+            "required = false\n",
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    (transform,) = config.transforms
+
+    assert transform.module is True
+    assert transform.before == "internal.lib.userdirs"
+    assert transform.after == "pkg.lib.userdirs"
+    assert "module = true" in workflow_to_toml(config)
+    assert "regex_groups" not in workflow_to_toml(config)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            'before = "internal.lib.userdirs"\nafter = "pkg"\nmodule = true\n',
+            id="after-not-dotted",
+        ),
+        pytest.param(
+            'before = "internal.lib.userdirs"\nafter = "pkg.lib.${s}"\n'
+            'regex_groups = { s = "[a-z]" }\nmodule = true\n',
+            id="with-regex-groups",
+        ),
+        pytest.param(
+            'before = "internal.lib.userdirs"\nafter = "pkg.lib.userdirs"\n'
+            'reverse_before = "x"\nreverse_after = "y"\nmodule = true\n',
+            id="with-explicit-reversal",
+        ),
+    ],
+)
+def test_rejects_malformed_module_replace(tmp_path: Path, body: str):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(_regex_groups_config(body), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="module"):
+        load_config(config_path)
+
+
 def test_rejects_reversible_regex_groups_whose_reverse_cannot_compile(
     tmp_path: Path,
 ):

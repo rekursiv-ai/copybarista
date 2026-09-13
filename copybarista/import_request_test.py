@@ -721,6 +721,67 @@ def test_import_explicit_reversal_allows_natural_exported_text(tmp_path: Path):
 
 
 @pytest.mark.cli_python_subprocess
+def test_import_reverses_a_module_replace_in_every_spelling(tmp_path: Path):
+    """A ``module = true`` rule reverses the leaf form and the dotted form alike."""
+    source_base = tmp_path / "source-base"
+    source_project = source_base / "internal/demo"
+    (source_project / "pkg").mkdir(parents=True)
+    source_body = (
+        "from internal.lib import userdirs\n"
+        "from internal.lib.userdirs import data_dir\n"
+        "VALUE = 'base'\n"
+    )
+    (source_project / "pkg/module.py").write_text(source_body, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    (public_base / "pkg").mkdir(parents=True)
+    public_body = (
+        "from demo.lib import userdirs\n"
+        "from demo.lib.userdirs import data_dir\n"
+        "VALUE = 'base'\n"
+    )
+    (public_base / "pkg/module.py").write_text(public_body, encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        public_body.replace("'base'", "'head'"),
+        encoding="utf-8",
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "pkg/*.py"
+        before = "internal.lib.userdirs"
+        after = "demo.lib.userdirs"
+        module = true
+        """,
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8",
+    ) == source_body.replace("'base'", "'head'")
+
+
 def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     """Invariant: importing a public change must not pollute source with lint.
 

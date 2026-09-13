@@ -1725,6 +1725,17 @@ def test_rejects_multiline_with_regex_groups(tmp_path: Path):
         ),
         pytest.param(Transform(id="t", type="ruff_format", path="."), id="ruff_format"),
         pytest.param(
+            Transform(
+                id="t",
+                type="replace",
+                path="a.py",
+                before="a.b.c",
+                after="x.c",
+                module=True,
+            ),
+            id="replace-module",
+        ),
+        pytest.param(
             Transform(id="t", type="move", path="a.md", destination="b.md"),
             id="move",
         ),
