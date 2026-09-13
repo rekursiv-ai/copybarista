@@ -538,12 +538,12 @@ def package_validation_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    commands = _shell_script(
-        (
+    commands = "\n".join(
+        f"{'          '}{command}"
+        for command in (
             *(f"# {line}" for line in settings.validation_commands_comment),
             *settings.validation_commands,
-        ),
-        indent="          ",
+        )
     )
     python_setup = (
         f"          python-version: {_yaml_str(settings.validation_python_versions[0])}"
@@ -1268,11 +1268,6 @@ def _shell_args(args: list[str], *, indent: str) -> str:
     return " \\\n".join(lines)
 
 
-def _shell_script(commands: tuple[str, ...], *, indent: str) -> str:
-    """Indent validation commands for generated workflow YAML."""
-    return "\n".join(f"{indent}{command}" for command in commands)
-
-
 def _pr_replay_args(settings: SyncSettings) -> list[str]:
     """Return source export script flags for PR replay settings."""
     args = [
@@ -1317,6 +1312,9 @@ def _sh(value: str) -> str:
     return shlex.quote(value)
 
 
+# Both the public package-validation workflow and the public-to-source import workflow
+# run the same test suite and therefore need the same system tools. Rendering this
+# single step into both keeps their environments aligned.
 def _uses_placeholders() -> dict[str, str]:
     """Render keys for each pinned action, e.g. ``USES_SETUP_PYTHON``."""
     return {
@@ -1332,7 +1330,7 @@ def _action_token(action: str) -> str:
 
 # Both the public package-validation workflow and the public-to-source import workflow
 # run the same test suite and therefore need the same system tools. Rendering this
-# single step into both keeps their environments aligned.
+# single setting into both keeps their environments aligned.
 def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
     """Render the apt system-package install step for a validation workflow."""
     if not packages:

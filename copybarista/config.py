@@ -545,7 +545,9 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
             lines.append(f"end = {_toml_string(transform.end)}")
             if transform.else_marker:
                 lines.append(f"else = {_toml_string(transform.else_marker)}")
-            lines.append(f"inclusive = {_toml_bool(transform.inclusive)}")
+            lines.append(
+                f"inclusive = {'true' if transform.inclusive else 'false'}",
+            )
         elif transform.type == "internal_lines":
             lines.append(f"start = {_toml_string(transform.start)}")
         elif transform.type == "uncomment":
@@ -1124,11 +1126,6 @@ def _bool(data: dict[str, object], key: str, default: bool) -> bool:
 def _toml_string(value: str) -> str:
     """Serialize one string as a TOML basic string."""
     return json.dumps(value)
-
-
-def _toml_bool(value: bool) -> str:
-    """Serialize one boolean as TOML."""
-    return "true" if value else "false"
 
 
 def _toml_list(values: tuple[str, ...]) -> str:

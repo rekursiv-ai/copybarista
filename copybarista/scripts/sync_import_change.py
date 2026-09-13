@@ -828,7 +828,9 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
         _log("Import produced no target changes; recording the SHA anyway.")
 
     branch = request.branch
-    source_base_ref = _git_head(cwd=request.target_dir)
+    source_base_ref = _run(
+        ["git", "rev-parse", "HEAD"], cwd=request.target_dir, capture=True
+    ).stdout.strip()
     body_file = request.runner_temp / "copybarista-import-change-pr-body.md"
     body_file.write_text(
         import_change_pr_body(
@@ -987,11 +989,6 @@ def _git_has_changes(*, path: Path, rel: Path) -> bool:
         capture=True,
     )
     return bool(result.stdout.strip())
-
-
-def _git_head(*, cwd: Path) -> str:
-    """Return the current Git HEAD SHA."""
-    return _run(["git", "rev-parse", "HEAD"], cwd=cwd, capture=True).stdout.strip()
 
 
 # One expression, so the two directions cannot drift: a subject the writer accepts is by
