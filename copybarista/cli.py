@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 import argparse
@@ -57,7 +56,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
-        _command_handlers()[args.command](args)
+        {
+            "validate": _run_validate,
+            "translate": _run_translate,
+            "export": _run_export,
+            "publish-git": _run_publish_git,
+            "check-leaks": _run_check_leaks,
+            "import-change": _run_import_change,
+            "init-sync": _run_init_sync,
+            "check-sync-config": _run_check_sync_config,
+            "write-export-workflow": _run_write_export_workflow,
+            "write-public-workflows": _run_write_public_workflows,
+        }[args.command](args)
     except CopybaristaError as err:
         sys.stderr.write(f"{err}\n")
         return _exit_code(err)
@@ -164,22 +174,6 @@ def _parser() -> argparse.ArgumentParser:
     public_sync.add_argument("sync_config")
 
     return parser
-
-
-def _command_handlers() -> dict[str, Callable[[argparse.Namespace], None]]:
-    """Return CLI subcommand dispatch table."""
-    return {
-        "validate": _run_validate,
-        "translate": _run_translate,
-        "export": _run_export,
-        "publish-git": _run_publish_git,
-        "check-leaks": _run_check_leaks,
-        "import-change": _run_import_change,
-        "init-sync": _run_init_sync,
-        "check-sync-config": _run_check_sync_config,
-        "write-export-workflow": _run_write_export_workflow,
-        "write-public-workflows": _run_write_public_workflows,
-    }
 
 
 def _run_validate(args: argparse.Namespace) -> None:

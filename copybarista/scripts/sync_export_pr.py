@@ -2374,7 +2374,14 @@ def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplay
     return PrReplayState(
         title=title,
         authors=(),
-        body_intro=_drop_legacy_source_attribution(intro_text) or default_body,
+        body_intro=(
+            "\n".join(
+                line
+                for line in intro_text.splitlines()
+                if not line.startswith("Source attribution:")
+            ).strip()
+        )
+        or default_body,
         body_entries=_parse_body_entries(entries_text),
         applied_source_rev="",
         applied_source_digest=marker.removeprefix("sha256:")
@@ -2382,13 +2389,6 @@ def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplay
         else "",
         metadata_count=0,
     )
-
-
-def _drop_legacy_source_attribution(text: str) -> str:
-    """Remove old PR-body attribution now represented by git metadata."""
-    return "\n".join(
-        line for line in text.splitlines() if not line.startswith("Source attribution:")
-    ).strip()
 
 
 def _summary_section(body: str) -> str:

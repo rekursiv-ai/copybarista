@@ -1040,11 +1040,6 @@ def _prefix_back_move(move: MoveSpec, prefix: str) -> FileMove | None:
     return None
 
 
-def _is_subpath_of_any(path: str, roots: frozenset[str]) -> bool:
-    """Return whether ``path`` is strictly under any of ``roots``."""
-    return any(path.startswith(f"{root}/") for root in roots)
-
-
 # ``core.move("<root>/.export", "")`` moves a verbatim-ship staging dir that lives
 # inside the source root to the public root; it maps to a copy to ``.``.
 def _is_subtree_to_root_move(move: MoveSpec, root: str) -> bool:
@@ -1127,7 +1122,7 @@ def _reject_unrepresentable_flatten(
         if (
             move.source not in selected
             and move.source not in roots
-            and not _is_subpath_of_any(move.source, roots)
+            and not (any(move.source.startswith(f"{root}/") for root in roots))
         ):
             raise ConfigError(
                 f"origin_files pattern is outside core.move source root: {move.source}",

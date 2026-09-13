@@ -1517,7 +1517,7 @@ def _reverse_else_blocks(
     """Reverse an ``if internal / else / endif`` strip block into ``public_text``."""
     result = public_text
     for source_block in _else_source_blocks(source_text, transform):
-        exported = _strip_blocks_with_else_text(source_block, transform)
+        exported = _strip_blocks_with_else(source_block, transform)[0]
         if exported and exported in result:
             result = result.replace(exported, source_block, 1)
     return result
@@ -1727,11 +1727,6 @@ def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
             continue
         index += 1
     return blocks
-
-
-def _strip_blocks_with_else_text(block_text: str, transform: Transform) -> str:
-    """Return the exported form of one else-block (its uncommented else branch)."""
-    return _strip_blocks_with_else(block_text, transform)[0]
 
 
 # No guessing: the source-only lines are exactly those ``strip_source_text`` removes, so

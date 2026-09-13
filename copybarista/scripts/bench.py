@@ -204,21 +204,11 @@ def _print_text_report(report: BenchmarkReport) -> None:
     """Print a compact human-readable benchmark report."""
     sys.stdout.write(
         f"copybarista median: {report.copybarista.median_sec:.6f}s "
-        f"runs={_format_runs(report.copybarista.runs)} "
+        f"runs={','.join(f'{run:.6f}' for run in report.copybarista.runs)} "
         f"files={report.copybarista.file_count} "
         f"bytes={report.copybarista.byte_count}\n"
-        f"copybarista phases: {_format_phases(report.copybarista.phase_medians_sec)}\n",
+        f"copybarista phases: {', '.join(f'{name}={value:.6f}s' for name, value in report.copybarista.phase_medians_sec.items())}\n",
     )
-
-
-def _format_runs(runs: tuple[float, ...]) -> str:
-    """Format run timings for text output."""
-    return ",".join(f"{run:.6f}" for run in runs)
-
-
-def _format_phases(phases: dict[str, float]) -> str:
-    """Format phase timings for text output."""
-    return ", ".join(f"{name}={value:.6f}s" for name, value in phases.items())
 
 
 def _run_copybarista_sample(

@@ -8,7 +8,7 @@ without re-reading the source checkout.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -19,7 +19,6 @@ import time
 from copybarista.config import (
     FileMove,
     FileWrite,
-    Transform,
     WorkflowConfig,
 )
 from copybarista.errors import ExportError
@@ -384,17 +383,15 @@ def _apply_transform_destinations(
     for transform in config.transforms:
         if transform.type != "move":
             continue
-        entries = tuple(_apply_move_destination(entry, transform) for entry in entries)
+        entries = tuple(
+            _StagedFile(
+                source=entry.source,
+                destination=_relocate_path(
+                    entry.destination,
+                    source=transform.path,
+                    destination=transform.destination,
+                ),
+            )
+            for entry in entries
+        )
     return entries
-
-
-def _apply_move_destination(entry: _StagedFile, transform: Transform) -> _StagedFile:
-    """Return `entry` with its destination rewritten by one move transform."""
-    return replace(
-        entry,
-        destination=_relocate_path(
-            entry.destination,
-            source=transform.path,
-            destination=transform.destination,
-        ),
-    )
