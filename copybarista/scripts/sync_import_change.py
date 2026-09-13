@@ -427,7 +427,7 @@ def _run(
     """Run a subprocess while streaming commands for Action logs."""
     _log("+ " + " ".join(argv))
     # The caller provides an argument vector, not a shell string.
-    result = subprocess.run(  # noqa: S603 -- args constructed internally, not from user input
+    result = subprocess.run(  # noqa: S603 -- This sync script passes validated argument vectors without invoking a shell, so command structure is not user-controlled.
         argv,
         cwd=cwd,
         check=False,

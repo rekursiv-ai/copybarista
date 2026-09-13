@@ -176,6 +176,39 @@ def test_optional_replace_allows_no_op(tmp_path: Path):
     assert result.files == ()
 
 
+def test_module_replace_rewrites_every_spelling_in_one_pass(tmp_path: Path):
+    path = tmp_path / "mod.py"
+    path.write_text(
+        "from internal.lib import userdirs\n"
+        "from internal.lib.userdirs import data_dir\n"
+        'lazy_import("internal.lib.userdirs")\n'
+        "from internal.lib import userdirs_fixture\n",
+        encoding="utf-8",
+    )
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="userdirs",
+                type="replace",
+                path="mod.py",
+                before="internal.lib.userdirs",
+                after="pkg.lib.userdirs",
+                module=True,
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        "from pkg.lib import userdirs\n"
+        "from pkg.lib.userdirs import data_dir\n"
+        'lazy_import("pkg.lib.userdirs")\n'
+        "from internal.lib import userdirs_fixture\n"
+    )
+    assert result.count == 3
+
+
 def test_replace_rejects_empty_before(tmp_path: Path):
     (tmp_path / "module_test.py").write_text("value\n", encoding="utf-8")
 

@@ -208,6 +208,8 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
             raw["reversible"] = False
         if transform.regex_groups:
             raw["regex_groups"] = dict(transform.regex_groups)
+        if transform.module:
+            raw["module"] = True
         if transform.reverse_before or transform.reverse_after:
             raw["reverse_before"] = transform.reverse_before
             raw["reverse_after"] = transform.reverse_after

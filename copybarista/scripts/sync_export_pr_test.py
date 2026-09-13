@@ -3073,7 +3073,7 @@ def test_foreign_commits_since_separates_bot_from_human(tmp_path: Path) -> None:
         ],
     )
     base = subprocess.run(  # noqa: S603 -- fixed argv, test-only.
-        ["git", "-C", str(repo), "rev-parse", "HEAD~2"],  # noqa: S607
+        ["git", "-C", str(repo), "rev-parse", "HEAD~2"],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
         capture_output=True,
         text=True,
         check=True,
@@ -3095,13 +3095,13 @@ def _git_repo(root: Path, commits: list[tuple[str, str]]) -> Path:
 
     def run(*args: str) -> None:
         subprocess.run(  # noqa: S603 -- fixed argv, test-only.
-            ["git", "-C", str(root), *args],  # noqa: S607
+            ["git", "-C", str(root), *args],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
             check=True,
             capture_output=True,
         )
 
     subprocess.run(  # noqa: S603 -- fixed argv, test-only.
-        ["git", "init", "-q", "-b", "main", str(root)],  # noqa: S607
+        ["git", "init", "-q", "-b", "main", str(root)],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
         check=True,
     )
     run("config", "commit.gpgsign", "false")
@@ -3134,7 +3134,7 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
         ],
     )
     public_head = subprocess.run(  # noqa: S603 -- fixed argv, test-only.
-        ["git", "-C", str(public), "rev-parse", "HEAD"],  # noqa: S607
+        ["git", "-C", str(public), "rev-parse", "HEAD"],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
         capture_output=True,
         text=True,
         check=True,
@@ -3160,7 +3160,7 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
     # The import lands, recording the marker exactly as the import path writes it.
     title = f"Import Pkg public changes {sync_import_change._pr_title_sha(public_head)}"
     subprocess.run(  # noqa: S603 -- fixed argv, test-only.
-        ["git", "-C", str(source), "commit", "-q", "--allow-empty", "-m", title],  # noqa: S607
+        ["git", "-C", str(source), "commit", "-q", "--allow-empty", "-m", title],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
         check=True,
     )
 

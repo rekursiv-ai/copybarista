@@ -274,6 +274,26 @@ reverse_before = "from widget import"
 reverse_after = "from monorepo.packages.widget import"
 ```
 
+Renaming a vendored module takes two spellings in Python: the dotted token
+(`import a.b.c`, `from a.b.c import x`, `lazy_import("a.b.c")`, `a.b.c.attr`)
+and `from a.b import c`. A literal rule on the dotted token misses the second,
+so set `module = true` and give both sides as dotted module paths; one rule
+then covers every spelling, including `c` inside a comma list or a
+parenthesised import block, and reverses the same way on import:
+
+```toml
+[[transform]]
+type = "replace"
+path = "**/*.py"
+before = "monorepo.lib.userdirs"
+after = "widget.lib.userdirs"
+module = true
+```
+
+`module` excludes `regex_groups` and `reverse_before`/`reverse_after`. An
+identifier that merely starts with the leaf (`userdirs_fixture`) or a module
+that merely starts with the parent (`monorepo.libx`) is left alone.
+
 ### `ruff_format`
 
 Run Ruff fixes and formatting on the staged export tree:

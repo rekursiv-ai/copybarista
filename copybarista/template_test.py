@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from copybarista.errors import ConfigError
-from copybarista.template import compile_replace
+from copybarista.template import compile_module_replace, compile_replace
 
 
 _NAMESPACE_GROUPS = (("s", "[A-Za-z_]"),)
@@ -144,6 +144,108 @@ def test_rejects_a_malformed_group_masked_by_a_later_group(
     """
     with pytest.raises(ConfigError, match=rf"regex_groups\.{culprit}"):
         compile_replace(before="${a}MID${b}", after="", regex_groups=groups)
+
+
+@pytest.mark.parametrize(
+    ("source", "public"),
+    [
+        pytest.param(
+            "from acme.internal.lib import userdirs\n",
+            "from widget.lib import userdirs\n",
+            id="from-parent-import-leaf",
+        ),
+        pytest.param(
+            "from acme.internal.lib.userdirs import data_dir\n",
+            "from widget.lib.userdirs import data_dir\n",
+            id="from-module-import-name",
+        ),
+        pytest.param(
+            "import acme.internal.lib.userdirs\n",
+            "import widget.lib.userdirs\n",
+            id="import-dotted",
+        ),
+        pytest.param(
+            'lazy_import("acme.internal.lib.userdirs")\n',
+            'lazy_import("widget.lib.userdirs")\n',
+            id="string-token",
+        ),
+        pytest.param(
+            "acme.internal.lib.userdirs.data_dir()\n",
+            "widget.lib.userdirs.data_dir()\n",
+            id="attribute-access",
+        ),
+        pytest.param(
+            "from acme.internal.lib import (\n    absent,\n    userdirs,\n)\n",
+            "from widget.lib import (\n    absent,\n    userdirs,\n)\n",
+            id="from-parent-parenthesized",
+        ),
+        pytest.param(
+            "from acme.internal.lib import absent, userdirs\n",
+            "from widget.lib import absent, userdirs\n",
+            id="from-parent-second-name",
+        ),
+    ],
+)
+def test_module_replace_covers_every_import_spelling(source: str, public: str) -> None:
+    """One dotted-module rule rewrites the token and the ``from parent import leaf`` form.
+
+    Configs used to carry a separate literal rule per spelling (the dotted
+    token AND ``from parent import leaf``); a spelling nobody listed shipped an
+    internal import. ``compile_module_replace`` derives every form from the one
+    dotted path.
+    """
+    template = compile_module_replace(
+        before="acme.internal.lib.userdirs",
+        after="widget.lib.userdirs",
+    )
+    assert template.apply(source) == public
+    reverse = compile_module_replace(
+        before="widget.lib.userdirs",
+        after="acme.internal.lib.userdirs",
+    )
+    assert reverse.apply(public) == source
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "from acme.internal.lib import userdirs_fixture\n", id="prefix-name"
+        ),
+        pytest.param("acme.internal.lib.userdirs_extra.x\n", id="prefix-token"),
+        pytest.param("my_acme.internal.lib.userdirs\n", id="suffix-of-identifier"),
+        pytest.param("from acme.internal.libx import userdirs\n", id="parent-prefix"),
+    ],
+)
+def test_module_replace_leaves_identifier_neighbours_alone(text: str) -> None:
+    template = compile_module_replace(
+        before="acme.internal.lib.userdirs",
+        after="widget.lib.userdirs",
+    )
+    assert template.apply(text) == text
+
+
+def test_module_replace_across_a_leaf_rename() -> None:
+    """``after`` may move the leaf under a new parent; both spellings follow."""
+    template = compile_module_replace(
+        before="acme.internal.custom_json",
+        after="widget.custom_json",
+    )
+    assert (
+        template.apply("from acme.internal import custom_json\n")
+        == "from widget import custom_json\n"
+    )
+    assert (
+        template.apply("from acme.internal.custom_json import decode\n")
+        == "from widget.custom_json import decode\n"
+    )
+
+
+def test_module_replace_rejects_a_non_dotted_path() -> None:
+    with pytest.raises(ConfigError, match="dotted module path"):
+        compile_module_replace(before="acme.internal.lib.userdirs", after="widget")
+    with pytest.raises(ConfigError, match="dotted module path"):
+        compile_module_replace(before="acme.internal.lib.user-dirs", after="w.x")
 
 
 if __name__ == "__main__":

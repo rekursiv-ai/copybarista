@@ -13,7 +13,7 @@ import tomllib
 
 from copybarista.errors import ConfigError, GlobError
 from copybarista.globs import Globstar, validate_pattern
-from copybarista.template import compile_replace
+from copybarista.template import compile_module_replace, compile_replace
 
 
 TransformType = Literal[
@@ -271,6 +271,12 @@ class Transform:
     # reversible without corrupting identifier substrings (``pkg_state``) or
     # dotfiles (``.pkg``).
     regex_groups: tuple[tuple[str, str], ...] = ()
+
+    # ``before``/``after`` are dotted module paths and the rule covers every
+    # import spelling of them (``template.compile_module_replace``): the dotted
+    # token AND ``from parent import leaf``. Replaces the per-leaf twin rules
+    # configs used to carry for each vendored module.
+    module: bool = False
 
     destination: str = ""
 
@@ -530,6 +536,8 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
                     for name, pattern in transform.regex_groups
                 )
                 lines.append(f"regex_groups = {{ {rendered} }}")
+            if transform.module:
+                lines.append("module = true")
         elif transform.type == "move":
             lines.append(f"destination = {_toml_string(transform.destination)}")
         elif transform.type == "strip_block":
@@ -777,6 +785,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             "required",
             "reversible",
             "regex_groups",
+            "module",
             "before",
             "after",
             "reverse_before",
@@ -812,6 +821,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
                 "required",
                 "reversible",
                 "regex_groups",
+                "module",
                 "before",
                 "after",
                 "reverse_before",
@@ -837,12 +847,21 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
                 "mutually exclusive",
             )
         after = _string(raw_transform, "after")
+        module = _bool(raw_transform, "module", default=False)
+        if module and (regex_groups or reverse_before):
+            raise ConfigError(
+                "replace module = true derives its own patterns; it excludes "
+                "regex_groups and reverse_before/reverse_after",
+            )
         # Run the interpolation cross-checks (undefined names, unused groups,
         # ``after`` referencing a group absent from ``before``) at parse, not
         # deferred to export/import. Every other replace field is validated here;
         # without this, ``validate`` reports success on a config that hard-fails
         # mid-export. ``compile_replace`` is the single source of those checks.
-        compile_replace(before=before, after=after, regex_groups=regex_groups)
+        if module:
+            compile_module_replace(before=before, after=after)
+        else:
+            compile_replace(before=before, after=after, regex_groups=regex_groups)
         reversible = _bool(raw_transform, "reversible", default=True)
         # Import replays a replace with before/after swapped
         # (``import_request._ReverseMatcher``), so a reversible transform must
@@ -868,6 +887,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             required=required,
             reversible=reversible,
             regex_groups=regex_groups,
+            module=module,
         )
     if ttype == "move":
         _check_keys(
