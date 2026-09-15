@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
+from typing import Protocol, cast
 
 import argparse
 import json
@@ -147,17 +148,26 @@ def main() -> int:
       exit_code: 0 on success.
 
     """
-    args = _parser().parse_args()
+    flags = cast(_Flags, _parser().parse_args())
     report = build_report(
-        config_path=Path(args.config),
-        source_ref=Path(args.source_ref),
-        runs=args.runs,
+        config_path=Path(flags.config),
+        source_ref=Path(flags.source_ref),
+        runs=flags.runs,
     )
-    if args.json:
+    if flags.json:
         sys.stdout.write(report.to_json())
     else:
         _print_text_report(report)
     return 0
+
+
+class _Flags(Protocol):
+    """Parsed command-line flags."""
+
+    config: str
+    source_ref: str
+    runs: int
+    json: bool
 
 
 def _parser() -> argparse.ArgumentParser:

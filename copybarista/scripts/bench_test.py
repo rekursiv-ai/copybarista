@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-import json
 import os
 
 import pytest
 
+from copybarista.lib.custom_json import DictCodec, loads
 from copybarista.scripts import bench
 
 
@@ -65,9 +65,10 @@ def test_report_json_is_machine_readable():
         ),
     )
 
-    data = json.loads(report.to_json())
+    data = DictCodec.coerce(loads(report.to_json()))
 
-    assert data["copybarista"]["median_sec"] == 0.2
+    copybarista = DictCodec.coerce(data["copybarista"])
+    assert copybarista["median_sec"] == 0.2
     assert set(data) == {"copybarista"}
 
 

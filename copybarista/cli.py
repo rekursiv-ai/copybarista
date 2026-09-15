@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol, cast
 
 import argparse
 import json
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 
     """
     parser = _parser()
-    args = parser.parse_args(argv)
+    flags = cast(_Flags, parser.parse_args(argv))
     try:
         {
             "validate": _run_validate,
@@ -67,11 +68,52 @@ def main(argv: list[str] | None = None) -> int:
             "check-sync-config": _run_check_sync_config,
             "write-export-workflow": _run_write_export_workflow,
             "write-public-workflows": _run_write_public_workflows,
-        }[args.command](args)
+        }[flags.command](flags)
     except CopybaristaError as err:
         sys.stderr.write(f"{err}\n")
         return _exit_code(err)
     return 0
+
+
+class _Flags(Protocol):
+    """Parsed command-line flags across every subcommand.
+
+    One Protocol, not one per subparser: argparse returns a single namespace
+    and each ``_run_*`` reads only the attributes its subparser registered.
+    """
+
+    command: str
+    config: str
+    workflow: str
+    output: str
+    source_ref: str
+    folder_dir: str
+    force: bool
+    json: bool
+    root: str
+    public_base: str
+    public_head: str
+    source_base: str
+    destination: str
+    no_verify: bool
+    merge_import: bool
+    package_name: str
+    sync_label: str
+    source_root: str
+    public_repo: str
+    source_repo: str
+    copybarista_project_path: str
+    smoke_import: str
+    release_check_script: str
+    type_check_target: list[str]
+    forbidden_pr_text: list[str]
+    validation_python_version: list[str]
+    validation_command: list[str]
+    refresh_public_lockfile: bool
+    sync_user_name: str
+    sync_user_email: str
+    overwrite: bool
+    sync_config: str
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -176,123 +218,123 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_validate(args: argparse.Namespace) -> None:
+def _run_validate(flags: _Flags) -> None:
     """Validate config and exit silently on success."""
-    load_config(Path(args.config), workflow_name=args.workflow)
+    load_config(Path(flags.config), workflow_name=flags.workflow)
 
 
-def _run_translate(args: argparse.Namespace) -> None:
+def _run_translate(flags: _Flags) -> None:
     """Translate a supported `copy.bara.sky` workflow to native TOML."""
     translated = translate_copy_bara_sky_to_toml(
-        Path(args.config),
-        workflow_name=args.workflow,
+        Path(flags.config),
+        workflow_name=flags.workflow,
     )
-    if args.output:
-        Path(args.output).write_text(translated, encoding="utf-8")
+    if flags.output:
+        Path(flags.output).write_text(translated, encoding="utf-8")
     else:
         sys.stdout.write(translated)
 
 
-def _run_export(args: argparse.Namespace) -> None:
+def _run_export(flags: _Flags) -> None:
     """Run a folder export command."""
-    config = load_config(Path(args.config), workflow_name=args.workflow)
-    if not args.folder_dir and not config.folder.path:
+    config = load_config(Path(flags.config), workflow_name=flags.workflow)
+    if not flags.folder_dir and not config.folder.path:
         raise ConfigError(
             "copybarista export requires --folder-dir or destination.folder.path",
         )
     manifest = export_folder(
         config=config,
-        source_ref=Path(args.source_ref),
-        destination=Path(args.folder_dir or config.folder.path),
-        force=args.force,
+        source_ref=Path(flags.source_ref),
+        destination=Path(flags.folder_dir or config.folder.path),
+        force=flags.force,
     )
-    if args.json:
+    if flags.json:
         sys.stdout.write(manifest.to_json())
 
 
-def _run_publish_git(args: argparse.Namespace) -> None:
+def _run_publish_git(flags: _Flags) -> None:
     """Run a Git publish command."""
-    config = load_config(Path(args.config), workflow_name=args.workflow)
-    manifest = export_git(config=config, source_ref=Path(args.source_ref))
-    if args.json:
+    config = load_config(Path(flags.config), workflow_name=flags.workflow)
+    manifest = export_git(config=config, source_ref=Path(flags.source_ref))
+    if flags.json:
         sys.stdout.write(manifest.to_json())
 
 
-def _run_check_leaks(args: argparse.Namespace) -> None:
+def _run_check_leaks(flags: _Flags) -> None:
     """Run leak policy checks against an existing tree."""
-    config = load_config(Path(args.config), workflow_name=args.workflow)
+    config = load_config(Path(flags.config), workflow_name=flags.workflow)
     # Thread ``config.globstar`` so the standalone gate applies the same ``**``
     # semantics as the export path (workflow.stage); omitting it defaults to
     # ``one_or_more`` and can pass a tree a ``zero_or_more`` export would fail.
     enforce_leak_check(
-        root=Path(args.root),
+        root=Path(flags.root),
         policy=config.leak_check,
         globstar=config.globstar,
     )
 
 
-def _run_import_change(args: argparse.Namespace) -> None:
+def _run_import_change(flags: _Flags) -> None:
     """Run a local public-change import command."""
-    config = load_config(Path(args.config), workflow_name=args.workflow)
-    if args.no_verify:
+    config = load_config(Path(flags.config), workflow_name=flags.workflow)
+    if flags.no_verify:
         sys.stderr.write(
             "Warning: --no-verify disables public-base and final re-export checks.\n",
         )
     result = import_change_request(
         ImportRequest(
             config=config,
-            public_base=Path(args.public_base),
-            public_head=Path(args.public_head),
-            source_base=Path(args.source_base),
-            destination=Path(args.destination),
-            verify=not args.no_verify,
-            merge_import=args.merge_import,
+            public_base=Path(flags.public_base),
+            public_head=Path(flags.public_head),
+            source_base=Path(flags.source_base),
+            destination=Path(flags.destination),
+            verify=not flags.no_verify,
+            merge_import=flags.merge_import,
         ),
     )
-    if args.json:
+    if flags.json:
         sys.stdout.write(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")
 
 
-def _run_init_sync(args: argparse.Namespace) -> None:
+def _run_init_sync(flags: _Flags) -> None:
     """Write package sync scaffolding."""
     settings = SyncSettings(
-        package_name=args.package_name,
-        sync_label=args.sync_label or args.package_name,
-        source_root=args.source_root,
-        public_repo=args.public_repo,
-        source_repo=args.source_repo,
-        copybarista_project_path=args.copybarista_project_path,
-        smoke_import=args.smoke_import,
-        release_check_script=args.release_check_script,
-        type_check_targets=tuple(args.type_check_target)
-        or (args.smoke_import, "tests"),
-        forbidden_pr_text=tuple(args.forbidden_pr_text),
-        validation_python_versions=tuple(args.validation_python_version)
+        package_name=flags.package_name,
+        sync_label=flags.sync_label or flags.package_name,
+        source_root=flags.source_root,
+        public_repo=flags.public_repo,
+        source_repo=flags.source_repo,
+        copybarista_project_path=flags.copybarista_project_path,
+        smoke_import=flags.smoke_import,
+        release_check_script=flags.release_check_script,
+        type_check_targets=tuple(flags.type_check_target)
+        or (flags.smoke_import, "tests"),
+        forbidden_pr_text=tuple(flags.forbidden_pr_text),
+        validation_python_versions=tuple(flags.validation_python_version)
         or DEFAULT_VALIDATION_PYTHON_VERSIONS,
-        validation_commands=tuple(args.validation_command),
-        refresh_public_lockfile=args.refresh_public_lockfile,
-        sync_user_name=args.sync_user_name,
-        sync_user_email=args.sync_user_email,
+        validation_commands=tuple(flags.validation_command),
+        refresh_public_lockfile=flags.refresh_public_lockfile,
+        sync_user_name=flags.sync_user_name,
+        sync_user_email=flags.sync_user_email,
     )
     for path in write_sync_scaffold(
-        root=Path(args.root),
+        root=Path(flags.root),
         settings=settings,
-        force=args.overwrite,
+        force=flags.overwrite,
     ):
         sys.stdout.write(f"wrote {path}\n")
 
 
-def _run_check_sync_config(args: argparse.Namespace) -> None:
+def _run_check_sync_config(flags: _Flags) -> None:
     """Validate package sync scaffolding."""
-    check_sync_config(root=Path(args.root))
+    check_sync_config(root=Path(flags.root))
 
 
-def _run_write_export_workflow(args: argparse.Namespace) -> None:
+def _run_write_export_workflow(flags: _Flags) -> None:
     """Write the source-repository export workflow."""
-    settings = load_sync_settings(Path(args.sync_config))
+    settings = load_sync_settings(Path(flags.sync_config))
     text = export_workflow(settings)
-    if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
+    if flags.output:
+        Path(flags.output).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
 
@@ -301,9 +343,9 @@ def _run_write_export_workflow(args: argparse.Namespace) -> None:
 # both or the byte-parity test fails on whichever was missed. ``write_sync_scaffold``
 # would also overwrite the hand-tuned ``copy.barista.toml``, which is why this writes
 # only the two.
-def _run_write_public_workflows(args: argparse.Namespace) -> None:
+def _run_write_public_workflows(flags: _Flags) -> None:
     """Rewrite the generated workflows under a package's ``.export/``."""
-    config = Path(args.sync_config)
+    config = Path(flags.sync_config)
     settings = load_sync_settings(config)
     workflows = config.parent / ".export/.github/workflows"
     for name, text in (

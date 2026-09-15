@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Protocol, cast
 
 import argparse
 import shutil
@@ -90,16 +91,25 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
-    args = parser.parse_args()
+    flags = cast(_Flags, parser.parse_args())
 
-    if not args.input.is_file():
-        sys.stderr.write(f"input not found: {args.input}\n")
+    if not flags.input.is_file():
+        sys.stderr.write(f"input not found: {flags.input}\n")
         return 1
 
-    output = args.output or args.input.with_suffix(".webp")
-    render(args.input, output, args.width, args.scale)
+    output = flags.output or flags.input.with_suffix(".webp")
+    render(flags.input, output, flags.width, flags.scale)
     sys.stdout.write(f"wrote {output}\n")
     return 0
+
+
+class _Flags(Protocol):
+    """Parsed command-line flags."""
+
+    input: Path
+    output: Path | None
+    width: int
+    scale: int
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:

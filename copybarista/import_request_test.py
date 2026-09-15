@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import json
 import shutil
@@ -2349,9 +2350,13 @@ def test_cli_import_change_writes_json_report(
         ],
     )
 
-    data = json.loads(capsys.readouterr().out)
-    assert data["changes"][0]["public"] == "pkg/module.py"
-    assert data["changes"][0]["source"] == "internal/demo/pkg/module.py"
+    data = cast(dict[str, object], json.loads(capsys.readouterr().out))
+    changes = data["changes"]
+    assert isinstance(changes, list)
+    assert isinstance(changes[0], dict)
+    first_change = cast(dict[str, object], changes[0])
+    assert first_change["public"] == "pkg/module.py"
+    assert first_change["source"] == "internal/demo/pkg/module.py"
 
 
 def test_cli_import_change_mismatch_exits_three(

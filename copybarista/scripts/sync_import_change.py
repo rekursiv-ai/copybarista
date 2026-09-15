@@ -16,10 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, TextIO
+from typing import Final, Protocol, TextIO, cast
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -27,6 +26,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from copybarista.lib.custom_json import loads
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -53,52 +54,63 @@ def run(argv: list[str] | None = None) -> int:
       exit_code: 0 on success, nonzero if import/validation/PR fails.
 
     """
-    args = _parser().parse_args(argv)
-    if args.print_synced_base:
+    flags = cast(_Flags, _parser().parse_args(argv))
+    if flags.print_synced_base:
         # Resolve the merge baseline from the target's own import history and
         # print it for the workflow to consume; no import request is built.
         sys.stdout.write(
             last_synced_public_sha(
-                target_dir=Path(args.target_dir).resolve(),
-                sync_label=args.sync_label,
-                base_branch=args.base_branch,
-                fallback=args.fallback_sha,
+                target_dir=Path(flags.target_dir).resolve(),
+                sync_label=flags.sync_label,
+                base_branch=flags.base_branch,
+                fallback=flags.fallback_sha,
             )
             + "\n",
         )
         return 0
-    for name in ("project_path", "public_base_ref", "public_head_ref"):
-        if getattr(args, name) is None:
-            _parser().error(f"--{name.replace('_', '-')} is required for an import")
+    missing = [
+        flag
+        for flag, value in (
+            ("--project-path", flags.project_path),
+            ("--public-base-ref", flags.public_base_ref),
+            ("--public-head-ref", flags.public_head_ref),
+        )
+        if value is None
+    ]
+    if missing:
+        _parser().error(f"{missing[0]} is required for an import")
+    assert flags.project_path is not None
+    assert flags.public_base_ref is not None
+    assert flags.public_head_ref is not None
     # Resolve filesystem inputs to absolute paths. Copybarista subprocesses run
     # with cwd=target_dir; relative path args would otherwise be resolved a
     # second time against that cwd (target/target/...).
     request = ImportRequest(
-        public_base=Path(args.public_base).resolve(),
-        public_head=Path(args.public_head).resolve(),
-        target_dir=Path(args.target_dir).resolve(),
-        target_repo=args.target_repo,
-        project_path=Path(args.project_path),
-        base_branch=args.base_branch,
-        public_repo=args.public_repo,
-        public_sha=args.public_sha,
-        public_base_ref=args.public_base_ref,
-        public_head_ref=args.public_head_ref,
+        public_base=Path(flags.public_base).resolve(),
+        public_head=Path(flags.public_head).resolve(),
+        target_dir=Path(flags.target_dir).resolve(),
+        target_repo=flags.target_repo,
+        project_path=Path(flags.project_path),
+        base_branch=flags.base_branch,
+        public_repo=flags.public_repo,
+        public_sha=flags.public_sha,
+        public_base_ref=flags.public_base_ref,
+        public_head_ref=flags.public_head_ref,
         branch=import_branch_name(
-            explicit=args.branch,
-            public_sha=args.public_sha,
-            prefix=args.branch_prefix,
+            explicit=flags.branch,
+            public_sha=flags.public_sha,
+            prefix=flags.branch_prefix,
         ),
-        sync_label=args.sync_label,
-        sync_user_name=args.sync_user_name,
-        sync_user_email=args.sync_user_email,
-        report=Path(args.report).resolve(),
-        open_pr=_string_bool(args.open_pr),
-        auto_merge=_string_bool(args.auto_merge),
-        open_pr_only=args.open_pr_only,
-        runner_temp=Path(args.runner_temp).resolve(),
-        validation_commands=tuple(args.validation_command),
-        refresh_public_lockfile=args.refresh_public_lockfile,
+        sync_label=flags.sync_label,
+        sync_user_name=flags.sync_user_name,
+        sync_user_email=flags.sync_user_email,
+        report=Path(flags.report).resolve(),
+        open_pr=_string_bool(flags.open_pr),
+        auto_merge=_string_bool(flags.auto_merge),
+        open_pr_only=flags.open_pr_only,
+        runner_temp=Path(flags.runner_temp).resolve(),
+        validation_commands=tuple(flags.validation_command),
+        refresh_public_lockfile=flags.refresh_public_lockfile,
     )
     run_import_sync(request)
     return 0
@@ -353,7 +365,7 @@ def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
         cwd=cwd,
         capture=True,
     )
-    return bool(json.loads(result.stdout))
+    return bool(loads(result.stdout))
 
 
 def _fetch_branch(*, branch: str, cwd: Path) -> None:
@@ -998,6 +1010,35 @@ def _import_subject_pattern(sync_label: str) -> re.Pattern[str]:
     prefix = import_commit_subject_prefix(sync_label)
     # ``(#N)`` is GitHub's squash-merge suffix, which is how these imports land.
     return re.compile(rf"^{re.escape(prefix)}([0-9a-f]{{40}})(?: \(#\d+\))?$")
+
+
+class _Flags(Protocol):
+    """Parsed command-line flags."""
+
+    public_base: str
+    public_head: str
+    target_dir: str
+    target_repo: str
+    project_path: str | None
+    base_branch: str
+    public_repo: str
+    public_sha: str
+    sync_user_name: str
+    sync_user_email: str
+    public_base_ref: str | None
+    public_head_ref: str | None
+    branch: str
+    branch_prefix: str
+    sync_label: str
+    report: str
+    open_pr: str
+    auto_merge: str
+    open_pr_only: bool
+    runner_temp: str
+    validation_command: list[str]
+    refresh_public_lockfile: bool
+    print_synced_base: bool
+    fallback_sha: str
 
 
 if __name__ == "__main__":

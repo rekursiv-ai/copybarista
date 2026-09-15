@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+
+import dataclasses
 
 import pytest
 import yaml
 
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
+from copybarista.lib.custom_json import DictCodec, ListCodec
 from copybarista.sync_setup import (
     SyncSettings,
     check_sync_config,
@@ -25,19 +27,18 @@ from copybarista.sync_setup import (
 
 
 def _settings(**kwargs: object) -> SyncSettings:
-    values: dict[str, Any] = {
-        "package_name": "configgle",
-        "sync_label": "Configgle",
-        "source_root": "packages/configgle",
-        "public_repo": "example/configgle",
-        "source_repo": "example/source",
-        "copybarista_project_path": "tools/copybarista",
-        "smoke_import": "configgle",
-        "type_check_targets": ("configgle", "tests"),
-        "forbidden_pr_text": ("loop",),
-    }
-    values.update(kwargs)
-    return SyncSettings(**values)
+    settings = SyncSettings(
+        package_name="configgle",
+        sync_label="Configgle",
+        source_root="packages/configgle",
+        public_repo="example/configgle",
+        source_repo="example/source",
+        copybarista_project_path="tools/copybarista",
+        smoke_import="configgle",
+        type_check_targets=("configgle", "tests"),
+        forbidden_pr_text=("loop",),
+    )
+    return dataclasses.replace(settings, **kwargs)
 
 
 def test_sync_toml_round_trips_every_setting(tmp_path: Path):
@@ -725,7 +726,7 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
     """The import token stays on the credential-free checkout and the PR step."""
     steps = _import_steps(import_workflow(_settings()))
     ledger = steps[_step_index(steps, lambda step: _checkout_path(step) == "target")]
-    with_config = cast(dict[str, Any], ledger["with"])
+    with_config = DictCodec.coerce(ledger["with"])
 
     assert with_config.get("persist-credentials") is False
     assert with_config.get("token") == "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}"
@@ -792,16 +793,18 @@ def test_generated_toml_escapes_strings(tmp_path: Path):
     assert loaded.sync_label == 'Configgle "Core"'
 
 
-def _import_steps(workflow: str) -> list[dict[str, Any]]:
+def _import_steps(workflow: str) -> list[dict[str, object]]:
     """Return the parsed steps of the generated import job, in file order."""
-    parsed: Any = yaml.safe_load(workflow)
-    steps: Any = parsed["jobs"]["import-change"]["steps"]
-    return [cast(dict[str, Any], step) for step in cast(list[Any], steps)]
+    parsed = DictCodec.coerce(yaml.safe_load(workflow))
+    jobs = DictCodec.coerce(parsed["jobs"])
+    job = DictCodec.coerce(jobs["import-change"])
+    steps = ListCodec.coerce(job["steps"], object)
+    return [DictCodec.coerce(step) for step in steps]
 
 
 def _step_index(
-    steps: list[dict[str, Any]],
-    predicate: Callable[[dict[str, Any]], bool],
+    steps: list[dict[str, object]],
+    predicate: Callable[[dict[str, object]], bool],
 ) -> int:
     """Return the position of the one step matching `predicate`."""
     matches = [index for index, step in enumerate(steps) if predicate(step)]
@@ -809,12 +812,12 @@ def _step_index(
     return matches[0]
 
 
-def _checkout_path(step: dict[str, Any]) -> str:
+def _checkout_path(step: dict[str, object]) -> str:
     """Return the `path` a checkout step writes to, or empty for other steps."""
     if step.get("uses") != action_ref("actions/checkout"):
         return ""
-    with_config: Any = step.get("with", {})
-    return str(cast(dict[str, Any], with_config).get("path", ""))
+    with_config = DictCodec.coerce(step.get("with", {}))
+    return str(with_config.get("path", ""))
 
 
 def test_workflow_dir_prefers_the_staged_export_over_a_source_only_github(

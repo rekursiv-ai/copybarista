@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import json
-
 import pytest
 
 from copybarista.cli import _exit_code, main
@@ -17,6 +15,7 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
+from copybarista.lib.custom_json import DictCodec, ListCodec, loads
 
 
 def _config(path: Path, source_root: str = "project") -> None:
@@ -63,8 +62,9 @@ def test_cli_export_writes_json_manifest(
         ],
     )
 
-    manifest = json.loads(capsys.readouterr().out)
-    assert manifest["files"][0]["destination"] == "README.md"
+    manifest = DictCodec.coerce(loads(capsys.readouterr().out))
+    files = ListCodec.mappings(manifest["files"])
+    assert files[0]["destination"] == "README.md"
 
 
 def test_cli_reports_copybarista_errors(

@@ -14,7 +14,7 @@ remain available for tests.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import argparse
 import shutil
@@ -52,14 +52,14 @@ def main() -> int:
         "tests/__pycache__",
         "private/__pycache__",
     ]
-    if args.venv:
+    if cast(str, args.venv):
         targets.append(".venv")
 
     for relative_target in targets:
         target = _safe_project_path(relative_target)
         if not target.exists() and not target.is_symlink():
             continue
-        if args.dry_run:
+        if cast(bool, args.dry_run):
             sys.stdout.write(f"{target}\n")
             continue
         if target.is_dir() and not target.is_symlink():

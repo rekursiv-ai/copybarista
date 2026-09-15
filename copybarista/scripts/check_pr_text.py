@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import argparse
 import sys
@@ -47,7 +48,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
     _add_arguments(parser)
     args = parser.parse_args()
-    message = Path(args.message_file).read_text(encoding="utf-8")
+    message = Path(cast(str, args.message_file)).read_text(encoding="utf-8")
     violations = _scan(message)
     if not violations:
         return 0
