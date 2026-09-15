@@ -782,6 +782,37 @@ def test_accepts_sky_extra_origin_files_as_file_copies(tmp_path: Path):
     ]
 
 
+def test_extra_origin_root_copy_skips_python_artifacts(tmp_path: Path):
+    """A vendored tree ships without ``__pycache__``, as Copybara's move does.
+
+    Copybara relocates only the files ``origin_files`` selected, and a checked-in
+    tree never contains ``__pycache__``; our copy reads the working tree, where a
+    test run has left ``.pyc`` files. Without the default excludes the two
+    exports diverge and the parity test fails on a local artifact.
+    """
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob([ROOT + "/**", "vendor/pkg/**"]),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [core.move(ROOT, "")],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    (vendored,) = config.files.copy
+    assert vendored.source == "vendor/pkg"
+    assert "__pycache__/**" in vendored.effective_exclude()
+
+
 def test_extra_origin_root_renamed_by_a_move_lands_only_at_its_destination(
     tmp_path: Path,
 ):
