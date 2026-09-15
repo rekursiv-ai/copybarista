@@ -783,6 +783,7 @@ def test_import_reverses_a_module_replace_in_every_spelling(tmp_path: Path):
     ) == source_body.replace("'base'", "'head'")
 
 
+@pytest.mark.cli_python_subprocess
 def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     """Invariant: importing a public change must not pollute source with lint.
 
@@ -907,6 +908,7 @@ def test_import_reverse_replace_leaves_imports_isort_clean(tmp_path: Path):
     )
 
 
+@pytest.mark.cli_python_subprocess
 def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     """A whole-tree ``ruff_format`` (``path = "."``) reformats imported files.
 
