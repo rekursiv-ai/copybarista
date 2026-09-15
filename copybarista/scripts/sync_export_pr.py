@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, TextIO, cast
+from typing import Final, Protocol, TextIO, cast
 
 import argparse
 import hashlib
@@ -32,6 +32,7 @@ import time
 import tomllib
 
 from copybarista.config import Transform, load_config
+from copybarista.lib.custom_json import DictCodec, ListCodec, loads
 from copybarista.scripts.sync_import_change import (
     ImportBaseError,
     last_synced_public_sha,
@@ -82,61 +83,61 @@ def run(argv: list[str] | None = None) -> int:
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _apply_project_discovery(argv)
-    args = _parser().parse_args(argv)
-    if not args.project_path:
+    flags = cast(_Flags, _parser().parse_args(argv))
+    if not flags.project_path:
         _parser().error("--project-path is required")
-    forbidden_pr_text = _split_forbidden_text(args.forbidden_pr_text)
+    forbidden_pr_text = _split_forbidden_text(list(flags.forbidden_pr_text))
     pr_text = export_pr_text(
-        title=args.pr_title,
-        body=args.pr_body,
-        default_title=args.pr_default_title,
-        default_body=args.pr_default_body,
-        source_message=args.source_message,
-        use_source_message=args.use_source_message_pr_text,
+        title=flags.pr_title,
+        body=flags.pr_body,
+        default_title=flags.pr_default_title,
+        default_body=flags.pr_default_body,
+        source_message=flags.source_message,
+        use_source_message=flags.use_source_message_pr_text,
         forbidden_text=forbidden_pr_text,
     )
     request = ExportRequest(
-        source_dir=Path(args.source_dir),
-        project_path=Path(args.project_path),
-        public_dir=Path(args.public_dir),
-        target_repo=args.target_repo,
-        base_branch=args.base_branch,
-        source_sha=args.source_sha,
+        source_dir=Path(flags.source_dir),
+        project_path=Path(flags.project_path),
+        public_dir=Path(flags.public_dir),
+        target_repo=flags.target_repo,
+        base_branch=flags.base_branch,
+        source_sha=flags.source_sha,
         branch=export_branch_name(
-            explicit=args.branch,
-            source_branch=args.source_branch,
-            source_sha=args.source_sha,
-            prefix=args.branch_prefix,
+            explicit=flags.branch,
+            source_branch=flags.source_branch,
+            source_sha=flags.source_sha,
+            prefix=flags.branch_prefix,
         ),
-        sync_label=args.sync_label,
-        import_branch_prefix=args.import_branch_prefix,
-        source_repo=args.source_repo,
-        sync_user_name=args.sync_user_name,
-        sync_user_email=args.sync_user_email,
+        sync_label=flags.sync_label,
+        import_branch_prefix=flags.import_branch_prefix,
+        source_repo=flags.source_repo,
+        sync_user_name=flags.sync_user_name,
+        sync_user_email=flags.sync_user_email,
         pr_title=pr_text.title,
         pr_body=pr_text.body,
-        manual_pr_title=args.pr_title.strip(),
-        manual_pr_body=args.pr_body.strip(),
+        manual_pr_title=flags.pr_title.strip(),
+        manual_pr_body=flags.pr_body.strip(),
         replay_settings=PrReplaySettings(
-            scope=args.pr_scope,
+            scope=flags.pr_scope,
             default_title=pr_text.title,
             default_body=pr_text.body,
-            require_metadata=args.require_pr_metadata,
-            bootstrap_base=args.replay_bootstrap_base,
-            publish_source_rev=args.publish_source_rev,
+            require_metadata=flags.require_pr_metadata,
+            bootstrap_base=flags.replay_bootstrap_base,
+            publish_source_rev=flags.publish_source_rev,
         ),
         forbidden_pr_text=forbidden_pr_text,
-        auto_merge=args.auto_merge,
-        refresh_public_lockfile=args.refresh_public_lockfile,
-        skip_source_validation=args.skip_source_validation,
-        runner_temp=Path(args.runner_temp),
-        release_check_script=Path(args.release_check_script)
-        if args.release_check_script
+        auto_merge=flags.auto_merge,
+        refresh_public_lockfile=flags.refresh_public_lockfile,
+        skip_source_validation=flags.skip_source_validation,
+        runner_temp=Path(flags.runner_temp),
+        release_check_script=Path(flags.release_check_script)
+        if flags.release_check_script
         else None,
-        type_check_targets=tuple(args.type_check_target) or (".",),
-        smoke_import=args.smoke_import,
-        validation_commands=tuple(args.validation_command),
-        dry_run=args.dry_run,
+        type_check_targets=tuple(flags.type_check_target) or (".",),
+        smoke_import=flags.smoke_import,
+        validation_commands=tuple(flags.validation_command),
+        dry_run=flags.dry_run,
     )
     try:
         run_export_sync(request)
@@ -525,7 +526,7 @@ def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
 def _json_from_gh(output: str, *, context: str) -> object:
     """Parse GitHub CLI JSON output with context."""
     try:
-        return json.loads(output)
+        return loads(output)
     except json.JSONDecodeError as err:
         raise PrReplayError(f"{context} was not valid JSON.") from err
 
@@ -984,10 +985,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def _apply_project_discovery(argv: list[str]) -> list[str]:
     """Return argv augmented with defaults derived from the positional project."""
-    pre_args = _parser().parse_args(argv)
-    if pre_args.project_dir is None:
+    pre_flags = cast(_Flags, _parser().parse_args(argv))
+    if pre_flags.project_dir is None:
         return argv
-    project_dir = pre_args.project_dir.resolve()
+    project_dir = pre_flags.project_dir.resolve()
     settings = load_sync_settings(project_dir / "copybarista.sync.toml")
     return _argv_from_settings(project_dir=project_dir, settings=settings) + argv
 
@@ -1220,15 +1221,11 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
     """Return ``--upgrade-package`` flags for every git-branch dependency."""
     table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     for key in ("tool", "uv", "sources"):
-        if not isinstance(table, dict):
-            return []
-        table = cast(dict[str, object], table).get(key, {})
-    if not isinstance(table, dict):
-        return []
+        table = DictCodec.coerce(table).get(key, {})
     return [
         flag
-        for name, source in cast(dict[str, object], table).items()
-        if isinstance(source, dict) and "branch" in cast(dict[str, object], source)
+        for name, source in DictCodec.coerce(table).items()
+        if isinstance(source, dict) and "branch" in source
         for flag in ("--upgrade-package", name)
     ]
 
@@ -1533,13 +1530,12 @@ def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]
         capture=True,
     )
     parsed = _json_from_gh(result.stdout, context=f"open PR list for {repo}")
-    if not isinstance(parsed, list):
-        raise PrReplayError(f"Open PR list for {repo} is not a list.")
+    try:
+        items = ListCodec.coerce(parsed, default=None)
+    except TypeError as err:
+        raise PrReplayError(f"Open PR list for {repo} is not a list.") from err
     out: list[str] = []
-    for item in cast(list[object], parsed):
-        if not isinstance(item, dict):
-            continue
-        row = cast(dict[str, object], item)
+    for row in ListCodec.mappings(items):
         branch = str(row.get("headRefName", ""))
         if branch.startswith(prefix):
             out.append(f"#{row.get('number', 0)} {branch}")
@@ -1568,9 +1564,12 @@ def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
         result.stdout,
         context=f"GitHub PR state for branch {branch}",
     )
-    if not isinstance(parsed, dict):
-        raise PrReplayError(f"GitHub PR state for branch {branch} is not a mapping.")
-    raw = cast(dict[str, object], parsed)
+    try:
+        raw = DictCodec.coerce(parsed, default=None)
+    except TypeError as err:
+        raise PrReplayError(
+            f"GitHub PR state for branch {branch} is not a mapping."
+        ) from err
     number = raw.get("number", 0)
     if not isinstance(number, int):
         raise PrReplayError(f"GitHub PR number for branch {branch} is not an integer.")
@@ -2829,6 +2828,47 @@ def _split_commit_message(message: str) -> tuple[str, str]:
     if not title.strip():
         raise SystemExit("--source-message or --pr-title is required.\n")
     return title.strip(), description.strip() if separator else ""
+
+
+class _Flags(Protocol):
+    """Parsed command-line flags."""
+
+    project_dir: Path | None
+    source_dir: str
+    project_path: str
+    public_dir: str
+    target_repo: str
+    base_branch: str
+    source_sha: str
+    sync_user_name: str
+    sync_user_email: str
+    source_branch: str
+    branch: str
+    branch_prefix: str
+    sync_label: str
+    import_branch_prefix: str
+    source_repo: str
+    pr_title: str
+    pr_body: str
+    pr_default_title: str
+    pr_default_body: str
+    pr_scope: str
+    require_pr_metadata: bool
+    replay_bootstrap_base: str
+    publish_source_rev: bool
+    source_message: str
+    use_source_message_pr_text: bool
+    forbidden_pr_text: list[str]
+    auto_merge: bool
+    refresh_public_lockfile: bool
+    dry_run: bool
+    skip_source_validation: bool
+    workflow: str
+    runner_temp: str
+    release_check_script: str
+    type_check_target: list[str]
+    validation_command: list[str]
+    smoke_import: str
 
 
 if __name__ == "__main__":

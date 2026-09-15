@@ -17,6 +17,7 @@ public checkout, and run it again in the public repository with
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import argparse
 import re
@@ -71,7 +72,9 @@ def run(argv: list[str] | None = None) -> int:
 
     """
     args = _parser().parse_args(argv)
-    errors = check_tree(root=Path(args.root), allow_root_git=args.allow_root_git)
+    errors = check_tree(
+        root=Path(cast(str, args.root)), allow_root_git=cast(bool, args.allow_root_git)
+    )
     if errors:
         for error in errors:
             sys.stderr.write(f"{error}\n")

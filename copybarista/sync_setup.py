@@ -20,6 +20,7 @@ import yaml
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
+from copybarista.lib.custom_json import DictCodec
 
 
 # Copybarista control files that must be excluded from every export selection.
@@ -225,17 +226,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
 
     """
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        raw = DictCodec.coerce(tomllib.loads(path.read_text(encoding="utf-8")))
     except tomllib.TOMLDecodeError as err:
         raise ConfigError(f"Cannot read sync config {path}: {err}") from err
-    sync = raw.get("sync", {})
-    if not isinstance(sync, dict):
-        raise ConfigError("copybarista.sync.toml must contain a [sync] table.")
-    sync = cast(dict[str, object], sync)
-    pull_request = raw.get("pull_request", {})
-    if not isinstance(pull_request, dict):
-        raise ConfigError("copybarista.sync.toml [pull_request] must be a table.")
-    pull_request = cast(dict[str, object], pull_request)
+    sync = DictCodec.coerce(raw.get("sync", {}))
+    pull_request = DictCodec.coerce(raw.get("pull_request", {}))
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -770,12 +765,10 @@ def _validate_import_workflow_yaml(
 ) -> None:
     """Validate the exported public-to-source workflow matches settings."""
     try:
-        parsed: object = yaml.safe_load(workflow_text)
+        parsed = DictCodec.coerce(yaml.safe_load(workflow_text))
     except yaml.YAMLError as err:
         raise ConfigError(f"Cannot read sync workflow: {err}") from err
-    if not isinstance(parsed, dict):
-        raise ConfigError("sync-to-source.yml must be a YAML mapping.")
-    workflow = cast(dict[str, object], parsed)
+    workflow = parsed
     jobs = _yaml_mapping(workflow.get("jobs"), "jobs")
     job = _yaml_mapping(jobs.get("import-change"), "jobs.import-change")
     env = _yaml_mapping(job.get("env"), "jobs.import-change.env")
