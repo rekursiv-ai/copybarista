@@ -533,6 +533,53 @@ def test_subtree_copy_skips_a_local_virtualenv(tmp_path: Path):
     assert not (output / ".venv").exists()
 
 
+def test_subtree_copy_honors_origin_excludes_under_its_source(tmp_path: Path):
+    """An ``origin_files`` exclude under the subtree copy's source binds to the copy.
+
+    ``.export/packages/<dep>`` is a symlink to the in-repo package so ``uv lock``
+    resolves the path source from inside ``.export``; it points outside the
+    subtree, so the export symlink guard rejects it unless the copy drops it.
+    Copybara honors the exclude because its move relocates only selected files;
+    the translated copy reads from source directly, so the exclude must be
+    carried onto the copy itself (relative to the copy's source).
+    """
+    source = tmp_path / "repo"
+    staging = source / "project" / ".export"
+    (staging / "packages").mkdir(parents=True)
+    (source / "project" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (staging / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (staging / "packages" / "dep").symlink_to(tmp_path / "outside")
+    config_path = _write_sky(
+        tmp_path,
+        """
+        ROOT = "project"
+        core.workflow(
+            name = "export",
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob(
+                [ROOT + "/**"],
+                exclude = [ROOT + "/.export/packages/**"],
+            ),
+            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [
+                core.move(ROOT, ""),
+                core.move(ROOT + "/.export", ""),
+            ],
+        )
+        """,
+    )
+    config = load_config(config_path, workflow_name="export")
+    output = tmp_path / "out"
+
+    export_folder(config=config, source_ref=source, destination=output, force=True)
+
+    assert config.files.copy[0].exclude == ("packages/**",)
+    assert (output / "pyproject.toml").read_text(encoding="utf-8") == "[project]\n"
+    assert not (output / "packages").exists()
+
+
 def test_core_copy_with_paths_becomes_file_copy_with_include(tmp_path: Path):
     """``core.copy(SRC, DEST, paths=glob([...]))`` maps to a copy with include.
 
