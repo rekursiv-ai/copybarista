@@ -1568,7 +1568,7 @@ def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
         raw = DictCodec.coerce(parsed, default=None)
     except TypeError as err:
         raise PrReplayError(
-            f"GitHub PR state for branch {branch} is not a mapping."
+            f"GitHub PR state for branch {branch} is not a mapping.",
         ) from err
     number = raw.get("number", 0)
     if not isinstance(number, int):

@@ -73,7 +73,8 @@ def run(argv: list[str] | None = None) -> int:
     """
     args = _parser().parse_args(argv)
     errors = check_tree(
-        root=Path(cast(str, args.root)), allow_root_git=cast(bool, args.allow_root_git)
+        root=Path(cast(str, args.root)),
+        allow_root_git=cast(bool, args.allow_root_git),
     )
     if errors:
         for error in errors:
