@@ -430,7 +430,10 @@ class _CopyBaraSkyParser:
             copies=origin_copies,
             transforms=transforms,
         )
-        copies = (*origin_copies, *subtree_copies)
+        copies = (
+            *origin_copies,
+            *_bind_subtree_excludes(subtree_copies, origin_files.exclude),
+        )
         if source_root and not include:
             raise ConfigError(
                 f"origin_files pattern is outside core.move source root: {source_root}",
@@ -1045,6 +1048,28 @@ def _prefix_back_move(move: MoveSpec, prefix: str) -> FileMove | None:
 def _is_subtree_to_root_move(move: MoveSpec, root: str) -> bool:
     """Return whether a move ships an in-package subtree to the export root."""
     return bool(root) and not move.destination and move.source.startswith(f"{root}/")
+
+
+# Copybara's ``origin_files`` exclude removes the file before any move sees it, so an
+# exclude under ``<root>/.export`` never ships. The translated copy reads its subtree
+# from source directly and the main-sweep exclude does not reach it, so the same
+# pattern must be re-rooted onto the copy or the file ships (or, for a symlink out of
+# the subtree, fails the export symlink guard).
+def _bind_subtree_excludes(
+    copies: tuple[FileCopy, ...],
+    origin_excludes: tuple[str, ...],
+) -> tuple[FileCopy, ...]:
+    """Attach origin excludes that fall under each subtree copy's source to it."""
+    bound: list[FileCopy] = []
+    for copy in copies:
+        prefix = f"{copy.source}/"
+        under = tuple(
+            pattern.removeprefix(prefix)
+            for pattern in origin_excludes
+            if pattern.startswith(prefix)
+        )
+        bound.append(replace(copy, exclude=(*copy.exclude, *under)) if under else copy)
+    return tuple(bound)
 
 
 # ``copy_source`` is the full monorepo path of the copy's source; when it lies under
