@@ -841,7 +841,9 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
 
     branch = request.branch
     source_base_ref = _run(
-        ["git", "rev-parse", "HEAD"], cwd=request.target_dir, capture=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=request.target_dir,
+        capture=True,
     ).stdout.strip()
     body_file = request.runner_temp / "copybarista-import-change-pr-body.md"
     body_file.write_text(

@@ -386,7 +386,8 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
     selection = FileSelection(
         include=tuple(
             _glob_list(
-                _string_list(files, "include", default=("**",)), "files.include"
+                _string_list(files, "include", default=("**",)),
+                "files.include",
             ),
         ),
         exclude=tuple(

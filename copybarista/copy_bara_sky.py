@@ -1398,7 +1398,9 @@ def _file_copy_from_origin_pattern(pattern: str) -> FileCopy:
         # Copybara moves only the selected, checked-in files; this copy reads the
         # working tree, so a prior test run's ``__pycache__`` would ride along.
         return FileCopy(
-            source=source, destination=source, use_default_python_excludes=True
+            source=source,
+            destination=source,
+            use_default_python_excludes=True,
         )
     return FileCopy(source=pattern, destination=pattern)
 

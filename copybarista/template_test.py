@@ -210,7 +210,8 @@ def test_module_replace_covers_every_import_spelling(source: str, public: str) -
     "text",
     [
         pytest.param(
-            "from acme.internal.lib import userdirs_fixture\n", id="prefix-name"
+            "from acme.internal.lib import userdirs_fixture\n",
+            id="prefix-name",
         ),
         pytest.param("acme.internal.lib.userdirs_extra.x\n", id="prefix-token"),
         pytest.param("my_acme.internal.lib.userdirs\n", id="suffix-of-identifier"),
