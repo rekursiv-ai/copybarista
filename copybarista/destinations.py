@@ -9,12 +9,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import shutil
 
 from copybarista.errors import ExportError
-from copybarista.workflow import StagedTree
+
+
+if TYPE_CHECKING:
+    from copybarista.workflow import StagedTree
 
 
 DestinationStatus = Literal["created", "updated", "noop"]

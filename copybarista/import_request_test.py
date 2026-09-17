@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import json
 import shutil
@@ -34,6 +33,10 @@ from copybarista.import_request import (
 )
 from copybarista.transforms import strip_source_text, uncomment_source_text
 from copybarista.workflow import MoveSequence, _relocate_path
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_import_public_edit_maps_to_source_root_and_reverses_replace(

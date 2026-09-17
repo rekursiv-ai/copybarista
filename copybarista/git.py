@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import unquote, urlparse
 
 import contextlib
@@ -26,10 +26,6 @@ from copybarista.commands import (
     CommandRunner,
     resolve_executable,
 )
-from copybarista.config import (
-    GitDestination,
-    WorkflowConfig,
-)
 from copybarista.destinations import (
     DestinationResult,
     validate_staged_symlinks,
@@ -41,6 +37,13 @@ from copybarista.workflow import (
     StagedTree,
     WorkflowRunner,
 )
+
+
+if TYPE_CHECKING:
+    from copybarista.config import (
+        GitDestination,
+        WorkflowConfig,
+    )
 
 
 SCP_STYLE_URL = re.compile(r"^[^/@:\s]+@[^/:\s]+:.+")

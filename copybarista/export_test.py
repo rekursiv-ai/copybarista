@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import os
 import stat
@@ -12,6 +12,10 @@ import pytest
 from copybarista.config import load_config
 from copybarista.errors import ExportError, LeakCheckError
 from copybarista.export import export_folder
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_folder_export_filters_transforms_and_cleans_stale_files(tmp_path: Path):

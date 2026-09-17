@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import dataclasses
 
@@ -24,6 +23,11 @@ from copybarista.sync_setup import (
     workflow_dir,
     write_sync_scaffold,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 
 def _settings(**kwargs: object) -> SyncSettings:

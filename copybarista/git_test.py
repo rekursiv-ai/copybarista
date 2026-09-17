@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import shutil
 
@@ -21,6 +21,10 @@ from copybarista.git import (
     write_git_destination,
 )
 from copybarista.workflow import WorkflowRunner
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 pytestmark = [

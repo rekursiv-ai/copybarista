@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from os import walk
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import difflib
 import re
@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 from copybarista.commands import CommandRunner
-from copybarista.config import FileMove, Transform, WorkflowConfig
+from copybarista.config import WorkflowConfig
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
@@ -33,6 +33,10 @@ from copybarista.transforms import (
     strip_source_text,
     uncomment_source_text,
 )
+
+
+if TYPE_CHECKING:
+    from copybarista.config import FileMove, Transform
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]

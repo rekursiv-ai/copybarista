@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import hashlib
 import json
@@ -11,6 +11,10 @@ from copybarista.manifest import (
     ExportManifest,
     file_entry,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_manifest_json_omits_elapsed_time_for_determinism():

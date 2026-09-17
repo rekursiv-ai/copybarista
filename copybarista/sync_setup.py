@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import hashlib
 import json
@@ -21,6 +20,10 @@ from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
 from copybarista.lib.custom_json import DictCodec
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # Copybarista control files that must be excluded from every export selection.

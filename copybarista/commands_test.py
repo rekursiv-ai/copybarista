@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import sys
 
@@ -13,6 +13,10 @@ from copybarista.commands import (
     resolve_executable,
 )
 from copybarista.errors import ExportError
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_command_runner_returns_captured_output():

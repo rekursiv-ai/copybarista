@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import tempfile
 import time
 
-from copybarista.config import WorkflowConfig
 from copybarista.destinations import (
     write_folder_destination,
 )
 from copybarista.manifest import ExportManifest
 from copybarista.workflow import WorkflowRunner
+
+
+if TYPE_CHECKING:
+    from copybarista.config import WorkflowConfig
 
 
 def export_folder(

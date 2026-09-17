@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from copybarista.scripts.check_release_tree import check_tree
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_required_tree(root: Path) -> None:

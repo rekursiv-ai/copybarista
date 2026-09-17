@@ -9,18 +9,23 @@ markers, and similar release mistakes before any destination is mutated.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import os
 import re
 
-from copybarista.config import (
-    ForbiddenPathRule,
-    ForbiddenTextRule,
-    LeakCheck,
-)
 from copybarista.errors import LeakCheckError
 from copybarista.globs import GlobSet, Globstar
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from copybarista.config import (
+        ForbiddenPathRule,
+        ForbiddenTextRule,
+        LeakCheck,
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

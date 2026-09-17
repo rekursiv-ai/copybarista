@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,6 +16,10 @@ from copybarista.leak_check import (
     check_leaks,
     enforce_leak_check,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_check_leaks_reports_forbidden_paths_and_text(tmp_path: Path):
