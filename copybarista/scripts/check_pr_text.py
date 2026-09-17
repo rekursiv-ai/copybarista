@@ -30,12 +30,15 @@ Usage:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import argparse
 import sys
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def main() -> int:

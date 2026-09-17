@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -22,6 +22,10 @@ from copybarista.copy_bara_sky import (
 from copybarista.errors import ConfigError
 from copybarista.export import export_folder
 from copybarista.transforms import apply_transform
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_sky(tmp_path: Path, source: str) -> Path:

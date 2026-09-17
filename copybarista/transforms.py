@@ -8,10 +8,9 @@ describe the export without inspecting destination state.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import os
 import shutil
@@ -19,7 +18,6 @@ import stat
 import sys
 
 from copybarista.commands import CommandRunner
-from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
 from copybarista.globs import GlobSet, Globstar
 from copybarista.manifest import (
@@ -27,6 +25,12 @@ from copybarista.manifest import (
     TransformReport,
 )
 from copybarista.template import replace_template
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from copybarista.config import Transform
 
 
 class _FileMapping(Protocol):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,6 +16,10 @@ from copybarista.errors import (
     TransformError,
 )
 from copybarista.lib.custom_json import DictCodec, ListCodec, loads
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _config(path: Path, source_root: str = "project") -> None:

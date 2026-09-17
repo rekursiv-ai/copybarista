@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -17,6 +17,10 @@ from copybarista.config import (
 )
 from copybarista.errors import ExportError
 from copybarista.workflow import WorkflowRunner
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _config(

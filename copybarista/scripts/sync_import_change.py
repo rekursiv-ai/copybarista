@@ -79,9 +79,12 @@ def run(argv: list[str] | None = None) -> int:
     ]
     if missing:
         _parser().error(f"{missing[0]} is required for an import")
-    assert flags.project_path is not None
-    assert flags.public_base_ref is not None
-    assert flags.public_head_ref is not None
+    if flags.project_path is None:
+        raise ValueError("Expected flags.project_path is not None.")
+    if flags.public_base_ref is None:
+        raise ValueError("Expected flags.public_base_ref is not None.")
+    if flags.public_head_ref is None:
+        raise ValueError("Expected flags.public_head_ref is not None.")
     # Resolve filesystem inputs to absolute paths. Copybarista subprocesses run
     # with cwd=target_dir; relative path args would otherwise be resolved a
     # second time against that cwd (target/target/...).

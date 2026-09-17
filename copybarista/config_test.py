@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import tomllib
 
@@ -15,6 +15,10 @@ from copybarista.config import (
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_loads_sample_style_config(tmp_path: Path):

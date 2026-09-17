@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import sys
 
@@ -17,6 +17,10 @@ from copybarista.transforms import (
     strip_source_regions,
     strip_source_text,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.parametrize(
