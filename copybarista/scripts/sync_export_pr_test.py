@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import shutil
 import subprocess
 import sys
 
@@ -2328,6 +2329,22 @@ def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
         assert sentinel.read_text(encoding="utf-8") == "preserve me\n"
     finally:
         sync_export_pr._delete_path(dry_public_dir)
+
+
+def test_delete_path_ignores_missing_child_during_recursive_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "checkout"
+    path.mkdir()
+
+    def missing_child(path: Path) -> None:
+        del path
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(shutil, "rmtree", missing_child)
+
+    sync_export_pr._delete_path(path)
 
 
 def test_run_export_sync_dry_run_uses_temp_public_checkout(

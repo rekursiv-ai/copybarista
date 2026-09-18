@@ -548,7 +548,10 @@ def _fetch_branch(*, branch: str, cwd: Path) -> None:
 def _delete_path(path: Path) -> None:
     """Delete one checkout entry before copying the export over it."""
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            return
     else:
         path.unlink()
 
