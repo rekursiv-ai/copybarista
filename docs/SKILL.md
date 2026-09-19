@@ -1,6 +1,6 @@
 ---
 name: copybarista
-description: ALWAYS invoke this skill when editing a copy.barista.toml, or changing how code crosses the monorepo/public boundary -- what a package exports, copybarista fences, leak-check text. Do not edit export config blind -- read the whole toml first.
+description: ALWAYS invoke this skill when editing a copy.barista.toml, copybarista.sync.toml, transforms, fences, leak-check text, or [[files.copy]] entries -- anything changing WHAT ships. Do not edit export config blind -- read the whole toml first.
 ---
 
 # Copybarista Export Mechanics
