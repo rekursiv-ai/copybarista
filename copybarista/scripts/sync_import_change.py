@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Final, Protocol, TextIO, cast
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -26,8 +27,6 @@ import subprocess
 import sys
 import tempfile
 import time
-
-from copybarista.lib.custom_json import loads
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -368,7 +367,9 @@ def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
         cwd=cwd,
         capture=True,
     )
-    return bool(loads(result.stdout))
+    # Gh emits a JSON array; "[]" means no open PR. Compare the compact form
+    # rather than parsing, so this standalone helper needs no typed JSON codec.
+    return json.dumps(json.loads(result.stdout), separators=(",", ":")) != "[]"
 
 
 def _fetch_branch(*, branch: str, cwd: Path) -> None:
