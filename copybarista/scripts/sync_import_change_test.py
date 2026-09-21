@@ -46,6 +46,195 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run([*argv, *args], check=True)  # noqa: S603 -- The test constructs the Git fixture argv from fixed subcommands and paths.
 
 
+def _git_out(root: Path, *args: str) -> str:
+    """Run a Git command in root and return its stripped stdout."""
+    argv = ["git", "-C", str(root)]
+    return subprocess.run(  # noqa: S603 -- Fixed subcommands and repository paths.
+        [*argv, *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+# Bodies matter here: a landed export commit is identified by the ``<label> export
+# branch: <branch>`` line the squash-merge writes into the body, not by its subject. The
+# returned SHAs are in commit order (oldest first) so a test can assert which one the
+# resolver selects.
+def _public_repo_with_messages(*, root: Path, messages: list[str]) -> list[str]:
+    """Commit each full message (subject + body) in order; return the SHAs."""
+    _git_repo_with_commits(root=root, subjects=["Initial commit"])
+    shas: list[str] = []
+    for i, message in enumerate(messages):
+        (root / "g.txt").write_text(f"{i}\n", encoding="utf-8")
+        _git(root, "add", "g.txt")
+        _git(root, "commit", "-q", "-m", message)
+        shas.append(_git_out(root, "rev-parse", "HEAD"))
+    return shas
+
+
+def test_last_synced_public_sha_prefers_a_later_export_over_a_stale_ledger(
+    tmp_path: Path,
+) -> None:
+    """The baseline must include exports, not just the import ledger.
+
+    The live incident: months of source->public EXPORTS advanced public main
+    while no import landed, so the target's import ledger stayed pinned months
+    back. The three-way merge then used that stale ledger SHA as the common
+    ancestor and re-presented already-exported work as 39 file conflicts.
+
+    An export commit lands on public main via squash-merge, whose body carries
+    ``<label> export branch: <branch>`` (the same marker the workflow's own
+    ``if:`` guard greps). The resolver, given the public checkout, must return
+    the NEWEST public commit that is either the ledger SHA or an export commit
+    -- here the later export -- not the stale ledger SHA.
+    """
+    target = tmp_path / "target"
+    public = tmp_path / "public"
+    ledger_sha = "a" * 40
+    _git_repo_with_commits(
+        root=target,
+        subjects=[f"Import Sagent public changes {ledger_sha}"],
+    )
+    # Public history: the ledger's imported commit, then a later export.
+    public_shas = _public_repo_with_messages(
+        root=public,
+        messages=[
+            # The public commit the ledger recorded (its SHA is what the target
+            # walk yields). Its own body is irrelevant to this arm.
+            "Import Sagent public changes (ledger head)",
+            "Unrelated public change",
+            "Publish export\n\nSagent export branch: copybarista/export/main",
+        ],
+    )
+    # Pin the ledger SHA onto the matching public commit so the target walk and
+    # the public walk agree on identity: the resolver's ledger arm matches this
+    # commit, its export arm matches the newer one, and export wins by recency.
+    _git(
+        target,
+        "commit",
+        "--amend",
+        "-q",
+        "-m",
+        f"Import Sagent public changes {public_shas[0]}",
+    )
+    ledger_public_sha = public_shas[0]
+    export_public_sha = public_shas[2]
+
+    result = last_synced_public_sha(
+        target_dir=target,
+        sync_label="Sagent",
+        base_branch="main",
+        public_dir=public,
+    )
+
+    assert result == export_public_sha, (
+        f"expected the later export {export_public_sha[:12]}, not the stale "
+        f"ledger {ledger_public_sha[:12]}"
+    )
+
+
+def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
+    tmp_path: Path,
+) -> None:
+    """When the newest sync IS an import, the ledger SHA wins.
+
+    Symmetric to the export case: the resolver returns whichever recognized
+    commit is newest in public history, so a recent import that post-dates
+    every export must not be overridden by an older export commit.
+    """
+    target = tmp_path / "target"
+    public = tmp_path / "public"
+    public_shas = _public_repo_with_messages(
+        root=public,
+        messages=[
+            "Publish export\n\nSagent export branch: copybarista/export/main",
+            "Unrelated public change",
+            "Import Sagent public changes (this is the ledger head)",
+        ],
+    )
+    import_public_sha = public_shas[2]
+    _git_repo_with_commits(
+        root=target,
+        subjects=[f"Import Sagent public changes {import_public_sha}"],
+    )
+
+    result = last_synced_public_sha(
+        target_dir=target,
+        sync_label="Sagent",
+        base_branch="main",
+        public_dir=public,
+    )
+
+    assert result == import_public_sha
+
+
+def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
+    tmp_path: Path,
+) -> None:
+    """A different label's export commit must not be read as this label's sync.
+
+    The public repo is per-package (one label), but the marker match must be
+    label-scoped anyway: a mislabeled match would silently pick a baseline
+    from an unrelated export and reintroduce conflicts.
+    """
+    target = tmp_path / "target"
+    public = tmp_path / "public"
+    ledger_sha = "c" * 40
+    public_shas = _public_repo_with_messages(
+        root=public,
+        messages=[
+            "Import Sagent public changes (ledger head)",
+            "Publish export\n\nConfiggle export branch: copybarista/export/main",
+        ],
+    )
+    _git(target, "init", "-q", "-b", "main", str(target))
+    for key, value in (
+        ("user.email", "t@example.com"),
+        ("user.name", "T"),
+        ("commit.gpgsign", "false"),
+    ):
+        _git(target, "config", key, value)
+    (target / "f.txt").write_text("x\n", encoding="utf-8")
+    _git(target, "add", "f.txt")
+    _git(target, "commit", "-q", "-m", f"Import Sagent public changes {public_shas[0]}")
+    del ledger_sha
+
+    result = last_synced_public_sha(
+        target_dir=target,
+        sync_label="Sagent",
+        base_branch="main",
+        public_dir=public,
+    )
+
+    # The Configgle export is ignored; only the Sagent ledger commit matches.
+    assert result == public_shas[0]
+
+
+def test_last_synced_public_sha_without_public_dir_walks_only_the_ledger(
+    tmp_path: Path,
+) -> None:
+    """Omitting the public checkout preserves the original ledger-only behavior.
+
+    The PR/open-pr path resolves the baseline from target history alone and
+    passes no public dir; that call must be unchanged.
+    """
+    sha = "d" * 40
+    _git_repo_with_commits(
+        root=tmp_path,
+        subjects=[f"Import Sagent public changes {sha}"],
+    )
+
+    assert (
+        last_synced_public_sha(
+            target_dir=tmp_path,
+            sync_label="Sagent",
+            base_branch="main",
+        )
+        == sha
+    )
+
+
 # For tests that only care about target_dir / project routing.
 def _import_request(*, target_dir: Path) -> ImportRequest:
     """Build an ImportRequest with placeholder fields."""
@@ -857,7 +1046,10 @@ def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
 def test_last_synced_public_sha_raises_without_prior_import(tmp_path: Path) -> None:
     _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
 
-    with pytest.raises(ImportBaseError, match="No landed 'Sagent' import commit"):
+    with pytest.raises(
+        ImportBaseError,
+        match="No landed 'Sagent' import or export commit",
+    ):
         last_synced_public_sha(
             target_dir=tmp_path,
             sync_label="Sagent",
@@ -987,6 +1179,52 @@ def test_main_print_synced_base_emits_fallback_without_history(
     )
 
     assert capsys.readouterr().out.strip() == parent
+
+
+def test_main_print_synced_base_prefers_export_from_public_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End to end: --public-dir makes a landed export the printed baseline.
+
+    Drives the real CLI path the workflow uses, so a stale ledger plus a later
+    public export prints the export SHA -- the fix's whole point.
+    """
+    target = tmp_path / "target"
+    public = tmp_path / "public"
+    public_shas = _public_repo_with_messages(
+        root=public,
+        messages=[
+            "Import Sagent public changes (ledger head)",
+            "Publish export\n\nSagent export branch: copybarista/export/main",
+        ],
+    )
+    _git_repo_with_commits(
+        root=target,
+        subjects=[f"Import Sagent public changes {public_shas[0]}"],
+    )
+
+    def fail_run_import_sync(_: ImportRequest) -> None:
+        raise AssertionError("import must not run in print-synced-base mode")
+
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
+
+    sync_import_change.run(
+        [
+            "--print-synced-base",
+            "--target-dir",
+            str(target),
+            "--sync-label",
+            "Sagent",
+            "--base-branch",
+            "main",
+            "--public-dir",
+            str(public),
+        ],
+    )
+
+    assert capsys.readouterr().out.strip() == public_shas[1]
 
 
 def test_import_pr_auto_merges_when_enabled(

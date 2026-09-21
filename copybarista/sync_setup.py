@@ -865,14 +865,24 @@ def _validate_import_workflow_yaml(
 # the ledger (the target checkout) and the helper that reads it to exist first, and the
 # public checkout that consumes it to come after -- so the ORDER is checked here, not
 # just the flags: a reordering silently reintroduces the parent baseline.
+# The baseline covers BOTH sync directions: the target import ledger (landed imports)
+# and exports on public main (which leave no ledger entry). So this requires the
+# resolver to consult the public-history checkout, and pins the ORDER -- target + helper
+# + public-history before the baseline step -- since a reordering silently reverts to
+# the parent (or a ledger-only) baseline.
 def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
-    """Assert a push import merges against the ledger, not the pushed parent."""
+    """Assert a push import merges against the true baseline, not the parent."""
     refs_run = _workflow_step_run(steps, "Resolve public refs")
-    for text in ("--print-synced-base", '--fallback-sha "${{ github.event.before }}"'):
+    for text in (
+        "--print-synced-base",
+        "--public-dir public-history",
+        '--fallback-sha "${{ github.event.before }}"',
+    ):
         if text not in refs_run:
             raise ConfigError(
                 "sync-to-source.yml step 'Resolve public refs' must resolve the "
-                f"push baseline from the import ledger; {text} is missing.",
+                "push baseline from the import ledger AND public export history; "
+                f"{text} is missing.",
             )
     refs = _workflow_step_index(steps, lambda step: step.get("id") == "refs")
     for name, index in (
@@ -886,6 +896,10 @@ def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
                 steps,
                 lambda step: step.get("name") == "Capture trusted import helper",
             ),
+        ),
+        (
+            "the full-depth public-history checkout the resolver walks for exports",
+            _checkout_index(steps, "public-history"),
         ),
     ):
         if index > refs:

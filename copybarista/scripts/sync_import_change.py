@@ -55,14 +55,19 @@ def run(argv: list[str] | None = None) -> int:
     """
     flags = cast(_Flags, _parser().parse_args(argv))
     if flags.print_synced_base:
-        # Resolve the merge baseline from the target's own import history and
-        # print it for the workflow to consume; no import request is built.
+        # Resolve the merge baseline and print it for the workflow to consume;
+        # no import request is built. The baseline covers BOTH sync directions:
+        # the target's import ledger AND exports landed on public main (read
+        # from --public-dir, the workflow's full-depth public checkout).
         sys.stdout.write(
             last_synced_public_sha(
                 target_dir=Path(flags.target_dir).resolve(),
                 sync_label=flags.sync_label,
                 base_branch=flags.base_branch,
                 fallback=flags.fallback_sha,
+                public_dir=(
+                    Path(flags.public_dir).resolve() if flags.public_dir else None
+                ),
             )
             + "\n",
         )
@@ -278,14 +283,36 @@ def import_commit_subject(sync_label: str, public_sha: str) -> str:
     return subject
 
 
+def export_commit_marker(sync_label: str) -> str:
+    """Return the body line that identifies a landed public export commit.
+
+    A source->public export lands on public ``main`` by squash-merge, whose
+    body is exactly ``<label> export branch: <branch>`` (see
+    ``sync_export_pr._enable_export_pr_auto_merge``). The per-branch
+    ``copybarista-source-rev-sha256=`` digests live on the export BRANCH commit
+    and do not survive the squash, so this branch line -- the same marker the
+    import workflow's own ``if:`` guard greps out of the pushed commit message
+    -- is the only export identity that reaches public ``main``.
+
+    Args:
+      sync_label: Export label, e.g. ``Sagent``.
+
+    Returns:
+      marker: The literal substring that marks a landed export commit.
+
+    """
+    return f"{sync_label} export branch: "
+
+
 def last_synced_public_sha(
     *,
     target_dir: Path,
     sync_label: str,
     base_branch: str,
     fallback: str = "",
+    public_dir: Path | None = None,
 ) -> str:
-    """Return the newest public SHA already imported into the target branch.
+    """Return the newest public SHA the target source already reflects.
 
     The merge-import baseline must be the public commit the target tree
     currently reflects, not the pushed commit's parent. Those diverge whenever
@@ -294,56 +321,60 @@ def last_synced_public_sha(
     import, so a parent-based baseline feeds the three-way merge a wrong common
     ancestor and manufactures spurious conflicts.
 
-    Each landed import records its public SHA in the commit subject
-    (``Import <label> public changes <sha>``, written by
-    ``_open_or_update_target_pr``), so the target's own history is the source of
-    truth for what it last synced. Walk the branch newest-first and return the
-    SHA from the first subject that matches the full template.
+    The target reflects public content by TWO paths, and a correct baseline
+    covers both:
+
+    * Landed imports record their public SHA in the target commit subject
+      (``Import <label> public changes <sha>``), read from target history.
+    * Source->public EXPORTS advance public ``main`` with no target ledger
+      entry at all. After months of exports and no import, a ledger-only
+      baseline is months stale and re-presents already-exported work as
+      conflicts -- the live 39-file incident.
+
+    So when ``public_dir`` is given (the import workflow's full-depth public
+    checkout), walk public history newest-first and return the newest commit
+    that is either the ledger SHA or a landed export commit
+    (:func:`export_commit_marker`). Without ``public_dir`` the resolution is
+    ledger-only, preserving the open-PR path that has no public checkout.
 
     Args:
       target_dir: Root of the target repository checkout.
       sync_label: Import label, e.g. ``Sagent``; scopes the commit search.
-      base_branch: Target branch to walk, e.g. ``main``.
-      fallback: SHA to return when the branch records no import -- a
-        first-import baseline (e.g. the branch tip before the push). Empty
+      base_branch: Branch to walk (target ledger, and public when given).
+      fallback: SHA to return when neither history records a sync -- a
+        first-sync baseline (e.g. the branch tip before the push). Empty
         string means raise.
+      public_dir: Full-depth public checkout. When set, exports on public
+        ``main`` are eligible baselines, not just target-ledger imports.
 
     Returns:
-      sha: The most recently imported public SHA, or ``fallback`` when the
-        branch has no landed import and ``fallback`` is set.
+      sha: The most recently synced public SHA, or ``fallback`` when neither
+        history records a sync and ``fallback`` is set.
 
     Raises:
-      ImportBaseError: When the branch records no import commit and no fallback
-        is provided.
+      ImportBaseError: When no sync is found and no fallback is provided.
 
     """
-    prefix = import_commit_subject_prefix(sync_label)
-    # --fixed-strings: sync_label is matched literally, never as a git BRE, so a
-    # label with regex metacharacters cannot broaden or break the search.
-    subjects = _run(
-        [
-            "git",
-            "log",
-            base_branch,
-            "--fixed-strings",
-            f"--grep={prefix}",
-            "--format=%s",
-        ],
-        cwd=target_dir,
-        capture=True,
-    ).stdout.splitlines()
-    # Shared with the writer, so a subject one accepts is one the other reads.
-    pattern = _import_subject_pattern(sync_label)
-    for subject in subjects:
-        match = pattern.match(subject)
-        if match is not None:
-            sha = match[1]
-            assert isinstance(sha, str)
-            return sha
+    ledger_sha = _ledger_public_sha(
+        target_dir=target_dir,
+        sync_label=sync_label,
+        base_branch=base_branch,
+    )
+    if public_dir is not None:
+        newest = _newest_synced_public_sha(
+            public_dir=public_dir,
+            base_branch=base_branch,
+            sync_label=sync_label,
+            ledger_sha=ledger_sha,
+        )
+        if newest:
+            return newest
+    if ledger_sha:
+        return ledger_sha
     if fallback:
         return fallback
     raise ImportBaseError(
-        f"No landed '{sync_label}' import commit found on "
+        f"No landed '{sync_label}' import or export commit found on "
         f"'{base_branch}'; cannot resolve the merge baseline.",
     )
 
@@ -673,6 +704,16 @@ def _parser() -> argparse.ArgumentParser:
             "With --print-synced-base: SHA to print when the target has no "
             "landed import yet (a first-import baseline, e.g. the branch tip "
             "before the push)."
+        ),
+    )
+    parser.add_argument(
+        "--public-dir",
+        default="",
+        help=(
+            "With --print-synced-base: a full-depth public checkout. When set, "
+            "exports landed on public main are eligible baselines (not just "
+            "target-ledger imports), so a long export-only streak no longer "
+            "yields a stale baseline that manufactures merge conflicts."
         ),
     )
     return parser
@@ -1045,6 +1086,72 @@ class _Flags(Protocol):
     refresh_public_lockfile: bool
     print_synced_base: bool
     fallback_sha: str
+    public_dir: str
+
+
+# Walks the target branch newest-first for ``Import <label> public changes <sha>``
+# subjects and returns the first full SHA, or the empty string when the branch records
+# no landed import.
+def _ledger_public_sha(*, target_dir: Path, sync_label: str, base_branch: str) -> str:
+    """Return the newest public SHA in the target's import ledger, or ``""``."""
+    prefix = import_commit_subject_prefix(sync_label)
+    # --fixed-strings: sync_label is matched literally, never as a git BRE, so a
+    # label with regex metacharacters cannot broaden or break the search.
+    subjects = _run(
+        [
+            "git",
+            "log",
+            base_branch,
+            "--fixed-strings",
+            f"--grep={prefix}",
+            "--format=%s",
+        ],
+        cwd=target_dir,
+        capture=True,
+    ).stdout.splitlines()
+    # Shared with the writer, so a subject one accepts is one the other reads.
+    pattern = _import_subject_pattern(sync_label)
+    for subject in subjects:
+        match = pattern.match(subject)
+        if match is not None:
+            sha = match[1]
+            assert isinstance(sha, str)
+            return sha
+    return ""
+
+
+# Walks public ``base_branch`` newest-first and returns the SHA of the first commit that
+# is EITHER the target's ledger SHA (a landed import) OR a landed export commit (its
+# message carries :func:`export_commit_marker`). First match wins, so the newest
+# recognized sync is chosen with no arithmetic.
+#
+# Empty string when public history contains neither -- the caller then falls back to the
+# ledger SHA or the bootstrap fallback.
+def _newest_synced_public_sha(
+    *,
+    public_dir: Path,
+    base_branch: str,
+    sync_label: str,
+    ledger_sha: str,
+) -> str:
+    """Return the newest public commit the source already reflects, or ``""``."""
+    marker = export_commit_marker(sync_label)
+    # %H then the raw body, NUL-delimited per commit so a body newline cannot be
+    # mistaken for a record boundary. -z separates records with NUL as well.
+    records = _run(
+        ["git", "log", base_branch, "-z", "--format=%H%x00%B"],
+        cwd=public_dir,
+        capture=True,
+    ).stdout.split("\0")
+    # Each commit contributes two NUL-separated fields (%H, %B); pair them up.
+    for index in range(0, len(records) - 1, 2):
+        commit_sha = records[index].strip()
+        message = records[index + 1]
+        if not commit_sha:
+            continue
+        if commit_sha == ledger_sha or marker in message:
+            return commit_sha
+    return ""
 
 
 if __name__ == "__main__":
