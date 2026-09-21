@@ -467,18 +467,25 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
             "configgle",
         ],
     )
+    # A distinctive sentinel, not a plain word: the generated workflows carry
+    # explanatory prose, and a common token (e.g. "stale") can legitimately
+    # appear there -- the check is "the placeholder was overwritten", not "this
+    # English word is absent".
+    placeholder = "PLACEHOLDER_NOT_YET_REWRITTEN\n"
     workflows = tmp_path / ".export/.github/workflows"
     workflows.mkdir(parents=True, exist_ok=True)
     for name in ("package-validation.yml", "sync-to-source.yml"):
-        (workflows / name).write_text("stale\n", encoding="utf-8")
+        (workflows / name).write_text(placeholder, encoding="utf-8")
 
     capsys.readouterr()
     main(["write-public-workflows", str(tmp_path / "copybarista.sync.toml")])
 
-    assert "stale" not in (workflows / "package-validation.yml").read_text(
+    assert placeholder.strip() not in (workflows / "package-validation.yml").read_text(
         encoding="utf-8",
     )
-    assert "stale" not in (workflows / "sync-to-source.yml").read_text(encoding="utf-8")
+    assert placeholder.strip() not in (workflows / "sync-to-source.yml").read_text(
+        encoding="utf-8",
+    )
     assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(
         encoding="utf-8",
     )

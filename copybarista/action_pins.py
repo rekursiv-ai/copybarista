@@ -92,8 +92,8 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="astral-sh/setup-uv",
-            sha="20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
-            version="v10.0.1",
+            sha="bec219d24cd3e171d82865faccec33120bb574f4",
+            version="v10.1.0",
         ),
         ActionPin(
             action="docker/build-push-action",
