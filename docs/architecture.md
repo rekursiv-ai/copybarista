@@ -151,12 +151,12 @@ Copybarista's own GitHub Actions workflows are thin wrappers around testable
 Python scripts. Other repositories can either adapt these scripts or call the
 CLI directly as shown in `examples/`:
 
-- Source -> public calls `scripts/monorepo_export_pr.py`, which runs
+- Source -> public calls `scripts/sync_export_pr.py`, which runs
   `copybarista export`, preserves public-repository `.github/` metadata,
   validates the exported checkout, then opens or updates a PR from a generated
   export branch in the public repository. Generated package scaffolds use
   package-owned prefixes such as `configgle/export/*`.
-- Public -> source calls `scripts/monorepo_import_change.py`, which runs
+- Public -> source calls `scripts/sync_import_change.py`, which runs
   `copybarista import-change` against public base/head checkouts, validates the
   target checkout, then opens a source PR from a generated import branch such as
   `configgle/import/sha-<public-sha>` with public base/head and source base

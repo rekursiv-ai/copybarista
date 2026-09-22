@@ -2742,7 +2742,7 @@ def test_import_overlapping_namespace_transforms_do_not_double_prefix(
     rewrite each public token exactly once.
 
     Runs under ``merge_import`` -- the mode the sync automation uses
-    (``scripts/monorepo_import_change.py`` passes ``--merge-import``), which skips
+    (``scripts/sync_import_change.py`` passes ``--merge-import``), which skips
     the strict-mode injective guard and whole-tree re-export check. That is the
     exact path that shipped the doubled-namespace-prefix import PR.
     """
