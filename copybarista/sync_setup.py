@@ -633,7 +633,7 @@ def export_workflow(settings: SyncSettings) -> str:
         f"      # {line}\n" for line in settings.replay_bootstrap_base_comment
     )
     project_path = f"source/{settings.copybarista_project_path}"
-    script_path = f"{project_path}/scripts/monorepo_export_pr.py"
+    script_path = f"{project_path}/scripts/sync_export_pr.py"
     return _render_template(
         "source-to-public.yml.tmpl",
         {
@@ -644,10 +644,10 @@ def export_workflow(settings: SyncSettings) -> str:
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/monorepo_export_pr.py",
+                f"{settings.copybarista_project_path}/scripts/sync_export_pr.py",
             ),
             "IMPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/monorepo_import_change.py",
+                f"{settings.copybarista_project_path}/scripts/sync_import_change.py",
             ),
             "PUBLIC_REPO": _yaml_str(settings.public_repo),
             "EXPORT_BRANCH": _yaml_str(f"{settings.export_prefix}main"),
@@ -855,7 +855,7 @@ def _validate_import_workflow_yaml(
             if text not in run:
                 raise ConfigError(f"public-to-source.yml must reference {text}.")
     step_text = "\n".join(str(step) for step in steps)
-    for text in ("monorepo_import_change.py", "GH_TOKEN"):
+    for text in ("sync_import_change.py", "GH_TOKEN"):
         if text not in step_text:
             raise ConfigError(f"public-to-source.yml must reference {text}.")
     _assert_resolves_baseline_from_ledger(steps)

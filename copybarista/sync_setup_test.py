@@ -586,7 +586,7 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     assert '--auto-merge="$COPYBARISTA_AUTO_MERGE"' in workflow
     assert "CONFIGGLE" not in workflow
     assert "sync_configgle" not in workflow
-    assert "source/tools/copybarista/scripts/monorepo_export_pr.py" in workflow
+    assert "source/tools/copybarista/scripts/sync_export_pr.py" in workflow
     assert "fetch-depth: 0" in workflow
     assert "--pr-scope" in workflow
     assert "configgle" in workflow
@@ -758,8 +758,8 @@ def test_export_workflow_watches_source_and_sync_helpers():
     workflow = export_workflow(_settings())
 
     assert '"packages/configgle/**"' in workflow
-    assert '"tools/copybarista/scripts/monorepo_export_pr.py"' in workflow
-    assert '"tools/copybarista/scripts/monorepo_import_change.py"' in workflow
+    assert '"tools/copybarista/scripts/sync_export_pr.py"' in workflow
+    assert '"tools/copybarista/scripts/sync_import_change.py"' in workflow
 
 
 def test_export_workflow_watches_additional_source_paths():

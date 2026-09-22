@@ -12,8 +12,8 @@ import sys
 import pytest
 
 from copybarista.config import Transform
-from copybarista.scripts import monorepo_export_pr, monorepo_import_change
-from copybarista.scripts.monorepo_export_pr import (
+from copybarista.scripts import sync_export_pr, sync_import_change
+from copybarista.scripts.sync_export_pr import (
     ExportRequest,
     PrBodyEntry,
     PrMetadataPatch,
@@ -73,7 +73,7 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         pr_body="Public body.",
         manual_pr_title="",
         manual_pr_body="",
-        replay_settings=monorepo_export_pr.PrReplaySettings(
+        replay_settings=sync_export_pr.PrReplaySettings(
             scope="copybarista",
             default_title="Public title",
             default_body="Public body.",
@@ -114,9 +114,9 @@ def test_main_accepts_generic_project_validation_args(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/configgle",
@@ -147,9 +147,9 @@ def test_main_accepts_dry_run(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -176,10 +176,10 @@ def test_main_derives_request_from_project_positional(
         del start
         return source_dir
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
-    monkeypatch.setattr(monorepo_export_pr, "_git_toplevel", fake_git_toplevel)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
 
-    monorepo_export_pr.run([str(project_dir), "--dry-run"])
+    sync_export_pr.run([str(project_dir), "--dry-run"])
 
     request = captured[0]
     assert request.dry_run
@@ -209,10 +209,10 @@ def test_main_explicit_flag_overrides_sync_setting(
         del start
         return source_dir
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
-    monkeypatch.setattr(monorepo_export_pr, "_git_toplevel", fake_git_toplevel)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [str(project_dir), "--dry-run", "--smoke-import", "alt_package"],
     )
 
@@ -257,9 +257,9 @@ def test_main_accepts_auto_merge_value_arg(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -280,9 +280,9 @@ def test_main_accepts_auto_merge_as_boolean_flag(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -307,9 +307,9 @@ def test_main_passes_github_source_message(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -331,10 +331,10 @@ def test_main_rejects_manual_branch_fallback(
 
     monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
     monkeypatch.delenv("GITHUB_SHA", raising=False)
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
     with pytest.raises(SystemExit) as error:
-        monorepo_export_pr.run(["--project-path", "packages/example"])
+        sync_export_pr.run(["--project-path", "packages/example"])
 
     assert error.value.code == 2
 
@@ -347,9 +347,9 @@ def test_main_accepts_skip_source_validation(
     def fake_run_export_sync(request: ExportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_export_pr, "run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run(
+    sync_export_pr.run(
         [
             "--project-path",
             "packages/example",
@@ -439,9 +439,9 @@ def test_source_pr_metadata_uses_nul_terminated_git_log(
             ),
         )
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
-    patches = monorepo_export_pr._source_pr_metadata(
+    patches = sync_export_pr._source_pr_metadata(
         source_dir=tmp_path,
         replay_base="",
         current_source_rev="abcdef123456",
@@ -467,7 +467,7 @@ def test_source_pr_metadata_uses_nul_terminated_git_log(
 
 
 def test_parse_pr_metadata_rejects_legacy_author_field():
-    with pytest.raises(monorepo_export_pr.PrMetadataError, match="use the git author"):
+    with pytest.raises(sync_export_pr.PrMetadataError, match="use the git author"):
         _parse_pr_metadata_log(
             _metadata_log(
                 "Copybarista-PR-Title: Public title\n"
@@ -493,7 +493,7 @@ def test_parse_pr_metadata_skips_unknown_field(
 
 
 def test_parse_pr_metadata_rejects_duplicate_title():
-    with pytest.raises(monorepo_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Title"):
         _parse_pr_metadata_log(
             _metadata_log(
                 "Copybarista-PR-Title: First\nCopybarista-PR-Title: Second\n",
@@ -573,7 +573,7 @@ def test_parse_pr_metadata_body_stops_at_blank_line_before_squashed_prose():
 
 
 def test_parse_pr_metadata_rejects_body_mode_without_body():
-    with pytest.raises(monorepo_export_pr.PrMetadataError, match=r"abcdef1.*Body-Mode"):
+    with pytest.raises(sync_export_pr.PrMetadataError, match=r"abcdef1.*Body-Mode"):
         _parse_pr_metadata_log(
             _metadata_log("Copybarista-PR-Body-Mode: append\n"),
             forbidden_text=(),
@@ -735,7 +735,7 @@ def test_non_prefix_term_still_substring_matches():
 )
 def test_prefix_matcher_catches_real_references(text: str) -> None:
     term = "package." if "package." in text else "package/"
-    assert monorepo_export_pr._forbidden_term_present(term, text)
+    assert sync_export_pr._forbidden_term_present(term, text)
 
 
 # Prose uses of the bare word that MUST be allowed (false-positive guard).
@@ -753,13 +753,13 @@ def test_prefix_matcher_catches_real_references(text: str) -> None:
 )
 def test_prefix_matcher_allows_prose(text: str) -> None:
     term = "loop/" if "loop/" in text else "loop."
-    assert not monorepo_export_pr._forbidden_term_present(term, text)
+    assert not sync_export_pr._forbidden_term_present(term, text)
 
 
 def test_plain_term_matches_anywhere() -> None:
     # A separator-less term is a pure substring check (no boundary logic).
-    assert monorepo_export_pr._forbidden_term_present("LOOP_ENV", "the LOOP_ENV var")
-    assert not monorepo_export_pr._forbidden_term_present("LOOP_ENV", "the loop env")
+    assert sync_export_pr._forbidden_term_present("LOOP_ENV", "the LOOP_ENV var")
+    assert not sync_export_pr._forbidden_term_present("LOOP_ENV", "the loop env")
 
 
 def test_replay_append_body_adds_entries_in_commit_order():
@@ -936,11 +936,11 @@ def test_base_pr_state_recovers_existing_entry_authors(
             )
         raise AssertionError(argv)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     state = _base_pr_state(
         request=request,
-        current_pr=monorepo_export_pr.CurrentPr(
+        current_pr=sync_export_pr.CurrentPr(
             title="Public title",
             body=body,
             number=7,
@@ -982,11 +982,11 @@ def test_base_pr_state_drops_stale_raw_entry_markers(
             return subprocess.CompletedProcess(argv, 1, stdout="")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     state = _base_pr_state(
         request=request,
-        current_pr=monorepo_export_pr.CurrentPr(
+        current_pr=sync_export_pr.CurrentPr(
             title="Public title",
             body=body,
             number=7,
@@ -1041,11 +1041,11 @@ def test_base_pr_state_drops_stale_entry_markers(
             )
         raise AssertionError(argv)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     state = _base_pr_state(
         request=request,
-        current_pr=monorepo_export_pr.CurrentPr(
+        current_pr=sync_export_pr.CurrentPr(
             title="Public title",
             body=body,
             number=7,
@@ -1089,7 +1089,7 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         branch: str,
         repo: str,
         cwd: Path,
-    ) -> monorepo_export_pr.CurrentPr | None:
+    ) -> sync_export_pr.CurrentPr | None:
         del branch, repo, cwd
         return None
 
@@ -1097,9 +1097,9 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         *,
         branch: str,
         cwd: Path,
-    ) -> monorepo_export_pr.BranchMarkers:
+    ) -> sync_export_pr.BranchMarkers:
         del branch, cwd
-        return monorepo_export_pr.BranchMarkers(
+        return sync_export_pr.BranchMarkers(
             source_digest="",
             replay_base_digest="",
             exists=True,
@@ -1109,8 +1109,8 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         *,
         request: ExportRequest,
         current_source_rev: str,
-        current_pr: monorepo_export_pr.CurrentPr | None,
-        branch_markers: monorepo_export_pr.BranchMarkers,
+        current_pr: sync_export_pr.CurrentPr | None,
+        branch_markers: sync_export_pr.BranchMarkers,
     ) -> str:
         del request, current_source_rev, current_pr, branch_markers
         return "111111111111"
@@ -1138,32 +1138,32 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
         )
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_current_source_rev",
         fake_current_source_rev,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_current_pr",
         fake_current_pr,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_branch_markers",
         fake_branch_markers,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_replay_base",
         fake_replay_base,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_source_pr_metadata",
         fake_source_pr_metadata,
     )
 
-    plan = monorepo_export_pr._resolve_pr_replay_plan(request=request, pr_template="")
+    plan = sync_export_pr._resolve_pr_replay_plan(request=request, pr_template="")
 
     assert plan.state.authors == (
         SourceAuthor(name="Source Author", email="source@example.com"),
@@ -1176,7 +1176,7 @@ def test_resolve_pr_replay_plan_logs_replay_summary(
 
 
 def test_render_pr_body_rejects_empty_raw_source_marker():
-    with pytest.raises(monorepo_export_pr.PrReplayError, match="applied source marker"):
+    with pytest.raises(sync_export_pr.PrReplayError, match="applied source marker"):
         _render_pr_body(
             state=PrReplayState(
                 title="Public title",
@@ -1398,14 +1398,14 @@ def test_applied_marker_rejects_multiple_footer_state_markers():
         "<!-- copybarista:pr-state version=1 applied=sha256:second -->\n"
     )
 
-    with pytest.raises(monorepo_export_pr.PrReplayError, match="multiple"):
+    with pytest.raises(sync_export_pr.PrReplayError, match="multiple"):
         _applied_marker_from_pr_body(body)
 
 
 def test_applied_marker_rejects_unsupported_version():
     body = "<!-- copybarista:pr-state version=2 applied=sha256:first -->\n"
 
-    with pytest.raises(monorepo_export_pr.PrReplayError, match="unsupported"):
+    with pytest.raises(sync_export_pr.PrReplayError, match="unsupported"):
         _applied_marker_from_pr_body(body)
 
 
@@ -1418,14 +1418,14 @@ def test_unmarked_existing_branch_replays_current_commit(
         assert rev == "source-head"
         return "source-parent"
 
-    monkeypatch.setattr(monorepo_export_pr, "_source_parent", fake_source_parent)
+    monkeypatch.setattr(sync_export_pr, "_source_parent", fake_source_parent)
 
     assert (
-        monorepo_export_pr._replay_base(
+        sync_export_pr._replay_base(
             request=_export_request(tmp_path),
             current_source_rev="source-head",
             current_pr=None,
-            branch_markers=monorepo_export_pr.BranchMarkers(
+            branch_markers=sync_export_pr.BranchMarkers(
                 source_digest="",
                 replay_base_digest="",
                 exists=True,
@@ -1452,9 +1452,9 @@ def test_branch_markers_fetches_force_updated_remote_branch(
             return subprocess.CompletedProcess(argv, 1, stdout="")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
-    assert not monorepo_export_pr._branch_markers(
+    assert not sync_export_pr._branch_markers(
         branch="copybarista/export/main",
         cwd=tmp_path,
     ).exists
@@ -1483,17 +1483,17 @@ def test_marked_existing_branch_replays_after_applied_source(
         return "applied-source"
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_source_marker",
         fake_resolve_source_marker,
     )
 
     assert (
-        monorepo_export_pr._replay_base(
+        sync_export_pr._replay_base(
             request=_export_request(tmp_path),
             current_source_rev="source-head",
             current_pr=None,
-            branch_markers=monorepo_export_pr.BranchMarkers(
+            branch_markers=sync_export_pr.BranchMarkers(
                 source_digest="applied-digest",
                 replay_base_digest="migration-base-digest",
                 exists=True,
@@ -1541,18 +1541,18 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
         return ancestor == "old-marked-base" and rev == "bootstrap-base"
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_source_marker",
         fake_resolve_source_marker,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_is_source_ancestor", fake_is_ancestor)
+    monkeypatch.setattr(sync_export_pr, "_is_source_ancestor", fake_is_ancestor)
 
     assert (
-        monorepo_export_pr._replay_base(
+        sync_export_pr._replay_base(
             request=request,
             current_source_rev="source-head",
             current_pr=None,
-            branch_markers=monorepo_export_pr.BranchMarkers(
+            branch_markers=sync_export_pr.BranchMarkers(
                 source_digest="applied-digest",
                 replay_base_digest="",
                 exists=True,
@@ -1563,17 +1563,17 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
 
 
 def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
-    with pytest.raises(monorepo_export_pr.PrReplayError, match="Existing generated PR"):
-        monorepo_export_pr._replay_base(
+    with pytest.raises(sync_export_pr.PrReplayError, match="Existing generated PR"):
+        sync_export_pr._replay_base(
             request=_export_request(tmp_path),
             current_source_rev="source-head",
-            current_pr=monorepo_export_pr.CurrentPr(
+            current_pr=sync_export_pr.CurrentPr(
                 title="Old title",
                 body="Old body.",
                 number=7,
                 url="https://example.test/pr/7",
             ),
-            branch_markers=monorepo_export_pr.BranchMarkers(
+            branch_markers=sync_export_pr.BranchMarkers(
                 source_digest="",
                 replay_base_digest="",
                 exists=True,
@@ -1616,21 +1616,21 @@ def test_no_diff_updates_existing_pr_when_replay_text_changed(
         del request, title
         calls.append("edit")
 
-    monkeypatch.setattr(monorepo_export_pr, "_git_has_changes", no_changes)
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", no_changes)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_edit_export_pr",
         record_edit,
     )
 
     pr_open = _open_or_update_export_pr(
         request=request,
-        pr_plan=monorepo_export_pr.PrReplayPlan(
+        pr_plan=sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="new body\n",
             replay_base="",
             replay_base_digest="",
-            current_pr=monorepo_export_pr.CurrentPr(
+            current_pr=sync_export_pr.CurrentPr(
                 title="Public title",
                 body="old body\n",
                 number=12,
@@ -1661,16 +1661,16 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
         del request, title
         calls.append("edit")
 
-    monkeypatch.setattr(monorepo_export_pr, "_git_has_changes", no_changes)
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", no_changes)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_edit_export_pr",
         record_edit,
     )
 
     pr_open = _open_or_update_export_pr(
         request=request,
-        pr_plan=monorepo_export_pr.PrReplayPlan(
+        pr_plan=sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="new body\n",
             replay_base="",
@@ -1870,7 +1870,7 @@ def test_export_public_tree_uses_current_copybarista_env(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     _export_public_tree(
         project=Path("/repo/packages/example"),
@@ -1894,7 +1894,7 @@ def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch):
         assert "open" in argv
         return subprocess.CompletedProcess(argv, 0, stdout="[]")
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     assert not _gh_pr_exists(
         branch="copybarista/export/main",
@@ -1907,9 +1907,9 @@ def test_gh_pr_exists_rejects_malformed_json(monkeypatch: pytest.MonkeyPatch) ->
     def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 0, stdout="")
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
-    with pytest.raises(monorepo_export_pr.PrReplayError, match="GitHub PR list"):
+    with pytest.raises(sync_export_pr.PrReplayError, match="GitHub PR list"):
         _gh_pr_exists(
             branch="copybarista/export/main",
             repo="rekursiv-ai/copybarista",
@@ -1937,7 +1937,7 @@ def test_gh_pr_exists_retries_transient_github_failures(
     def no_sleep(seconds: float) -> None:
         del seconds
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
 
     assert not _gh_pr_exists(
@@ -1967,7 +1967,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
     def no_sleep(seconds: float) -> None:
         del seconds
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
 
     with pytest.raises(SystemExit) as error:
@@ -1978,7 +1978,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
         )
 
     assert error.value.code == 1
-    assert calls == monorepo_export_pr.GITHUB_RETRY_ATTEMPTS
+    assert calls == sync_export_pr.GITHUB_RETRY_ATTEMPTS
     assert "HTTP 504" in capsys.readouterr().err
 
 
@@ -2027,9 +2027,9 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
         *,
         request: ExportRequest,
         pr_template: str,
-    ) -> monorepo_export_pr.PrReplayPlan:
+    ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
-        return monorepo_export_pr.PrReplayPlan(
+        return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="",
             replay_base="",
@@ -2063,30 +2063,30 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
-        pr_plan: monorepo_export_pr.PrReplayPlan,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del request
         opened.append(pr_plan.body)
         return True
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_pr_replay_plan",
         fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_open_or_update_export_pr",
         fake_open_or_update_export_pr,
     )
 
-    monorepo_export_pr.run_export_sync(
+    sync_export_pr.run_export_sync(
         replace(
             _export_request(tmp_path),
             source_dir=source_dir,
@@ -2115,9 +2115,9 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         *,
         request: ExportRequest,
         pr_template: str,
-    ) -> monorepo_export_pr.PrReplayPlan:
+    ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
-        return monorepo_export_pr.PrReplayPlan(
+        return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="",
             replay_base="",
@@ -2144,7 +2144,7 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
-        pr_plan: monorepo_export_pr.PrReplayPlan,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del request, pr_plan
         return False  # No changes and no existing PR.
@@ -2154,28 +2154,28 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         merged.append("merge")
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_pr_replay_plan",
         fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_open_or_update_export_pr",
         fake_open_or_update_export_pr,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_enable_export_pr_auto_merge",
         fake_enable_auto_merge,
     )
 
-    monorepo_export_pr.run_export_sync(
+    sync_export_pr.run_export_sync(
         replace(
             _export_request(tmp_path),
             source_dir=source_dir,
@@ -2213,9 +2213,9 @@ def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
             )
         return subprocess.CompletedProcess(argv, 0, stdout="merged\n")
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
-    monorepo_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
+    sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
 
     merge_calls = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
     assert len(merge_calls) == 2  # The --auto attempt, then the direct fallback.
@@ -2241,10 +2241,10 @@ def test_enable_auto_merge_reraises_unrelated_failure(
             stderr="GraphQL: some other error",
         )
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     with pytest.raises(SystemExit):
-        monorepo_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
+        sync_export_pr._enable_export_pr_auto_merge(request=request, pr_title="T")
 
 
 def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
@@ -2262,9 +2262,9 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         *,
         request: ExportRequest,
         pr_template: str,
-    ) -> monorepo_export_pr.PrReplayPlan:
+    ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
-        return monorepo_export_pr.PrReplayPlan(
+        return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="Public body.\n",
             replay_base="",
@@ -2294,7 +2294,7 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
-        pr_plan: monorepo_export_pr.PrReplayPlan,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del pr_plan
         lockfile = request.public_dir / "uv.lock"
@@ -2302,23 +2302,23 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         return True
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_pr_replay_plan",
         fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_open_or_update_export_pr",
         fake_open_or_update_export_pr,
     )
 
-    monorepo_export_pr.run_export_sync(
+    sync_export_pr.run_export_sync(
         replace(
             _export_request(tmp_path),
             source_dir=source_dir,
@@ -2339,14 +2339,14 @@ def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
     sentinel = public_dir / "source-tree-file.py"
     sentinel.write_text("preserve me\n", encoding="utf-8")
 
-    dry_public_dir = monorepo_export_pr._clone_public_checkout_for_dry_run(
+    dry_public_dir = sync_export_pr._clone_public_checkout_for_dry_run(
         public_dir=public_dir,
     )
     try:
         assert (dry_public_dir / ".git").is_dir()
         assert sentinel.read_text(encoding="utf-8") == "preserve me\n"
     finally:
-        monorepo_export_pr._delete_path(dry_public_dir)
+        sync_export_pr._delete_path(dry_public_dir)
 
 
 def test_delete_path_ignores_missing_child_during_recursive_cleanup(
@@ -2362,7 +2362,7 @@ def test_delete_path_ignores_missing_child_during_recursive_cleanup(
 
     monkeypatch.setattr(shutil, "rmtree", missing_child)
 
-    monorepo_export_pr._delete_path(path)
+    sync_export_pr._delete_path(path)
 
 
 def test_run_export_sync_dry_run_uses_temp_public_checkout(
@@ -2387,10 +2387,10 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         *,
         request: ExportRequest,
         pr_template: str,
-    ) -> monorepo_export_pr.PrReplayPlan:
+    ) -> sync_export_pr.PrReplayPlan:
         calls.append(("resolve", request.public_dir))
         assert pr_template == ""
-        return monorepo_export_pr.PrReplayPlan(
+        return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="Public body.\n",
             replay_base="",
@@ -2421,34 +2421,34 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
     def fail_open_or_update_export_pr(
         *,
         request: ExportRequest,
-        pr_plan: monorepo_export_pr.PrReplayPlan,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> None:
         del request, pr_plan
         raise AssertionError("dry run must not mutate public PR state")
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_clone_public_checkout_for_dry_run",
         fake_clone_public_checkout_for_dry_run,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_pr_replay_plan",
         fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_open_or_update_export_pr",
         fail_open_or_update_export_pr,
     )
 
-    monorepo_export_pr.run_export_sync(
+    sync_export_pr.run_export_sync(
         replace(
             _export_request(tmp_path),
             source_dir=source_dir,
@@ -2497,7 +2497,7 @@ def test_refresh_public_lockfile_upgrades_git_branch_dependencies(
         argv.append(command)
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     _refresh_public_lockfile(public_dir=public_dir)
 
@@ -2520,7 +2520,7 @@ def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
         argv.append(command)
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     _refresh_public_lockfile(public_dir=public_dir)
 
@@ -2541,9 +2541,9 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         *,
         request: ExportRequest,
         pr_template: str,
-    ) -> monorepo_export_pr.PrReplayPlan:
+    ) -> sync_export_pr.PrReplayPlan:
         del request, pr_template
-        return monorepo_export_pr.PrReplayPlan(
+        return sync_export_pr.PrReplayPlan(
             state=_pr_state(),
             body="Public body.\n",
             replay_base="",
@@ -2577,7 +2577,7 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
-        pr_plan: monorepo_export_pr.PrReplayPlan,
+        pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del pr_plan
         assert (request.public_dir / "uv.lock").read_text(encoding="utf-8") == (
@@ -2587,28 +2587,28 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         return True
 
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_resolve_pr_replay_plan",
         fake_resolve_pr_replay_plan,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_export_public_tree",
         fake_export_public_tree,
     )
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_refresh_public_lockfile",
         fake_refresh_public_lockfile,
     )
-    monkeypatch.setattr(monorepo_export_pr, "_validate_public", fake_validate_public)
+    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
-        monorepo_export_pr,
+        sync_export_pr,
         "_open_or_update_export_pr",
         fake_open_or_update_export_pr,
     )
 
-    monorepo_export_pr.run_export_sync(
+    sync_export_pr.run_export_sync(
         replace(
             _export_request(tmp_path),
             source_dir=source_dir,
@@ -2633,8 +2633,8 @@ def test_postleakcheck_validation_runs_ty_check(
     def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
         calls.append(["basedpyright", str(project), *targets])
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
-    monkeypatch.setattr(monorepo_export_pr, "_run_basedpyright", fake_basedpyright)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
 
     _postleakcheck_validation(project=Path("/repo/pkg"))
 
@@ -2666,8 +2666,8 @@ def test_preleakcheck_validation_runs_lint_not_types(
     def fake_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
         calls.append(["basedpyright", str(project), *targets])
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
-    monkeypatch.setattr(monorepo_export_pr, "_run_basedpyright", fake_basedpyright)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run_basedpyright", fake_basedpyright)
 
     _preleakcheck_validation(project=Path("/repo/pkg"))
 
@@ -2693,7 +2693,7 @@ def test_validate_public_runs_each_validation_command_via_bash(
         calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     commands = ("uv sync --all-groups", "uv run pytest")
     _validate_public(public_dir=public_dir, validation_commands=commands)
@@ -2718,7 +2718,7 @@ def test_validate_public_runs_nothing_without_commands(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_export_pr, "_run", fake_run)
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
     _validate_public(public_dir=Path("/public"), validation_commands=())
 
@@ -2744,7 +2744,7 @@ def test_pending_import_branches_lists_open_import_prs(
             stdout='[{"number": 68, "headRefName": "trackinizer/import/sha-abc"}]',
         )
 
-    monkeypatch.setattr(monorepo_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
 
     pending = _pending_import_prs(
         prefix="trackinizer/import/",
@@ -2769,7 +2769,7 @@ def test_pending_import_branches_ignores_other_projects(
             stdout='[{"number": 70, "headRefName": "madcatter/import/sha-def"}]',
         )
 
-    monkeypatch.setattr(monorepo_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
 
     assert (
         _pending_import_prs(
@@ -2805,10 +2805,10 @@ def test_run_export_sync_skips_while_an_import_is_pending(
         del request
         ran.append("ran")
 
-    monkeypatch.setattr(monorepo_export_pr, "_pending_import_prs", fake_pending)
-    monkeypatch.setattr(monorepo_export_pr, "_run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", fake_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run_export_sync(request)
+    sync_export_pr.run_export_sync(request)
 
     assert ran == [], "export must not run while an import PR is open"
 
@@ -2831,10 +2831,10 @@ def test_run_export_sync_proceeds_with_no_pending_import(
         del request
         ran.append("ran")
 
-    monkeypatch.setattr(monorepo_export_pr, "_pending_import_prs", fake_pending)
-    monkeypatch.setattr(monorepo_export_pr, "_run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", fake_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
 
-    monorepo_export_pr.run_export_sync(request)
+    sync_export_pr.run_export_sync(request)
 
     assert ran == ["ran"]
 
@@ -2867,12 +2867,12 @@ def test_run_export_sync_skips_when_public_head_is_unimported(
         del request
         ran.append("ran")
 
-    monkeypatch.setattr(monorepo_export_pr, "_pending_import_prs", no_pending)
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_unimported", unimported)
-    monkeypatch.setattr(monorepo_export_pr, "_run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", no_pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
 
-    with pytest.raises(monorepo_export_pr.ExportGuardError, match="bbbb222"):
-        monorepo_export_pr.run_export_sync(request)
+    with pytest.raises(sync_export_pr.ExportGuardError, match="bbbb222"):
+        sync_export_pr.run_export_sync(request)
 
     assert ran == [], "a failed import must still block the export"
 
@@ -2906,12 +2906,12 @@ def test_skipped_export_annotates_the_workflow_run(
     def unreached(request: ExportRequest) -> None:
         raise AssertionError(f"the export must not run: {request.sync_label}")
 
-    monkeypatch.setattr(monorepo_export_pr, "_pending_import_prs", no_pending)
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_unimported", unimported)
-    monkeypatch.setattr(monorepo_export_pr, "_run_export_sync", unreached)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", no_pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
 
-    with pytest.raises(monorepo_export_pr.ExportGuardError) as excinfo:
-        monorepo_export_pr.run_export_sync(request)
+    with pytest.raises(sync_export_pr.ExportGuardError) as excinfo:
+        sync_export_pr.run_export_sync(request)
 
     message = str(excinfo.value)
     assert "bbbb222" in message, "the error must name the blocking commit"
@@ -2938,10 +2938,10 @@ def test_pending_import_skip_annotates_the_workflow_run(
     def one_pending(**_: object) -> tuple[str, ...]:
         return ("sagent/import/x",)
 
-    monkeypatch.setattr(monorepo_export_pr, "_pending_import_prs", one_pending)
-    monkeypatch.setattr(monorepo_export_pr, "_run_export_sync", unreached)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", one_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
 
-    monorepo_export_pr.run_export_sync(request)
+    sync_export_pr.run_export_sync(request)
 
     out = capsys.readouterr().out
     assert "::warning::" in out, "a skipped export must annotate the run"
@@ -2965,10 +2965,10 @@ def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(
     def head(**_: object) -> str:
         return "bbbb222"
 
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(monorepo_export_pr, "last_synced_public_sha", boom)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", boom)
 
-    with pytest.raises(monorepo_export_pr.ExportGuardError, match="ledger"):
+    with pytest.raises(sync_export_pr.ExportGuardError, match="ledger"):
         _public_head_unimported(
             public_dir=Path("/public"),
             source_dir=Path("/src"),
@@ -2989,7 +2989,7 @@ def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
     """
 
     def no_import(**_: object) -> str:
-        raise monorepo_import_change.ImportBaseError("no landed import")
+        raise sync_import_change.ImportBaseError("no landed import")
 
     def head(**_: object) -> str:
         return "bbbb222"
@@ -3000,10 +3000,10 @@ def test_public_head_unimported_allows_a_bootstrap_with_no_landed_import(
     def empty_tree(**_: object) -> str:
         return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(monorepo_export_pr, "last_synced_public_sha", no_import)
-    monkeypatch.setattr(monorepo_export_pr, "_foreign_commits_since", nothing_foreign)
-    monkeypatch.setattr(monorepo_export_pr, "_git_empty_tree", empty_tree)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", no_import)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", nothing_foreign)
+    monkeypatch.setattr(sync_export_pr, "_git_empty_tree", empty_tree)
 
     assert (
         _public_head_unimported(
@@ -3037,9 +3037,9 @@ def test_public_head_unimported_ignores_export_bot_commits(
     def only_bot(**_: object) -> tuple[str, ...]:
         return ()
 
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(monorepo_export_pr, "_last_synced_public_sha", synced)
-    monkeypatch.setattr(monorepo_export_pr, "_foreign_commits_since", only_bot)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", only_bot)
 
     assert (
         _public_head_unimported(
@@ -3067,9 +3067,9 @@ def test_public_head_unimported_blocks_on_a_human_commit(
     def has_human(**_: object) -> tuple[str, ...]:
         return ("2c5fefb Release sagent 0.1.13",)
 
-    monkeypatch.setattr(monorepo_export_pr, "_public_head_sha", head)
-    monkeypatch.setattr(monorepo_export_pr, "_last_synced_public_sha", synced)
-    monkeypatch.setattr(monorepo_export_pr, "_foreign_commits_since", has_human)
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", has_human)
 
     assert (
         _public_head_unimported(
@@ -3094,7 +3094,7 @@ def test_foreign_commits_since_reports_an_unreadable_range(tmp_path: Path) -> No
     """
     repo = _git_repo(tmp_path / "repo", [])
 
-    foreign = monorepo_export_pr._foreign_commits_since(
+    foreign = sync_export_pr._foreign_commits_since(
         base="0" * 40,
         head="HEAD",
         author_email="bot@example.com",
@@ -3122,7 +3122,7 @@ def test_foreign_commits_since_separates_bot_from_human(tmp_path: Path) -> None:
         check=True,
     ).stdout.strip()
 
-    foreign = monorepo_export_pr._foreign_commits_since(
+    foreign = sync_export_pr._foreign_commits_since(
         base=base,
         head="HEAD",
         author_email="bot@example.com",
@@ -3190,7 +3190,7 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
         [("unrelated source work", "dev@example.com")],
     )
     assert (
-        monorepo_export_pr._public_head_unimported(
+        sync_export_pr._public_head_unimported(
             public_dir=public,
             source_dir=source,
             sync_label="Pkg",
@@ -3201,9 +3201,7 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
     ), "an unimported human commit must block the export"
 
     # The import lands, recording the marker exactly as the import path writes it.
-    title = (
-        f"Import Pkg public changes {monorepo_import_change._pr_title_sha(public_head)}"
-    )
+    title = f"Import Pkg public changes {sync_import_change._pr_title_sha(public_head)}"
     subprocess.run(  # noqa: S603 -- fixed argv, test-only.
         ["git", "-C", str(source), "commit", "-q", "--allow-empty", "-m", title],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
         check=True,
@@ -3211,7 +3209,7 @@ def test_import_then_export_completes_the_loop(tmp_path: Path) -> None:
 
     # Now the guard must permit the export; otherwise the loop deadlocks.
     assert (
-        monorepo_export_pr._public_head_unimported(
+        sync_export_pr._public_head_unimported(
             public_dir=public,
             source_dir=source,
             sync_label="Pkg",

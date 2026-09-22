@@ -8,8 +8,8 @@ import subprocess
 
 import pytest
 
-from copybarista.scripts import monorepo_import_change
-from copybarista.scripts.monorepo_import_change import (
+from copybarista.scripts import sync_import_change
+from copybarista.scripts.sync_import_change import (
     ImportBaseError,
     ImportRequest,
     _commit_author,
@@ -270,9 +270,9 @@ def test_main_accepts_generic_project_validation_args(
     def fake_run_import_sync(request: ImportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fake_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--project-path",
             "packages/configgle",
@@ -311,9 +311,9 @@ def test_export_copybarista_requirements_uses_frozen(
         captured.append(argv)
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
-    monorepo_import_change._export_copybarista_requirements(
+    sync_import_change._export_copybarista_requirements(
         target_dir=tmp_path,
         runner_temp=tmp_path,
     )
@@ -334,9 +334,9 @@ def test_main_resolves_filesystem_inputs_to_absolute(
     def fake_run_import_sync(request: ImportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fake_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--project-path",
             "pkg",
@@ -376,9 +376,9 @@ def test_main_accepts_refresh_public_lockfile_arg(
     def fake_run_import_sync(request: ImportRequest) -> None:
         captured.append(request)
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fake_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--project-path",
             "packages/configgle",
@@ -427,7 +427,7 @@ def test_import_change_ignores_generated_public_lockfile(
         assert not (sanitized_head / "uv.lock").exists()
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     _run_import_change(
         request=ImportRequest(
@@ -504,24 +504,24 @@ def test_run_import_sync_imports_then_validates(
             ],
         )
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr(
-        monorepo_import_change,
+        sync_import_change,
         "_export_copybarista_requirements",
         fake_export_requirements,
     )
     monkeypatch.setattr(
-        monorepo_import_change,
+        sync_import_change,
         "_run_import_change",
         fake_import_change,
     )
     monkeypatch.setattr(
-        monorepo_import_change,
+        sync_import_change,
         "_validate_target",
         fake_validate_target,
     )
 
-    monorepo_import_change.run_import_sync(
+    sync_import_change.run_import_sync(
         ImportRequest(
             public_base=tmp_path / "public-base",
             public_head=tmp_path / "public-head",
@@ -582,16 +582,16 @@ def test_failed_import_annotates_the_stalled_export(
     def unused_run(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(monorepo_import_change, "_run", unused_run)
+    monkeypatch.setattr(sync_import_change, "_run", unused_run)
     monkeypatch.setattr(
-        monorepo_import_change,
+        sync_import_change,
         "_export_copybarista_requirements",
         fake_export_requirements,
     )
-    monkeypatch.setattr(monorepo_import_change, "_run_import_change", boom)
+    monkeypatch.setattr(sync_import_change, "_run_import_change", boom)
 
     with pytest.raises(SystemExit):
-        monorepo_import_change.run_import_sync(_import_request(target_dir=tmp_path))
+        sync_import_change.run_import_sync(_import_request(target_dir=tmp_path))
 
     # _log writes to stderr; stdout is the machine channel (--print-synced-base).
     err = capsys.readouterr().err
@@ -698,7 +698,7 @@ def test_gh_pr_exists_only_counts_open_prs(monkeypatch: pytest.MonkeyPatch) -> N
         assert "open" in argv
         return subprocess.CompletedProcess(argv, 0, stdout="[]")
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     assert not _gh_pr_exists(
         branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
@@ -727,7 +727,7 @@ def test_gh_pr_exists_retries_transient_github_failures(
     def no_sleep(seconds: float) -> None:
         del seconds
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
 
     assert not _gh_pr_exists(
@@ -757,7 +757,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
     def no_sleep(seconds: float) -> None:
         del seconds
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
     monkeypatch.setattr("time.sleep", no_sleep)
 
     with pytest.raises(SystemExit) as error:
@@ -768,7 +768,7 @@ def test_gh_pr_exists_fails_loudly_after_retry_limit(
         )
 
     assert error.value.code == 1
-    assert calls == monorepo_import_change.GITHUB_RETRY_ATTEMPTS
+    assert calls == sync_import_change.GITHUB_RETRY_ATTEMPTS
     assert "HTTP 504" in capsys.readouterr().err
 
 
@@ -798,8 +798,8 @@ def test_validate_target_runs_checks_against_exported_tree(
         del request, project, runner_temp, requirements
         return tree
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
-    monkeypatch.setattr(monorepo_import_change, "_export_public_tree", fake_export)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
 
     _validate_target(
         request=_import_request(target_dir=Path("/repo/target")),
@@ -826,7 +826,7 @@ def test_export_public_tree_runs_copybarista_export(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     target = tmp_path / "target"
     project = target / "package"
@@ -834,7 +834,7 @@ def test_export_public_tree_runs_copybarista_export(
     runner_temp.mkdir()
 
     requirements = tmp_path / "copybarista-requirements.txt"
-    tree = monorepo_import_change._export_public_tree(
+    tree = sync_import_change._export_public_tree(
         request=_import_request(target_dir=target),
         project=project,
         runner_temp=runner_temp,
@@ -871,13 +871,13 @@ def test_export_copybarista_requirements_exports_group_from_lock(
             stdout="pyyaml==6.0.3\nruff==0.15.17\n",
         )
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     target = tmp_path / "target"
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
 
-    requirements = monorepo_import_change._export_copybarista_requirements(
+    requirements = sync_import_change._export_copybarista_requirements(
         target_dir=target,
         runner_temp=runner_temp,
     )
@@ -1142,9 +1142,9 @@ def test_main_print_synced_base_prints_and_skips_import(
     def fail_run_import_sync(_: ImportRequest) -> None:
         raise AssertionError("import must not run in print-synced-base mode")
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fail_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--print-synced-base",
             "--target-dir",
@@ -1170,9 +1170,9 @@ def test_main_print_synced_base_emits_fallback_without_history(
     def fail_run_import_sync(_: ImportRequest) -> None:
         raise AssertionError("import must not run in print-synced-base mode")
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fail_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--print-synced-base",
             "--target-dir",
@@ -1216,9 +1216,9 @@ def test_main_print_synced_base_prefers_export_from_public_dir(
     def fail_run_import_sync(_: ImportRequest) -> None:
         raise AssertionError("import must not run in print-synced-base mode")
 
-    monkeypatch.setattr(monorepo_import_change, "run_import_sync", fail_run_import_sync)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
 
-    monorepo_import_change.run(
+    sync_import_change.run(
         [
             "--print-synced-base",
             "--target-dir",
@@ -1252,9 +1252,9 @@ def test_import_pr_auto_merges_when_enabled(
             merged.append(argv)
         return subprocess.CompletedProcess(argv, 0, stdout="")
 
-    monkeypatch.setattr(monorepo_import_change, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
 
-    monorepo_import_change._merge_import_pr(
+    sync_import_change._merge_import_pr(
         branch="pkg/import/sha-abc",
         target_repo="rekursiv-ai/source",
         title="Import Package public changes abc",
@@ -1285,9 +1285,9 @@ def test_import_pr_merges_directly_when_auto_merge_unavailable(
             )
         return subprocess.CompletedProcess(argv, 0, stdout="")
 
-    monkeypatch.setattr(monorepo_import_change, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
 
-    monorepo_import_change._merge_import_pr(
+    sync_import_change._merge_import_pr(
         branch="pkg/import/sha-abc",
         target_repo="rekursiv-ai/source",
         title="Import Package public changes abc",
@@ -1308,7 +1308,7 @@ def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
     reported the just-imported commit as unimported and skipped forever.
     """
     full = "0e8b8406cdd2" + "0" * 28
-    title = f"Import Sagent public changes {monorepo_import_change._pr_title_sha(full)}"
+    title = f"Import Sagent public changes {sync_import_change._pr_title_sha(full)}"
     _git_repo_with_commits(root=tmp_path, subjects=[title])
 
     assert (
@@ -1334,7 +1334,9 @@ def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
     guard consults, and require the guard to see the commit as imported.
     """
     public_sha = "0e8b8406cdd2cd79218a711687228111298afcaa"
-    title = f"Import Sagent public changes {monorepo_import_change._pr_title_sha(public_sha)}"
+    title = (
+        f"Import Sagent public changes {sync_import_change._pr_title_sha(public_sha)}"
+    )
     source = tmp_path / "source"
     _git_repo_with_commits(root=source, subjects=[title])
 
@@ -1354,7 +1356,7 @@ def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> No
     public_sha = "1" * 40
     title = (
         f"Import Sagent public changes "
-        f"{monorepo_import_change._pr_title_sha(public_sha)} (#123)"
+        f"{sync_import_change._pr_title_sha(public_sha)} (#123)"
     )
     source = tmp_path / "source"
     _git_repo_with_commits(root=source, subjects=[title])
@@ -1389,13 +1391,13 @@ def test_export_public_tree_initializes_git_repo(
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
 
     target = tmp_path / "target"
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
 
-    monorepo_import_change._export_public_tree(
+    sync_import_change._export_public_tree(
         request=_import_request(target_dir=target),
         project=target / "package",
         runner_temp=runner_temp,
@@ -1435,11 +1437,11 @@ def test_no_op_import_still_writes_the_ledger_commit(
         # No porcelain output => no file changes: the no-op import path.
         return False
 
-    monkeypatch.setattr(monorepo_import_change, "_run", fake_run)
-    monkeypatch.setattr(monorepo_import_change, "_run_gh", fake_run)
-    monkeypatch.setattr(monorepo_import_change, "_gh_pr_exists", fake_gh_pr_exists)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run)
+    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", fake_gh_pr_exists)
     monkeypatch.setattr(
-        monorepo_import_change,
+        sync_import_change,
         "_git_has_changes",
         fake_git_has_changes,
     )
@@ -1448,7 +1450,7 @@ def test_no_op_import_still_writes_the_ledger_commit(
     runner_temp.mkdir()
     request = _import_request(target_dir=tmp_path)
 
-    monorepo_import_change._open_or_update_target_pr(request=request)
+    sync_import_change._open_or_update_target_pr(request=request)
 
     commits = [c for c in calls if c[:2] == ["git", "commit"]]
     assert commits, "no-op import wrote no commit, so the ledger has no record"
