@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 def _write_required_tree(root: Path) -> None:
     for path in (
         root / ".github/workflows/ci.yml",
-        root / ".github/workflows/public-to-source.yml",
+        root / ".github/workflows/copybarista-to-loop.yml",
         root / "LICENSE",
         root / "README.md",
         root / "copybarista/__init__.py",

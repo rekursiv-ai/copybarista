@@ -1,7 +1,4 @@
-# DO NOT EDIT -- generated from public-to-source.yml.tmpl and this
-# package's sync config. Hand edits are overwritten; change
-# the template, the generator, or the sync config instead.
-name: "Public to Source Copybarista"
+name: @@WORKFLOW_NAME@@
 
 on:
   pull_request:
@@ -27,7 +24,7 @@ concurrency:
 
 jobs:
   import-change:
-    name: "Public to Source Copybarista into source"
+    name: @@JOB_NAME@@
     runs-on: ubuntu-latest
     # Bounded so a hung step fails in minutes, not at the 6h default.
     timeout-minutes: 45
@@ -37,24 +34,24 @@ jobs:
       TARGET_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}
       TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}
       COPYBARISTA_TOOL_PROJECT_PATH: ${{ vars.COPYBARISTA_TOOL_PROJECT_PATH }}
-      COPYBARISTA_IMPORT_BRANCH_PREFIX: "copybarista/import/"
-      COPYBARISTA_SYNC_LABEL: "Copybarista"
-      COPYBARISTA_SYNC_USER_NAME: "copybarista"
-      COPYBARISTA_SYNC_USER_EMAIL: "rekursiv-bot@rekursiv.ai"
+      COPYBARISTA_IMPORT_BRANCH_PREFIX: @@IMPORT_BRANCH_PREFIX@@
+      COPYBARISTA_SYNC_LABEL: @@SYNC_LABEL@@
+      COPYBARISTA_SYNC_USER_NAME: @@SYNC_USER_NAME@@
+      COPYBARISTA_SYNC_USER_EMAIL: @@SYNC_USER_EMAIL@@
 
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
-        !startsWith(github.event.pull_request.head.ref, 'copybarista/export/')
+        !startsWith(github.event.pull_request.head.ref, @@EXPORT_PREFIX_EXPR@@)
       ) ||
       (
         github.event_name == 'push' &&
         github.event.before != '0000000000000000000000000000000000000000' &&
-        github.event.head_commit.author.email != 'rekursiv-bot@rekursiv.ai' &&
-        !contains(github.event.head_commit.message, 'copybarista/export/') &&
-        !contains(github.event.head_commit.message, 'Copybarista export branch:')
+        github.event.head_commit.author.email != @@SYNC_USER_EMAIL_EXPR@@ &&
+        !contains(github.event.head_commit.message, @@EXPORT_PREFIX_EXPR@@) &&
+        !contains(github.event.head_commit.message, @@EXPORT_BRANCH_MESSAGE_EXPR@@)
       )
 
     steps:
@@ -89,7 +86,7 @@ jobs:
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
               exit 1
             fi
-            echo "::notice::Public-to-source import is not configured; skipping."
+            echo "::notice::Import back to loop is not configured; skipping."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -101,7 +98,7 @@ jobs:
       # persist-credentials: false, so the import token is used for this fetch
       # and never written into target/.git/config where the later step that
       # executes imported public code could read it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
@@ -114,11 +111,11 @@ jobs:
           # import would silently fall back to the pushed commit's parent -- the
           # exact wrong baseline this resolution exists to avoid.
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: @@USES_SETUP_PYTHON@@
         if: steps.settings.outputs.enabled == 'true'
         with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+          python-version: @@PYTHON_VERSION@@
+      - uses: @@USES_SETUP_UV@@
         if: steps.settings.outputs.enabled == 'true'
 
       - name: Capture trusted import helper
@@ -135,7 +132,7 @@ jobs:
       # yields a months-stale baseline and the three-way merge manufactures
       # conflicts (the 39-file incident). Shallow would see one commit and hide
       # every export.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: main
@@ -190,33 +187,18 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.base_ref }}
           path: public-base
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: @@USES_CHECKOUT@@
         if: steps.settings.outputs.enabled == 'true'
         with:
           ref: ${{ steps.refs.outputs.head_ref }}
           path: public-head
 
-      - name: Cache apt packages
-        if: steps.settings.outputs.enabled == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-8787f28218a2ad65
-      - name: Install system packages
-        if: steps.settings.outputs.enabled == 'true'
-        run: |
-          for attempt in 1 2 3; do
-            timeout 120 sudo apt-get update && break
-            echo "apt-get update stalled (attempt $attempt)" >&2
-            sleep $((attempt * 10))
-          done
-          timeout 300 sudo apt-get install -y --no-install-recommends ripgrep fd-find
-      - name: Import public tree into target repository
+@@SYSTEM_DEPS@@      - name: Import public tree into target repository
         if: steps.settings.outputs.enabled == 'true'
         run: |
           public_base_ref="${{ steps.refs.outputs.base_ref }}"
@@ -236,15 +218,7 @@ jobs:
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
-            --refresh-public-lockfile \
-            --validation-command 'python copybarista/scripts/check_release_tree.py . --allow-root-git' \
-            --validation-command 'uv sync --frozen --all-groups' \
-            --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
-            --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
-            --validation-command 'uv run python -c "import copybarista"' \
-            --validation-command 'rm -rf dist' \
-            --validation-command 'uv build --out-dir dist' \
-            --validation-command 'wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"; uv run --isolated --with "$wheel" python -P -c "import copybarista; from copybarista.cli import main; print('"'"'ok'"'"')"' \
+@@REFRESH_PUBLIC_LOCKFILE_ARG@@@@VALIDATION_COMMANDS@@ \
             --open-pr false
 
       - name: Open or update target import PR
@@ -279,7 +253,7 @@ jobs:
 
       - name: Upload import report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: @@USES_UPLOAD_ARTIFACT@@
         with:
           name: copybarista-import-report
           path: ${{ env.IMPORT_REPORT }}
