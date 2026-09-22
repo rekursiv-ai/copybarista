@@ -1,4 +1,4 @@
-name: Import public changes
+name: Public→Private
 
 on:
   pull_request:
@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   import:
-    name: Import public changes and update source PR
+    name: Public→Private and update source PR
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
@@ -141,7 +141,7 @@ jobs:
         if: steps.settings.outputs.enabled == 'true'
         uses: astral-sh/setup-uv@v5
 
-      - name: Import public changes
+      - name: Public→Private
         if: steps.settings.outputs.enabled == 'true'
         run: |
           uvx copybarista import-change "source/$PROJECT_PATH/copy.barista.toml" \
@@ -191,11 +191,11 @@ jobs:
           git fetch origin "$IMPORT_BRANCH:refs/remotes/origin/$IMPORT_BRANCH" || true
           git switch -C "$IMPORT_BRANCH"
           git add "$PROJECT_PATH"
-          git commit -m "Import public changes ${{ steps.refs.outputs.head_ref }}"
+          git commit -m "Public→Private ${{ steps.refs.outputs.head_ref }}"
           git push --force-with-lease origin "$IMPORT_BRANCH"
 
           head_ref="${{ steps.refs.outputs.head_ref }}"
-          pr_title="Import public changes ${head_ref:0:12}"
+          pr_title="Public→Private ${head_ref:0:12}"
           cat > "$RUNNER_TEMP/copybarista-import-change-pr-body.md" <<EOF
           Imports public changes from $GITHUB_REPOSITORY.
 

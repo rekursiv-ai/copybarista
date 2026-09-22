@@ -33,7 +33,7 @@ import tomllib
 
 from copybarista.config import Transform, load_config
 from copybarista.lib.custom_json import DictCodec, ListCodec, loads
-from copybarista.scripts.sync_import_change import (
+from copybarista.scripts.monorepo_import_change import (
     ImportBaseError,
     last_synced_public_sha,
 )

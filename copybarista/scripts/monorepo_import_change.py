@@ -151,7 +151,7 @@ class ImportRequest:
 
 
 def run_import_sync(request: ImportRequest) -> None:
-    """Import public changes into source, validate, and optionally open a PR.
+    """Public→Private into source, validate, and optionally open a PR.
 
     Args:
       request: ImportRequest with paths, refs, and sync settings.
@@ -288,7 +288,7 @@ def export_commit_marker(sync_label: str) -> str:
 
     A source->public export lands on public ``main`` by squash-merge, whose
     body is exactly ``<label> export branch: <branch>`` (see
-    ``sync_export_pr._enable_export_pr_auto_merge``). The per-branch
+    ``monorepo_export_pr._enable_export_pr_auto_merge``). The per-branch
     ``copybarista-source-rev-sha256=`` digests live on the export BRANCH commit
     and do not survive the squash, so this branch line -- the same marker the
     import workflow's own ``if:`` guard greps out of the pushed commit message

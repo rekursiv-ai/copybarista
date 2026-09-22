@@ -350,7 +350,7 @@ def _run_write_public_workflows(flags: _Flags) -> None:
     workflows = config.parent / ".export/.github/workflows"
     for name, text in (
         ("package-validation.yml", package_validation_workflow(settings)),
-        ("sync-to-source.yml", import_workflow(settings)),
+        ("public-to-source.yml", import_workflow(settings)),
     ):
         (workflows / name).write_text(text, encoding="utf-8")
         sys.stdout.write(f"wrote {workflows / name}\n")

@@ -200,7 +200,7 @@ copybarista init-sync . \
 ```
 
 This writes `copy.barista.toml`, `copybarista.sync.toml`, the public import
-workflow `.github/workflows/sync-to-source.yml`, and the public package
+workflow `.github/workflows/public-to-source.yml`, and the public package
 validation workflow `.github/workflows/package-validation.yml`. The package name
 lives in `copybarista.sync.toml`; generated workflow names identify the package,
 while script file names and environment variable names stay stable. New packages
@@ -234,7 +234,7 @@ Validate the scaffolding before wiring GitHub Actions:
 ```bash
 copybarista check-sync-config .
 copybarista write-export-workflow copybarista.sync.toml \
-  --output export-configgle.yml
+  --output source-to-public-configgle.yml
 ```
 
 Generated export PRs can use public-safe commit metadata for their title and

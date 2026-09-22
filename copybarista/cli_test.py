@@ -274,7 +274,7 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
 
     assert (tmp_path / "copy.barista.toml").exists()
     assert (tmp_path / "copybarista.sync.toml").exists()
-    assert (tmp_path / ".github/workflows/sync-to-source.yml").exists()
+    assert (tmp_path / ".github/workflows/public-to-source.yml").exists()
     assert (tmp_path / ".github/workflows/package-validation.yml").exists()
     assert not (tmp_path / "private").exists()
 
@@ -474,7 +474,7 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     placeholder = "PLACEHOLDER_NOT_YET_REWRITTEN\n"
     workflows = tmp_path / ".export/.github/workflows"
     workflows.mkdir(parents=True, exist_ok=True)
-    for name in ("package-validation.yml", "sync-to-source.yml"):
+    for name in ("package-validation.yml", "public-to-source.yml"):
         (workflows / name).write_text(placeholder, encoding="utf-8")
 
     capsys.readouterr()
@@ -483,7 +483,7 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     assert placeholder.strip() not in (workflows / "package-validation.yml").read_text(
         encoding="utf-8",
     )
-    assert placeholder.strip() not in (workflows / "sync-to-source.yml").read_text(
+    assert placeholder.strip() not in (workflows / "public-to-source.yml").read_text(
         encoding="utf-8",
     )
     assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(

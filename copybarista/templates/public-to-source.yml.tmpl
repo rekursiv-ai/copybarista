@@ -1,4 +1,4 @@
-name: Import public changes
+name: @@WORKFLOW_NAME@@
 
 on:
   pull_request:
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   import-change:
-    name: Import public changes to source
+    name: @@JOB_NAME@@
     runs-on: ubuntu-latest
     # Bounded so a hung step fails in minutes, not at the 6h default.
     timeout-minutes: 45
@@ -58,7 +58,7 @@ jobs:
       - name: Set sync paths
         run: |
           echo "IMPORT_REPORT=$RUNNER_TEMP/copybarista-import-report.json" >> "$GITHUB_ENV"
-          echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/sync_import_change.py" >> "$GITHUB_ENV"
+          echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/monorepo_import_change.py" >> "$GITHUB_ENV"
 
       - id: settings
         name: Check settings
@@ -122,7 +122,7 @@ jobs:
         if: steps.settings.outputs.enabled == 'true'
         run: |
           install -m 600 \
-            "target/$COPYBARISTA_TOOL_PROJECT_PATH/scripts/sync_import_change.py" \
+            "target/$COPYBARISTA_TOOL_PROJECT_PATH/scripts/monorepo_import_change.py" \
             "$TRUSTED_IMPORT_SCRIPT"
 
       # The public repo (this repo) at FULL history, before the baseline is

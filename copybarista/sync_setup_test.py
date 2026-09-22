@@ -74,7 +74,7 @@ def test_write_sync_scaffold_uses_stable_public_file_names(tmp_path: Path):
 
     assert tmp_path / "copy.barista.toml" in written
     assert tmp_path / "copybarista.sync.toml" in written
-    assert tmp_path / ".github/workflows/sync-to-source.yml" in written
+    assert tmp_path / ".github/workflows/public-to-source.yml" in written
     assert tmp_path / ".github/workflows/package-validation.yml" in written
     assert not (tmp_path / "private").exists()
     assert not (tmp_path / "scripts/sync_configgle_export.py").exists()
@@ -220,7 +220,7 @@ def test_check_sync_config_rejects_config_missing_control_excludes(tmp_path: Pat
 
 def test_check_sync_config_rejects_missing_public_import_workflow(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    (tmp_path / ".github/workflows/sync-to-source.yml").unlink()
+    (tmp_path / ".github/workflows/public-to-source.yml").unlink()
 
     with pytest.raises(ConfigError, match="Missing sync files"):
         check_sync_config(root=tmp_path)
@@ -238,7 +238,7 @@ def test_check_sync_config_rejects_missing_package_validation_workflow(
 
 def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    workflow = tmp_path / ".github/workflows/public-to-source.yml"
     workflow.write_text(
         workflow.read_text(encoding="utf-8").replace(
             "${{ vars.COPYBARISTA_SOURCE_REPO }}",
@@ -253,7 +253,7 @@ def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
 
 def test_check_sync_config_reports_malformed_workflow_yaml(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    (tmp_path / ".github/workflows/sync-to-source.yml").write_text(
+    (tmp_path / ".github/workflows/public-to-source.yml").write_text(
         "jobs: [\n",
         encoding="utf-8",
     )
@@ -278,7 +278,7 @@ def test_check_sync_config_reports_malformed_package_validation_yaml(
 def test_check_sync_config_rejects_parent_based_import_baseline(tmp_path: Path):
     """A template that drops the ledger lookup must fail the config check."""
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    workflow = tmp_path / ".github/workflows/public-to-source.yml"
     text = workflow.read_text(encoding="utf-8")
     start = text.index('base_ref="$(uv')
     end = text.index('github.event.before }}")', start) + len(
@@ -301,7 +301,7 @@ def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path:
     exactly the shape a substring check misses.
     """
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    workflow = tmp_path / ".github/workflows/public-to-source.yml"
     text = workflow.read_text(encoding="utf-8")
     start = text.index("      - id: refs\n")
     checkout = GITHUB_ACTION_PINS["actions/checkout"]
@@ -322,7 +322,7 @@ def test_check_sync_config_rejects_baseline_resolved_before_the_ledger(tmp_path:
 
 def test_check_sync_config_rejects_import_command_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
-    workflow = tmp_path / ".github/workflows/sync-to-source.yml"
+    workflow = tmp_path / ".github/workflows/public-to-source.yml"
     workflow.write_text(
         workflow.read_text(encoding="utf-8").replace(
             '--project-path "$TARGET_PROJECT_PATH"',
@@ -576,8 +576,8 @@ def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings())
 
-    assert 'name: "Export Configgle"' in workflow
-    assert 'name: "Export Configgle and update public PR"' in workflow
+    assert 'name: "Source to Public Configgle"' in workflow
+    assert 'name: "Source to Public Configgle and update public PR"' in workflow
     assert "configgle/export/main" in workflow
     assert (
         "group: copybarista-export-${{ github.workflow }}-${{ github.ref }}" in workflow
@@ -586,7 +586,7 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     assert '--auto-merge="$COPYBARISTA_AUTO_MERGE"' in workflow
     assert "CONFIGGLE" not in workflow
     assert "sync_configgle" not in workflow
-    assert "source/tools/copybarista/scripts/sync_export_pr.py" in workflow
+    assert "source/tools/copybarista/scripts/monorepo_export_pr.py" in workflow
     assert "fetch-depth: 0" in workflow
     assert "--pr-scope" in workflow
     assert "configgle" in workflow
@@ -758,8 +758,8 @@ def test_export_workflow_watches_source_and_sync_helpers():
     workflow = export_workflow(_settings())
 
     assert '"packages/configgle/**"' in workflow
-    assert '"tools/copybarista/scripts/sync_export_pr.py"' in workflow
-    assert '"tools/copybarista/scripts/sync_import_change.py"' in workflow
+    assert '"tools/copybarista/scripts/monorepo_export_pr.py"' in workflow
+    assert '"tools/copybarista/scripts/monorepo_import_change.py"' in workflow
 
 
 def test_export_workflow_watches_additional_source_paths():
