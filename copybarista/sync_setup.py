@@ -359,7 +359,7 @@ def write_sync_scaffold(
     files = {
         root / "copy.barista.toml": copy_barista_toml(settings),
         root / "copybarista.sync.toml": sync_toml(settings),
-        root / ".github" / "workflows" / "sync-to-source.yml": import_workflow(
+        root / ".github" / "workflows" / "public-to-source.yml": import_workflow(
             settings,
         ),
         root / ".github" / "workflows" / "package-validation.yml": (
@@ -398,7 +398,7 @@ def check_sync_config(*, root: Path) -> None:
         raise ConfigError("Missing sync files: " + ", ".join(missing))
     settings = load_sync_settings(root / "copybarista.sync.toml")
     config = load_config(root / "copy.barista.toml")
-    workflow_text = (workflow_dir(root) / "sync-to-source.yml").read_text(
+    workflow_text = (workflow_dir(root) / "public-to-source.yml").read_text(
         encoding="utf-8",
     )
     # Managed configs opt into the shared Python-artifact default rather than
@@ -633,19 +633,21 @@ def export_workflow(settings: SyncSettings) -> str:
         f"      # {line}\n" for line in settings.replay_bootstrap_base_comment
     )
     project_path = f"source/{settings.copybarista_project_path}"
-    script_path = f"{project_path}/scripts/sync_export_pr.py"
+    script_path = f"{project_path}/scripts/monorepo_export_pr.py"
     return _render_template(
         "source-to-public.yml.tmpl",
         {
-            "WORKFLOW_NAME": _yaml_str(f"Export {settings.sync_label}"),
-            "JOB_NAME": _yaml_str(f"Export {settings.sync_label} and update public PR"),
+            "WORKFLOW_NAME": _yaml_str(f"Source to Public {settings.sync_label}"),
+            "JOB_NAME": _yaml_str(
+                f"Source to Public {settings.sync_label} and update public PR",
+            ),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/sync_export_pr.py",
+                f"{settings.copybarista_project_path}/scripts/monorepo_export_pr.py",
             ),
             "IMPORT_SCRIPT_PATH": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts/sync_import_change.py",
+                f"{settings.copybarista_project_path}/scripts/monorepo_import_change.py",
             ),
             "PUBLIC_REPO": _yaml_str(settings.public_repo),
             "EXPORT_BRANCH": _yaml_str(f"{settings.export_prefix}main"),
@@ -704,6 +706,10 @@ def import_workflow(settings: SyncSettings) -> str:
     return _render_template(
         "public-to-source.yml.tmpl",
         {
+            "WORKFLOW_NAME": _yaml_str(f"Public to Source {settings.sync_label}"),
+            "JOB_NAME": _yaml_str(
+                f"Public to Source {settings.sync_label} into source",
+            ),
             "IMPORT_BRANCH_PREFIX": _yaml_str(settings.import_prefix),
             "SYNC_LABEL": _yaml_str(settings.sync_label),
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
@@ -756,7 +762,7 @@ def _required_paths(root: Path) -> tuple[Path, ...]:
     return (
         root / "copy.barista.toml",
         root / "copybarista.sync.toml",
-        workflows / "sync-to-source.yml",
+        workflows / "public-to-source.yml",
         workflows / "package-validation.yml",
     )
 
@@ -787,11 +793,13 @@ def _validate_import_workflow_yaml(
     for key, expected in expected_env.items():
         if env.get(key) != expected:
             raise ConfigError(
-                f"sync-to-source.yml jobs.import-change.env.{key} must be {expected}.",
+                f"public-to-source.yml jobs.import-change.env.{key} must be {expected}.",
             )
     job_if = job.get("if", "")
     if not isinstance(job_if, str):
-        raise ConfigError("sync-to-source.yml jobs.import-change.if must be a string.")
+        raise ConfigError(
+            "public-to-source.yml jobs.import-change.if must be a string.",
+        )
     for text in (
         "github.event.pull_request.head.repo.full_name == github.repository",
         f"!startsWith(github.event.pull_request.head.ref, {_github_expr_str(settings.export_prefix)})",
@@ -801,7 +809,7 @@ def _validate_import_workflow_yaml(
     ):
         if text not in job_if:
             raise ConfigError(
-                f"sync-to-source.yml jobs.import-change.if must contain {text}.",
+                f"public-to-source.yml jobs.import-change.if must contain {text}.",
             )
     steps = _yaml_list(job.get("steps"), "jobs.import-change.steps")
     setup_step = _workflow_uses_step(steps, action_ref("actions/setup-python"))
@@ -811,7 +819,7 @@ def _validate_import_workflow_yaml(
     )
     if with_config.get("python-version") != settings.validation_python_versions[0]:
         raise ConfigError(
-            "sync-to-source.yml setup-python python-version must match "
+            "public-to-source.yml setup-python python-version must match "
             "validation_python_versions[0].",
         )
     import_step = _workflow_step_run(steps, "Import public tree into target repository")
@@ -845,16 +853,16 @@ def _validate_import_workflow_yaml(
     ):
         for text in texts:
             if text not in run:
-                raise ConfigError(f"sync-to-source.yml must reference {text}.")
+                raise ConfigError(f"public-to-source.yml must reference {text}.")
     step_text = "\n".join(str(step) for step in steps)
-    for text in ("sync_import_change.py", "GH_TOKEN"):
+    for text in ("monorepo_import_change.py", "GH_TOKEN"):
         if text not in step_text:
-            raise ConfigError(f"sync-to-source.yml must reference {text}.")
+            raise ConfigError(f"public-to-source.yml must reference {text}.")
     _assert_resolves_baseline_from_ledger(steps)
     _assert_installs_system_packages(
         steps=steps,
         packages=settings.system_packages,
-        workflow="sync-to-source.yml",
+        workflow="public-to-source.yml",
     )
 
 
@@ -880,7 +888,7 @@ def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
     ):
         if text not in refs_run:
             raise ConfigError(
-                "sync-to-source.yml step 'Resolve public refs' must resolve the "
+                "public-to-source.yml step 'Resolve public refs' must resolve the "
                 "push baseline from the import ledger AND public export history; "
                 f"{text} is missing.",
             )
@@ -904,12 +912,12 @@ def _assert_resolves_baseline_from_ledger(steps: list[object]) -> None:
     ):
         if index > refs:
             raise ConfigError(
-                f"sync-to-source.yml must place {name} before the step that "
+                f"public-to-source.yml must place {name} before the step that "
                 "resolves the merge baseline.",
             )
     if _checkout_index(steps, "public-base") < refs:
         raise ConfigError(
-            "sync-to-source.yml must check out public-base after the step that "
+            "public-to-source.yml must check out public-base after the step that "
             "resolves the merge baseline.",
         )
 
@@ -937,7 +945,7 @@ def _workflow_step_index(
     ]
     if len(matches) != 1:
         raise ConfigError(
-            "sync-to-source.yml must define exactly one step matching each "
+            "public-to-source.yml must define exactly one step matching each "
             f"import ordering role; found {len(matches)}.",
         )
     return matches[0]
@@ -995,12 +1003,12 @@ def _assert_installs_system_packages(
 
 # ``workflow`` names the file in the error text: this helper serves both generated
 # workflows, and hardcoding one name sent operators debugging a broken ``package-
-# validation.yml`` to ``sync-to-source.yml`` instead.
+# validation.yml`` to ``public-to-source.yml`` instead.
 def _workflow_step_run(
     steps: list[object],
     name: str,
     *,
-    workflow: str = "sync-to-source.yml",
+    workflow: str = "public-to-source.yml",
 ) -> str:
     """Return the shell script for a named workflow step."""
     for step in steps:
@@ -1025,14 +1033,14 @@ def _workflow_uses_step(steps: list[object], uses: str) -> dict[str, object]:
 def _yaml_mapping(value: object, name: str) -> dict[str, object]:
     """Return `value` as a YAML mapping or raise a config error."""
     if not isinstance(value, dict):
-        raise ConfigError(f"sync-to-source.yml {name} must be a YAML mapping.")
+        raise ConfigError(f"public-to-source.yml {name} must be a YAML mapping.")
     return cast(dict[str, object], value)
 
 
 def _yaml_list(value: object, name: str) -> list[object]:
     """Return `value` as a YAML list or raise a config error."""
     if not isinstance(value, list):
-        raise ConfigError(f"sync-to-source.yml {name} must be a YAML list.")
+        raise ConfigError(f"public-to-source.yml {name} must be a YAML list.")
     return cast(list[object], value)
 
 

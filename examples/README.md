@@ -137,7 +137,7 @@ Copy the public-to-source workflow into the public repository:
 Use the contents of
 `examples/python-package/github/public-to-source.yml`.
 
-Expected result: the public repository has an `Import public changes` workflow,
+Expected result: the public repository has an `Public→Private` workflow,
 even before it has package source files.
 The first push that creates this workflow has no previous public commit to
 compare against, so the import job is skipped.
@@ -192,7 +192,7 @@ COPYBARISTA_SYNC_USER_NAME=copybarista
 COPYBARISTA_SYNC_USER_EMAIL=copybarista@example.com
 ```
 
-Expected result: `Import public changes` can check out the source repository,
+Expected result: `Public→Private` can check out the source repository,
 run `copybarista import-change`, push an import branch, and open a source PR.
 
 ### 5. Run The First Export
@@ -283,7 +283,7 @@ export-only.
 
 Expected result on the public PR:
 
-- `Import public changes` checks out the public base and head.
+- `Public→Private` checks out the public base and head.
 - It runs `copybarista import-change`.
 - It validates that the imported source re-exports to the public PR head.
 - It does not open a source PR yet.
@@ -292,7 +292,7 @@ Merge the public PR after checks pass.
 
 Expected result after merge:
 
-- The public `push` trigger reruns `Import public changes`.
+- The public `push` trigger reruns `Public→Private`.
 - The workflow imports the public change into the source checkout.
 - A PR opens in the source repository from
   `copybarista/import/sha-<public-sha>`.

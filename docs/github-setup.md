@@ -61,7 +61,7 @@ The generated public files are:
 - `copybarista.sync.toml` -- package metadata such as package name, source path,
   public repo, branch prefixes, smoke import, type-check targets, and public
   validation commands.
-- `.github/workflows/sync-to-source.yml` -- public-to-source import workflow.
+- `.github/workflows/public-to-source.yml` -- public-to-source import workflow.
 - `.github/workflows/package-validation.yml` -- public package correctness
   workflow.
 
@@ -83,7 +83,7 @@ Generate the source-repository export workflow from the same metadata:
 
 ```bash
 copybarista write-export-workflow copybarista.sync.toml \
-  --output .github/workflows/export-configgle.yml
+  --output .github/workflows/source-to-public-configgle.yml
 ```
 
 Review the generated workflow before committing it; it is intentionally plain

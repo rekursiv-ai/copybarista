@@ -99,7 +99,7 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
     errors: list[str] = [
         f"Missing required release path: {required}"
         for required in (
-            ".github/workflows/sync-to-source.yml",
+            ".github/workflows/public-to-source.yml",
             "LICENSE",
             "README.md",
             "copybarista",

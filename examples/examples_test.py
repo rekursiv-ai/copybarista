@@ -110,7 +110,7 @@ def test_github_workflow_examples_call_copybarista_commands():
     assert "if: steps.settings.outputs.enabled == 'true'" in public_to_source
     assert "PYTHONDONTWRITEBYTECODE=1" in public_to_source
     assert 'source_base_ref="$(git rev-parse HEAD)"' in public_to_source
-    assert 'pr_title="Import public changes ${head_ref:0:12}"' in public_to_source
+    assert 'pr_title="Public→Private ${head_ref:0:12}"' in public_to_source
     assert "Public base: ${{ steps.refs.outputs.base_ref }}" in public_to_source
     assert "Public head: ${{ steps.refs.outputs.head_ref }}" in public_to_source
     assert "Source base: $source_base_ref" in public_to_source
