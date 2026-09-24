@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import subprocess
@@ -855,6 +856,51 @@ def test_export_public_tree_runs_copybarista_export(
         str(tree),
         "--force",
     ]
+
+
+def test_export_public_tree_relocks_branch_dependencies_before_git_add(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The validated tree must track sibling branches, like the export does.
+
+    The committed ``.export/uv.lock`` pins a sibling (configgle) at whatever
+    SHA was current when it was last locked. Validating with ``uv sync
+    --frozen`` against that pin tested a stale sibling, so an import failed on
+    a bug the sibling had already fixed on its branch.
+    """
+    runner_temp = tmp_path / "runner"
+    tree = runner_temp / "copybarista-validation-tree"
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[-3:-1] == ["--folder-dir", str(tree)]:
+            tree.mkdir(parents=True)
+            (tree / "pyproject.toml").write_text(
+                "[tool.uv.sources]\n"
+                'configgle = { git = "https://example.invalid/c", branch = "main" }\n'
+                'pinned = { git = "https://example.invalid/p", rev = "abc123" }\n',
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    request = replace(
+        _import_request(target_dir=tmp_path / "target"),
+        refresh_public_lockfile=True,
+    )
+
+    sync_import_change._export_public_tree(
+        request=request,
+        project=tmp_path / "target" / "package",
+        runner_temp=runner_temp,
+        requirements=tmp_path / "copybarista-requirements.txt",
+    )
+
+    lock = ["uv", "lock", "--upgrade-package", "configgle"]
+    assert lock in calls
+    assert calls.index(lock) < calls.index(["git", "add", "--all"])
 
 
 def test_export_copybarista_requirements_exports_group_from_lock(

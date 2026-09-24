@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 
 DEFAULT_RUNNER_TEMP = Path(tempfile.gettempdir())
@@ -863,9 +864,29 @@ def _export_public_tree(
     # package-validation.yml and the export gate) run inside a real checkout, so
     # only this path has to supply one. Staging is what makes the files visible
     # to `--all-files`; no commit is needed, and the tree is discarded after.
+    if request.refresh_public_lockfile:
+        # The committed lock pins branch-tracking siblings at a stale SHA; the
+        # export relocks them before validating, so validating the pin here
+        # failed imports on sibling bugs already fixed on their branch.
+        _run(["uv", "lock", *_git_branch_upgrades(tree / "pyproject.toml")], cwd=tree)
     _run(["git", "init", "--quiet"], cwd=tree)
     _run(["git", "add", "--all"], cwd=tree)
     return tree
+
+
+# Mirrors ``sync_export_pr._git_branch_upgrades``. This script runs as a detached
+# ``--no-project`` copy with only the stdlib, so it cannot import that module.
+def _git_branch_upgrades(pyproject: Path) -> list[str]:
+    """Return ``--upgrade-package`` flags for every git-branch dependency."""
+    sources: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    for key in ("tool", "uv", "sources"):
+        sources = cast(dict[str, object], sources).get(key, {})
+    return [
+        flag
+        for name, source in cast(dict[str, object], sources).items()
+        if isinstance(source, dict) and "branch" in source
+        for flag in ("--upgrade-package", name)
+    ]
 
 
 # Commits even when the merge produced no file changes. Two different questions share
