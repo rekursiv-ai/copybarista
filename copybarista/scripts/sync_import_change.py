@@ -1011,11 +1011,15 @@ def _pr_title_sha(public_sha: str) -> str:
 #
 # A conflicting or failing import never reaches here -- it raises before the PR is
 # opened -- so this path only ever merges an import that applied cleanly and passed the
-# same checks the source requires of any change.
+# exported package's own validation.
 #
-# Mirrors the export's merge policy: ``--auto`` needs a deferrable merge (branch
-# protection or pending checks), so a repo with neither rejects it and the merge is
-# issued directly instead.
+# ``--admin`` merges without waiting on source CI. Source-only breakage (a loop caller
+# of a moved API, a house-lint rule the public repo does not run) otherwise leaves the
+# import PR red, and the export guard then blocks every export behind it. Landing it
+# lets source CI on ``main`` report the breakage instead of jamming both directions.
+#
+# A token without bypass falls back to ``--auto`` (waits for checks); a repo with no
+# deferrable merge rejects that too, and the merge is issued directly.
 def _merge_import_pr(
     *,
     branch: str,
@@ -1038,6 +1042,10 @@ def _merge_import_pr(
         "--body",
         f"{sync_label} import branch: {branch}",
     ]
+    result = _run_gh([*merge_argv, "--admin"], cwd=cwd, capture=True, check=False)
+    if result.returncode == 0:
+        return
+    _log("Admin merge unavailable; queueing auto-merge behind source checks.")
     result = _run_gh([*merge_argv, "--auto"], cwd=cwd, capture=True, check=False)
     if result.returncode == 0:
         return

@@ -1310,7 +1310,39 @@ def test_import_pr_auto_merges_when_enabled(
 
     assert merged, "a clean import must merge without waiting for a human"
     assert "--squash" in merged[0]
-    assert "--auto" in merged[0]
+    assert "--admin" in merged[0], "a red source CI must not hold the import"
+
+
+def test_import_pr_falls_back_to_auto_merge_without_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A token that cannot bypass branch rules still queues the merge."""
+    calls: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if "--admin" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                1,
+                stdout="",
+                stderr="Repository rule violations found.",
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
+
+    sync_import_change._merge_import_pr(
+        branch="pkg/import/sha-abc",
+        target_repo="rekursiv-ai/source",
+        title="Import Package public changes abc",
+        sync_label="Package",
+        cwd=tmp_path,
+    )
+
+    assert "--admin" in calls[0]
+    assert "--auto" in calls[1]
 
 
 def test_import_pr_merges_directly_when_auto_merge_unavailable(
@@ -1322,6 +1354,8 @@ def test_import_pr_merges_directly_when_auto_merge_unavailable(
 
     def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
+        if "--admin" in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="denied")
         if "--auto" in argv:
             return subprocess.CompletedProcess(
                 argv,
@@ -1341,8 +1375,9 @@ def test_import_pr_merges_directly_when_auto_merge_unavailable(
         cwd=tmp_path,
     )
 
-    assert len(calls) == 2, "must retry without --auto"
-    assert "--auto" not in calls[1]
+    assert len(calls) == 3, "must retry without --admin, then without --auto"
+    assert "--auto" not in calls[2]
+    assert "--admin" not in calls[2]
 
 
 def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
