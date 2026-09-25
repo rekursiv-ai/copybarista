@@ -5,6 +5,18 @@ All notable copybarista changes are documented here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- **Every `files.exclude` pattern is now a forbidden path.** The leak check maps
+  each exported path back through `move` transforms and `files.moves` and
+  reports `excluded-path` when the source-root path is excluded, so an excluded
+  file no longer needs a second `[[leak_check.forbidden_path]]` entry. Paths no
+  move placed (`[[files.copy]]` destinations) are not judged by excludes.
+- `check_leaks` takes `files` (and optional `transforms`); `enforce_leak_check`
+  takes `config` in place of `policy`/`globstar`.
+- `reverse_file_moves`, `reverse_relocation`, and `reverse_move_transforms`
+  are public in `copybarista.config`.
+
 ## 0.1.4 - 2026-08-19
 
 ### Added

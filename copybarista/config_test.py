@@ -188,7 +188,7 @@ def test_rejects_non_injective_move_sequence():
     Disjoint-filename subtrees merge without an export-time collision, so the
     guard never fires, and the import reverse first-match-wins mis-routes. The
     move sequence must be injective (no two entries share a destination) so
-    ``_reverse_file_moves`` is an exact inverse.
+    ``reverse_file_moves`` is an exact inverse.
     """
     raw = tomllib.loads(
         """

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from os import walk
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import difflib
@@ -21,7 +21,11 @@ import sys
 import tempfile
 
 from copybarista.commands import CommandRunner
-from copybarista.config import WorkflowConfig
+from copybarista.config import (
+    WorkflowConfig,
+    reverse_file_moves,
+    reverse_move_transforms,
+)
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
@@ -36,7 +40,7 @@ from copybarista.transforms import (
 
 
 if TYPE_CHECKING:
-    from copybarista.config import FileMove, Transform
+    from copybarista.config import Transform
 
 
 ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
@@ -239,7 +243,7 @@ class PathMapper:
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}",
             )
-        source_public_path = _reverse_move_transforms(
+        source_public_path = reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -320,7 +324,7 @@ class PathMapper:
                 # ``destination = <path>``, e.g. the ``ops/github/shared/AI_POLICY.md`` copy)
                 # likewise yields, so that copy claims it below rather than the
                 # ``.`` copy shadowing it into ``.export/<path>``.
-                _, moved = _reverse_file_moves(public_path, self.config.files.moves)
+                _, moved = reverse_file_moves(public_path, self.config.files.moves)
                 dedicated = any(
                     other.destination == public_path for other in self.config.files.copy
                 )
@@ -354,7 +358,7 @@ class PathMapper:
         """Return the source-root-relative path, or ``None`` if unrelocated."""
         if not self.config.files.moves:
             return public_path
-        reversed_path, moved = _reverse_file_moves(public_path, self.config.files.moves)
+        reversed_path, moved = reverse_file_moves(public_path, self.config.files.moves)
         return reversed_path if moved else None
 
 
@@ -769,7 +773,7 @@ class ChangeRequestImporter:
     def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
         """Undo supported content transforms for one public file."""
         content = data
-        match_path = _reverse_move_transforms(
+        match_path = reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -930,7 +934,7 @@ class ChangeRequestImporter:
     def _reverse_transform_ids(self, public_path: str) -> tuple[str, ...]:
         """Return reversible transform IDs that affect a public path."""
         ids: list[str] = []
-        match_path = _reverse_move_transforms(
+        match_path = reverse_move_transforms(
             public_path=public_path,
             transforms=self.config.transforms,
         )
@@ -1201,64 +1205,6 @@ def import_change_request(request: ImportRequest) -> ImportResult:
         verify=request.verify,
         merge_import=request.merge_import,
     ).import_changes()
-
-
-def _reverse_move_transforms(
-    *,
-    public_path: str,
-    transforms: tuple[Transform, ...],
-) -> str:
-    """Map a post-move public path back to the pre-move staged path."""
-    path = PurePosixPath(public_path)
-    for transform in reversed(transforms):
-        if transform.type != "move":
-            continue
-        destination = PurePosixPath(transform.destination)
-        if path == destination:
-            path = PurePosixPath(transform.path)
-        elif path.is_relative_to(destination):
-            path = PurePosixPath(transform.path) / path.relative_to(destination)
-    return path.as_posix()
-
-
-# Applies each move in REVERSE order, inverting each: a public path under a move's
-# ``destination`` is rewritten back to its ``path``-space. Reports whether any move
-# matched, so the caller can distinguish a path the selection placed (return the
-# reversed source-relative path) from an identity path no move touched (leave it alone).
-# Exact inverse of ``workflow.MoveSequence.destination_path``: the config parser
-# enforces injectivity at load (``config._validate_moves_injective``), so the reverse-
-# order first match is unambiguous for every admitted sequence.
-def _reverse_file_moves(
-    public_path: str,
-    moves: tuple[FileMove, ...],
-) -> tuple[str, bool]:
-    """Invert the ordered ``files.moves`` placement for one public path."""
-    path = public_path
-    moved = False
-    for move in reversed(moves):
-        relocated = _reverse_relocation(
-            path,
-            source=move.path,
-            destination=move.destination,
-        )
-        if relocated is not None:
-            path = relocated
-            moved = True
-    return path, moved
-
-
-# Inverse of ``workflow._relocate_path``: a path equal to ``destination`` or under
-# ``destination/`` is rewritten back under ``source``; a path matching neither returns
-# ``None`` to signal the move did not place it.
-def _reverse_relocation(path: str, *, source: str, destination: str) -> str | None:
-    """Return ``path`` reversed from ``destination``-space to ``source``-space."""
-    if path == destination:
-        return source
-    prefix = f"{destination}/"
-    if path.startswith(prefix):
-        suffix = path.removeprefix(prefix)
-        return f"{source}/{suffix}" if source else suffix
-    return None
 
 
 def _matches_transform(

@@ -144,11 +144,7 @@ class WorkflowRunner:
             time.perf_counter() - transform_started,
         )
         leak_started = time.perf_counter()
-        enforce_leak_check(
-            root=staging,
-            policy=self.config.leak_check,
-            globstar=self.config.globstar,
-        )
+        enforce_leak_check(root=staging, config=self.config)
         _record_phase(record_phase, "leak_check", time.perf_counter() - leak_started)
         manifest_started = time.perf_counter()
         files = tuple(
@@ -179,7 +175,7 @@ class MoveSequence:
     Copybara applies a sequence of ``core.move`` transforms: a whole-tree move
     (``path = ""``) relocates every path under a destination prefix, and a later
     per-subtree move relocates a matching subtree again (typically a back-move to
-    the public root). ``import_request._reverse_file_moves`` inverts this
+    the public root). ``config.reverse_file_moves`` inverts this
     exactly: the config parser rejects a non-injective sequence (two moves to
     one destination) and an identity move (``path == destination``) at load
     (``config._validate_moves_injective`` / ``config._parse_file_move``), so
@@ -208,7 +204,7 @@ class MoveSequence:
 # rewriting that prefix to ``destination``; a path matching neither is returned
 # unchanged. This is the single forward relocation rule shared by the ``files.moves``
 # sequence and ``move`` transforms; its inverse is
-# ``import_request._reverse_relocation``.
+# ``config.reverse_relocation``.
 def _relocate_path(path: str, *, source: str, destination: str) -> str:
     """Return ``path`` with a ``source`` prefix rewritten to ``destination``."""
     if not source:

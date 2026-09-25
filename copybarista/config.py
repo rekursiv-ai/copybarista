@@ -309,6 +309,93 @@ class WorkflowConfig:
     globstar: Globstar = "one_or_more"
 
 
+def reverse_move_transforms(
+    *,
+    public_path: str,
+    transforms: tuple[Transform, ...],
+) -> str:
+    """Map a post-move public path back to the pre-move staged path.
+
+    Args:
+      public_path: Path relative to the exported tree.
+      transforms: Workflow transforms; only ``move`` entries apply.
+
+    Returns:
+      staged_path: Path before any ``move`` transform ran.
+
+    """
+    path = PurePosixPath(public_path)
+    for transform in reversed(transforms):
+        if transform.type != "move":
+            continue
+        destination = PurePosixPath(transform.destination)
+        if path == destination:
+            path = PurePosixPath(transform.path)
+        elif path.is_relative_to(destination):
+            path = PurePosixPath(transform.path) / path.relative_to(destination)
+    return path.as_posix()
+
+
+# Applies each move in REVERSE order, inverting each: a public path under a move's
+# ``destination`` is rewritten back to its ``path``-space. Reports whether any move
+# matched, so the caller can distinguish a path the selection placed (return the
+# reversed source-relative path) from an identity path no move touched (leave it alone).
+# Exact inverse of ``workflow.MoveSequence.destination_path``: the config parser
+# enforces injectivity at load (``_validate_moves_injective``), so the reverse-order
+# first match is unambiguous for every admitted sequence.
+def reverse_file_moves(
+    public_path: str,
+    moves: tuple[FileMove, ...],
+) -> tuple[str, bool]:
+    """Invert the ordered ``files.moves`` placement for one public path.
+
+    Args:
+      public_path: Path relative to the exported tree.
+      moves: Ordered ``files.moves`` sequence.
+
+    Returns:
+      source_path: Source-root-relative path when ``moved``, else ``public_path``.
+      moved: Whether any move placed ``public_path``.
+
+    """
+    path = public_path
+    moved = False
+    for move in reversed(moves):
+        relocated = reverse_relocation(
+            path,
+            source=move.path,
+            destination=move.destination,
+        )
+        if relocated is not None:
+            path = relocated
+            moved = True
+    return path, moved
+
+
+# Inverse of ``workflow._relocate_path``: a path equal to ``destination`` or under
+# ``destination/`` is rewritten back under ``source``; a path matching neither returns
+# ``None`` to signal the move did not place it.
+def reverse_relocation(path: str, *, source: str, destination: str) -> str | None:
+    """Return ``path`` reversed from ``destination``-space to ``source``-space.
+
+    Args:
+      path: Path in ``destination``-space.
+      source: Move source prefix; ``""`` is the whole tree.
+      destination: Move destination prefix.
+
+    Returns:
+      source_path: Reversed path, or ``None`` when the move did not place ``path``.
+
+    """
+    if path == destination:
+        return source
+    prefix = f"{destination}/"
+    if path.startswith(prefix):
+        suffix = path.removeprefix(prefix)
+        return f"{source}/{suffix}" if source else suffix
+    return None
+
+
 def load_config(path: Path, *, workflow_name: str = "export") -> WorkflowConfig:
     """Load a Copybarista TOML or supported `copy.bara.sky` config.
 
@@ -718,7 +805,7 @@ def _parse_file_move(idx: int, raw_move: object) -> FileMove:
     return FileMove(path=path, destination=destination)
 
 
-# ``_reverse_file_moves`` inverts the sequence by reverse-order first match, so it is an
+# ``reverse_file_moves`` inverts the sequence by reverse-order first match, so it is an
 # exact inverse only when the forward map is injective. Two moves to one destination
 # merge distinct source subtrees whose disjoint filenames slip past the export-time
 # collision guard (which checks per-file staging paths, not merged trees), then reverse-

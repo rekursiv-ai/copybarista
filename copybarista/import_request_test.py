@@ -13,7 +13,13 @@ import tempfile
 import pytest
 
 from copybarista.cli import main
-from copybarista.config import FileMove, Transform, load_config
+from copybarista.config import (
+    FileMove,
+    Transform,
+    load_config,
+    reverse_file_moves,
+    reverse_relocation,
+)
 from copybarista.errors import ImportRequestError
 from copybarista.import_request import (
     ChangeRequestImporter,
@@ -23,8 +29,6 @@ from copybarista.import_request import (
     _anchor_source_only_regions,
     _recomment_block,
     _removed_regions,
-    _reverse_file_moves,
-    _reverse_relocation,
     _ruff_format_matches,
     _splice_public_edits,
     _splice_source_only_regions,
@@ -307,10 +311,10 @@ def test_import_root_copy_yields_to_back_move(tmp_path: Path):
 
 
 def test_reverse_moves_is_pointwise_inverse_of_move_sequence():
-    """`_reverse_file_moves` is the exact left inverse of `MoveSequence` per path.
+    """`reverse_file_moves` is the exact left inverse of `MoveSequence` per path.
 
     Every source-relative path the ordered moves place must round-trip: forward
-    through `MoveSequence`, back through `_reverse_file_moves`, recovering the input
+    through `MoveSequence`, back through `reverse_file_moves`, recovering the input
     and reporting that a move matched. Ordering matters -- the back-move for
     ``pkg/README.md`` runs after the whole-tree move forward, so its inverse must
     run first, or a package README would reverse to the wrong prefix-space path.
@@ -328,16 +332,16 @@ def test_reverse_moves_is_pointwise_inverse_of_move_sequence():
         "docs/nested/deep.md",
     ):
         public = sequence.destination_path(source_relative)
-        recovered, moved = _reverse_file_moves(public, moves)
+        recovered, moved = reverse_file_moves(public, moves)
         assert moved
         assert recovered == source_relative
 
 
-def test_relocate_path_and_reverse_relocation_are_inverses():
+def test_relocate_path_andreverse_relocation_are_inverses():
     """The shared forward/reverse relocation helpers round-trip every case.
 
     `_relocate_path` is the single forward rule for both `files.moves` and `move`
-    transforms; `_reverse_relocation` inverts it. Exact match, subtree, whole-tree
+    transforms; `reverse_relocation` inverts it. Exact match, subtree, whole-tree
     prefix, and a non-matching path must all round-trip (the last reporting no
     match), guarding the two collapsed appliers against divergence.
     """
@@ -348,11 +352,11 @@ def test_relocate_path_and_reverse_relocation_are_inverses():
     )
     for path, source, destination in cases:
         forward = _relocate_path(path, source=source, destination=destination)
-        recovered = _reverse_relocation(forward, source=source, destination=destination)
+        recovered = reverse_relocation(forward, source=source, destination=destination)
         assert recovered == path
     # A path the move does not touch: forward leaves it, reverse reports no match.
     assert _relocate_path("other/x", source="pkg", destination="dst") == "other/x"
-    assert _reverse_relocation("other/x", source="pkg", destination="dst") is None
+    assert reverse_relocation("other/x", source="pkg", destination="dst") is None
 
 
 def test_reverse_moves_leaves_unmoved_path_untouched():
@@ -366,11 +370,11 @@ def test_reverse_moves_leaves_unmoved_path_untouched():
     # The whole-tree move places every path, so use a config where only a subtree
     # is captured: a bare back-move with no whole-tree move leaves siblings alone.
     partial = (FileMove(path="docs", destination="public_docs"),)
-    recovered, moved = _reverse_file_moves("typings/brotli/__init__.pyi", partial)
+    recovered, moved = reverse_file_moves("typings/brotli/__init__.pyi", partial)
     assert recovered == "typings/brotli/__init__.pyi"
     assert not moved
     # The whole-tree move, by contrast, captures everything.
-    _, moved_all = _reverse_file_moves("demo/x.py", moves)
+    _, moved_all = reverse_file_moves("demo/x.py", moves)
     assert moved_all
 
 

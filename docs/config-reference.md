@@ -195,6 +195,12 @@ message = "source-only path was exported"
 
 `paths` uses the same supported glob syntax as `[files]`.
 
+Every `files.exclude` pattern is also forbidden, so an excluded file is never
+listed twice. The check maps each exported path back through `move` transforms
+and `files.moves`, and reports `excluded-path` when the source-root path is
+excluded. Paths that no move placed are `[[files.copy]]` destinations, outside
+the exclude's source-root space; guard those with `forbidden_path`.
+
 `[[leak_check.forbidden_text]]`:
 
 Reject matching text in selected files:
