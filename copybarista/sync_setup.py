@@ -727,10 +727,6 @@ def import_workflow(settings: SyncSettings) -> str:
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
             "EXPORT_PREFIX_EXPR": _github_expr_str(settings.export_prefix),
-            "SYNC_USER_EMAIL_EXPR": _github_expr_str(settings.sync_user_email),
-            "EXPORT_BRANCH_MESSAGE_EXPR": _github_expr_str(
-                f"{settings.sync_label} export branch:",
-            ),
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
             "VALIDATION_COMMANDS": validation_commands,
@@ -847,9 +843,6 @@ def _validate_import_workflow_yaml(
     for text in (
         "github.event.pull_request.head.repo.full_name == github.repository",
         f"!startsWith(github.event.pull_request.head.ref, {_github_expr_str(settings.export_prefix)})",
-        f"github.event.head_commit.author.email != {_github_expr_str(settings.sync_user_email)}",
-        f"!contains(github.event.head_commit.message, {_github_expr_str(settings.export_prefix)})",
-        f"!contains(github.event.head_commit.message, {_github_expr_str(f'{settings.sync_label} export branch:')})",
     ):
         if text not in job_if:
             raise ConfigError(

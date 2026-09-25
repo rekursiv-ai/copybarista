@@ -666,9 +666,6 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
         in workflow
     )
     assert 'git check-ref-format --allow-onelevel "$ref"' in workflow
-    assert (
-        "github.event.head_commit.author.email != 'copybarista@example.com'" in workflow
-    )
     assert "id: settings" in workflow
     assert "Import back to loop is not configured; skipping." in workflow
     assert 'if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then' in workflow
@@ -678,6 +675,56 @@ def test_import_workflow_uses_metadata_and_splits_trusted_pr_step():
     assert '--branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX"' in workflow
     assert '--sync-label "$COPYBARISTA_SYNC_LABEL"' in workflow
     assert "GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}" in workflow
+
+
+def test_import_workflow_uses_checked_out_public_head_sha():
+    steps = _import_steps(import_workflow(_settings()))
+    for step_name in (
+        "Import public tree into target repository",
+        "Open or update target import PR",
+    ):
+        run = str(
+            steps[
+                _step_index(
+                    steps,
+                    lambda step, expected=step_name: step.get("name") == expected,
+                )
+            ]["run"],
+        )
+        assert 'public_sha="$(git -C public-head rev-parse HEAD)"' in run
+        assert '--public-sha "$public_sha"' in run
+        assert '--public-sha "$GITHUB_SHA"' not in run
+
+
+def test_import_workflow_does_not_trust_push_commit_metadata():
+    workflow = import_workflow(_settings())
+
+    assert "github.event.head_commit.author" not in workflow
+    assert "github.event.head_commit.message" not in workflow
+
+
+def test_import_workflow_records_push_before_reporting_validation_failure():
+    steps = _import_steps(import_workflow(_settings()))
+    import_index = _step_index(
+        steps,
+        lambda step: step.get("name") == "Import public tree into target repository",
+    )
+    pr_index = _step_index(
+        steps,
+        lambda step: step.get("name") == "Open or update target import PR",
+    )
+    report_index = _step_index(
+        steps,
+        lambda step: step.get("name") == "Report import validation failure",
+    )
+
+    assert (
+        "--record-on-validation-failure \"${{ github.event_name == 'push' }}\""
+        in str(steps[import_index]["run"])
+    )
+    assert import_index < pr_index < report_index
+    assert "always()" in str(steps[report_index]["if"])
+    assert "exit 1" in str(steps[report_index]["run"])
 
 
 def test_import_workflow_resolves_push_baseline_from_the_ledger():
@@ -747,11 +794,10 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
     ]
 
 
-def test_import_workflow_escapes_github_expression_strings():
+def test_import_workflow_quotes_sync_label():
     workflow = import_workflow(_settings(sync_label="Configgle's Core"))
 
-    assert "Configgle''s Core export branch:" in workflow
-    assert "Configgle's Core export branch:" not in workflow
+    assert 'COPYBARISTA_SYNC_LABEL: "Configgle\'s Core"' in workflow
 
 
 def test_export_workflow_watches_source_and_sync_helpers():
