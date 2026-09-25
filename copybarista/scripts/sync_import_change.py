@@ -119,6 +119,9 @@ def run(argv: list[str] | None = None) -> int:
         runner_temp=Path(flags.runner_temp).resolve(),
         validation_commands=tuple(flags.validation_command),
         refresh_public_lockfile=flags.refresh_public_lockfile,
+        record_on_validation_failure=_string_bool(
+            flags.record_on_validation_failure,
+        ),
     )
     run_import_sync(request)
     return 0
@@ -149,6 +152,12 @@ class ImportRequest:
     runner_temp: Path
     validation_commands: tuple[str, ...]
     refresh_public_lockfile: bool
+    record_on_validation_failure: bool = False
+
+    @property
+    def validation_failure_marker(self) -> Path:
+        """Return the marker that preserves a red validation status."""
+        return Path(f"{self.report}.validation-failed")
 
 
 def run_import_sync(request: ImportRequest) -> None:
@@ -167,13 +176,19 @@ def run_import_sync(request: ImportRequest) -> None:
         target_dir=request.target_dir,
         runner_temp=request.runner_temp,
     )
-    # A failure anywhere below lands no ledger marker, and the export guard
-    # reads that ledger -- so this failing does not merely lose one import, it
-    # stops the project exporting until a marker lands. Say so where the
-    # failure is read, since a bare traceback hides the consequence.
+    # An import failure lands no ledger marker, and the export guard reads that
+    # ledger. Validation differs only for a public-main push: that commit is
+    # already authoritative, so its import must land before the red status is
+    # reported back to GitHub.
     try:
         _log("Importing public changes into target source.")
         _run_import_change(request=request, project=project, requirements=requirements)
+    except BaseException:
+        _log_missing_import(request)
+        raise
+    if request.record_on_validation_failure:
+        request.validation_failure_marker.unlink(missing_ok=True)
+    try:
         _log("Validating target checkout.")
         _validate_target(
             request=request,
@@ -183,14 +198,18 @@ def run_import_sync(request: ImportRequest) -> None:
             requirements=requirements,
         )
     except BaseException:
-        _log(
-            f"::error::The {request.sync_label} import of public commit "
-            f"{request.public_sha[:12]} failed, so no import is recorded for "
-            "it. Until one lands, the export guard blocks every "
-            f"{request.sync_label} export and the public repository stops "
-            "receiving updates.",
+        if not request.record_on_validation_failure:
+            _log_missing_import(request)
+            raise
+        request.validation_failure_marker.write_text(
+            "validation failed\n",
+            encoding="utf-8",
         )
-        raise
+        _log(
+            f"::error::Validation failed for public commit "
+            f"{request.public_sha[:12]}; its authoritative public-main import "
+            "will still be recorded before this workflow reports failure.",
+        )
     if request.open_pr:
         _log("Opening or updating target import PR.")
         _open_or_update_target_pr(request=request)
@@ -334,9 +353,10 @@ def last_synced_public_sha(
 
     So when ``public_dir`` is given (the import workflow's full-depth public
     checkout), walk public history newest-first and return the newest commit
-    that is either the ledger SHA or a landed export commit
-    (:func:`export_commit_marker`). Without ``public_dir`` the resolution is
-    ledger-only, preserving the open-PR path that has no public checkout.
+    that is either the ledger SHA or a landed export commit whose tree exists
+    on the named export branch. The branch-tree check prevents arbitrary commit
+    text from claiming export provenance. Without ``public_dir`` the resolution
+    is ledger-only, preserving the open-PR path that has no public checkout.
 
     Args:
       target_dir: Root of the target repository checkout.
@@ -691,10 +711,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Ignore generated public uv.lock while importing source-owned changes.",
     )
     parser.add_argument(
+        "--record-on-validation-failure",
+        default=("true" if os.environ.get("GITHUB_EVENT_NAME") == "push" else "false"),
+        help=(
+            "Record an already-public main-branch commit even when validation "
+            "fails. Defaults on for push events so reruns of older workflows "
+            "retain authoritative-public-main semantics."
+        ),
+    )
+    parser.add_argument(
         "--print-synced-base",
         action="store_true",
         help=(
-            "Print the public SHA the target last imported (from its history) "
+            "Print the newest public SHA the target has imported or exported "
             "and exit. Used to resolve the merge baseline before the import."
         ),
     )
@@ -784,15 +813,15 @@ def _public_tree_for_import(
     """Return a public tree suitable for source-owned import verification."""
     if not refresh_public_lockfile:
         return source
-    # Public lockfiles generated after export are reproducibility artifacts, not
-    # source-owned files. Dropping them preserves strict verification for the
-    # Copybarista-managed tree without making every reverse import fail.
+    # The root lock is generated after export. Nested locks belong to shipped
+    # examples or workspaces and remain source-owned import inputs.
     shutil.copytree(
         source,
         destination,
         symlinks=True,
-        ignore=shutil.ignore_patterns(".git", "uv.lock"),
+        ignore=shutil.ignore_patterns(".git"),
     )
+    (destination / "uv.lock").unlink(missing_ok=True)
     return destination
 
 
@@ -1009,9 +1038,9 @@ def _pr_title_sha(public_sha: str) -> str:
 # approval gate. Waiting for a click is also what stalls the other direction, since the
 # export refuses to run while an import is outstanding.
 #
-# A conflicting or failing import never reaches here -- it raises before the PR is
-# opened -- so this path only ever merges an import that applied cleanly and passed the
-# exported package's own validation.
+# A conflicting import never reaches here -- it raises before the PR is opened. A
+# validation failure reaches this only for a commit already merged to public main; that
+# commit is authoritative and still needs its ledger entry.
 #
 # ``--admin`` merges without waiting on source CI. Source-only breakage (a loop caller
 # of a moved API, a house-lint rule the public repo does not run) otherwise leaves the
@@ -1113,6 +1142,7 @@ class _Flags(Protocol):
     runner_temp: str
     validation_command: list[str]
     refresh_public_lockfile: bool
+    record_on_validation_failure: str
     print_synced_base: bool
     fallback_sha: str
     public_dir: str
@@ -1149,13 +1179,10 @@ def _ledger_public_sha(*, target_dir: Path, sync_label: str, base_branch: str) -
     return ""
 
 
-# Walks public ``base_branch`` newest-first and returns the SHA of the first commit that
-# is EITHER the target's ledger SHA (a landed import) OR a landed export commit (its
-# message carries :func:`export_commit_marker`). First match wins, so the newest
-# recognized sync is chosen with no arithmetic.
-#
-# Empty string when public history contains neither -- the caller then falls back to the
-# ledger SHA or the bootstrap fallback.
+# Walks public ``base_branch`` newest-first and returns the first commit proven to be
+# reflected by source: the target ledger SHA, or an export whose tree is reachable from
+# its named export branch. Commit text selects a candidate; the branch tree authenticates
+# its provenance.
 def _newest_synced_public_sha(
     *,
     public_dir: Path,
@@ -1164,23 +1191,77 @@ def _newest_synced_public_sha(
     ledger_sha: str,
 ) -> str:
     """Return the newest public commit the source already reflects, or ``""``."""
-    marker = export_commit_marker(sync_label)
-    # %H then the raw body, NUL-delimited per commit so a body newline cannot be
-    # mistaken for a record boundary. -z separates records with NUL as well.
     records = _run(
-        ["git", "log", base_branch, "-z", "--format=%H%x00%B"],
+        ["git", "log", base_branch, "-z", "--format=%H%x00%T%x00%B"],
         cwd=public_dir,
         capture=True,
     ).stdout.split("\0")
-    # Each commit contributes two NUL-separated fields (%H, %B); pair them up.
-    for index in range(0, len(records) - 1, 2):
+    for index in range(0, len(records) - 2, 3):
         commit_sha = records[index].strip()
-        message = records[index + 1]
-        if not commit_sha:
-            continue
-        if commit_sha == ledger_sha or marker in message:
+        tree_sha = records[index + 1].strip()
+        message = records[index + 2]
+        if commit_sha == ledger_sha:
+            return commit_sha
+        branch = _export_branch_from_message(message=message, sync_label=sync_label)
+        if branch and _branch_contains_tree(
+            public_dir=public_dir,
+            branch=branch,
+            tree_sha=tree_sha,
+        ):
             return commit_sha
     return ""
+
+
+def _export_branch_from_message(*, message: str, sync_label: str) -> str:
+    """Return the well-formed export branch claimed by a commit message."""
+    marker = re.escape(export_commit_marker(sync_label))
+    match = re.search(rf"(?m)^{marker}([^\r\n]+)$", message)
+    if match is None:
+        return ""
+    branch = match[1].strip()
+    assert isinstance(branch, str)
+    if "/export/" not in branch or not _valid_git_branch_name(branch):
+        return ""
+    return branch
+
+
+def _branch_contains_tree(*, public_dir: Path, branch: str, tree_sha: str) -> bool:
+    """Return whether an export branch's history contains a public tree."""
+    remote_ref = f"refs/remotes/origin/{branch}"
+    # actions/checkout fetches only its requested ref, even with full history.
+    _run(
+        [
+            "git",
+            "fetch",
+            "--no-tags",
+            "origin",
+            f"+refs/heads/{branch}:{remote_ref}",
+        ],
+        cwd=public_dir,
+        check=False,
+        capture=True,
+    )
+    for ref in (remote_ref, f"refs/heads/{branch}"):
+        result = _run(
+            ["git", "log", ref, "--format=%T"],
+            cwd=public_dir,
+            check=False,
+            capture=True,
+        )
+        if result.returncode == 0 and tree_sha in result.stdout.splitlines():
+            return True
+    return False
+
+
+def _log_missing_import(request: ImportRequest) -> None:
+    """Annotate a failure that leaves the import ledger missing."""
+    _log(
+        f"::error::The {request.sync_label} import of public commit "
+        f"{request.public_sha[:12]} failed, so no import is recorded for it. "
+        "Until one lands, the export guard blocks every "
+        f"{request.sync_label} export and the public repository stops receiving "
+        "updates.",
+    )
 
 
 if __name__ == "__main__":

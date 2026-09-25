@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import shutil
 import subprocess
 
 import pytest
@@ -74,10 +75,10 @@ def _public_repo_with_messages(*, root: Path, messages: list[str]) -> list[str]:
     return shas
 
 
-def test_last_synced_public_sha_prefers_a_later_export_over_a_stale_ledger(
+def test_last_synced_public_sha_ignores_forged_export_commit_message(
     tmp_path: Path,
 ) -> None:
-    """The baseline must include exports, not just the import ledger.
+    """Unauthenticated commit text must not advance the import baseline.
 
     The live incident: months of source->public EXPORTS advanced public main
     while no import landed, so the target's import ledger stayed pinned months
@@ -129,10 +130,75 @@ def test_last_synced_public_sha_prefers_a_later_export_over_a_stale_ledger(
         public_dir=public,
     )
 
-    assert result == export_public_sha, (
-        f"expected the later export {export_public_sha[:12]}, not the stale "
-        f"ledger {ledger_public_sha[:12]}"
+    assert result == ledger_public_sha, (
+        f"forged export text advanced the baseline to {export_public_sha[:12]}"
     )
+
+
+def test_last_synced_public_sha_fetches_export_provenance_from_single_ref_clone(
+    tmp_path: Path,
+) -> None:
+    """A main-only Actions checkout must fetch the export branch before trusting it."""
+    public_source = tmp_path / "public-source"
+    public_shas = _public_repo_with_messages(
+        root=public_source,
+        messages=[
+            "Import Sagent public changes (ledger head)",
+            "Publish export\n\nSagent export branch: sagent/export/main",
+        ],
+    )
+    _git(public_source, "branch", "sagent/export/main", public_shas[1])
+    origin = tmp_path / "public.git"
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run(  # noqa: S603 -- Fixed git clone command over test paths.
+        [git, "clone", "--bare", str(public_source), str(origin)],
+        check=True,
+        capture_output=True,
+    )
+    public = tmp_path / "public"
+    subprocess.run(  # noqa: S603 -- Models Actions' single-ref checkout exactly.
+        [
+            git,
+            "clone",
+            "--single-branch",
+            "--branch",
+            "main",
+            str(origin),
+            str(public),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert (
+        subprocess.run(  # noqa: S603 -- Fixed ref query over the test checkout.
+            [
+                git,
+                "-C",
+                str(public),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/sagent/export/main",
+            ],
+            check=False,
+        ).returncode
+        != 0
+    )
+    target = tmp_path / "target"
+    _git_repo_with_commits(
+        root=target,
+        subjects=[f"Import Sagent public changes {public_shas[0]}"],
+    )
+
+    result = last_synced_public_sha(
+        target_dir=target,
+        sync_label="Sagent",
+        base_branch="main",
+        public_dir=public,
+    )
+
+    assert result == public_shas[1]
 
 
 def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
@@ -155,6 +221,7 @@ def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
         ],
     )
     import_public_sha = public_shas[2]
+    _git(public, "branch", "copybarista/export/main", public_shas[0])
     _git_repo_with_commits(
         root=target,
         subjects=[f"Import Sagent public changes {import_public_sha}"],
@@ -181,7 +248,6 @@ def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
     """
     target = tmp_path / "target"
     public = tmp_path / "public"
-    ledger_sha = "c" * 40
     public_shas = _public_repo_with_messages(
         root=public,
         messages=[
@@ -199,7 +265,6 @@ def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
     (target / "f.txt").write_text("x\n", encoding="utf-8")
     _git(target, "add", "f.txt")
     _git(target, "commit", "-q", "-m", f"Import Sagent public changes {public_shas[0]}")
-    del ledger_sha
 
     result = last_synced_public_sha(
         target_dir=target,
@@ -369,6 +434,31 @@ def test_main_resolves_filesystem_inputs_to_absolute(
         assert value.is_absolute(), value
 
 
+def test_old_push_workflow_defaults_to_recording_red_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[ImportRequest] = []
+
+    def fake_run_import_sync(request: ImportRequest) -> None:
+        captured.append(request)
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
+
+    sync_import_change.run(
+        [
+            "--project-path",
+            "packages/configgle",
+            "--public-base-ref",
+            "base",
+            "--public-head-ref",
+            "head",
+        ],
+    )
+
+    assert captured[0].record_on_validation_failure
+
+
 def test_main_accepts_refresh_public_lockfile_arg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -410,6 +500,12 @@ def test_import_change_ignores_generated_public_lockfile(
     (public_base / "uv.lock").write_text("base lock\n", encoding="utf-8")
     (public_head / "module.py").write_text("head\n", encoding="utf-8")
     (public_head / "uv.lock").write_text("head lock\n", encoding="utf-8")
+    for public in (public_base, public_head):
+        (public / "examples/widget").mkdir(parents=True)
+        (public / "examples/widget/uv.lock").write_text(
+            "nested lock\n",
+            encoding="utf-8",
+        )
     (project / "copy.barista.toml").write_text("[workflow]\n", encoding="utf-8")
     calls: list[list[str]] = []
 
@@ -426,6 +522,12 @@ def test_import_change_ignores_generated_public_lockfile(
         assert (sanitized_head / "module.py").read_text(encoding="utf-8") == "head\n"
         assert not (sanitized_base / "uv.lock").exists()
         assert not (sanitized_head / "uv.lock").exists()
+        assert (
+            sanitized_base / "examples/widget/uv.lock"
+        ).read_text() == "nested lock\n"
+        assert (
+            sanitized_head / "examples/widget/uv.lock"
+        ).read_text() == "nested lock\n"
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
@@ -558,6 +660,78 @@ def test_run_import_sync_imports_then_validates(
         reqs,
         "uv run pytest",
     ]
+
+
+def test_push_import_records_ledger_despite_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A public-main push is authoritative even when validation is red."""
+    git_calls: list[list[str]] = []
+    github_calls: list[list[str]] = []
+
+    def fake_export_requirements(*, target_dir: Path, runner_temp: Path) -> Path:
+        del target_dir
+        return runner_temp / "copybarista-requirements.txt"
+
+    def fake_import(**_: object) -> None:
+        return None
+
+    def validation_failure(**_: object) -> None:
+        raise SystemExit(1)
+
+    def fake_run(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        git_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n")
+
+    def fake_run_gh(
+        argv: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        github_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def fake_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+        del branch, repo, cwd
+        return False
+
+    def fake_has_changes(*, path: Path, rel: Path) -> bool:
+        del path, rel
+        return True
+
+    monkeypatch.setattr(
+        sync_import_change,
+        "_export_copybarista_requirements",
+        fake_export_requirements,
+    )
+    monkeypatch.setattr(sync_import_change, "_run_import_change", fake_import)
+    monkeypatch.setattr(sync_import_change, "_validate_target", validation_failure)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", fake_pr_exists)
+    monkeypatch.setattr(sync_import_change, "_git_has_changes", fake_has_changes)
+    request = replace(
+        _import_request(target_dir=tmp_path),
+        open_pr=True,
+        record_on_validation_failure=True,
+    )
+
+    sync_import_change.run_import_sync(request)
+
+    commits = [call for call in git_calls if call[:2] == ["git", "commit"]]
+    assert commits, "validation must not leave the import ledger missing"
+    assert any(call[:3] == ["gh", "pr", "create"] for call in github_calls)
+    merges = [call for call in github_calls if call[:3] == ["gh", "pr", "merge"]]
+    assert len(merges) == 1
+    assert "--admin" in merges[0], "red checks must not leave the import pending"
+    assert request.validation_failure_marker.exists()
+    err = capsys.readouterr().err
+    assert "::error::" in err
+    assert "will still be recorded" in err
 
 
 def test_failed_import_annotates_the_stalled_export(
@@ -1254,6 +1428,7 @@ def test_main_print_synced_base_prefers_export_from_public_dir(
             "Publish export\n\nSagent export branch: copybarista/export/main",
         ],
     )
+    _git(public, "branch", "copybarista/export/main", public_shas[1])
     _git_repo_with_commits(
         root=target,
         subjects=[f"Import Sagent public changes {public_shas[0]}"],
