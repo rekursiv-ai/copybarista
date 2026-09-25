@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import os
 import re
 
+from copybarista.config import reverse_file_moves, reverse_move_transforms
 from copybarista.errors import LeakCheckError
 from copybarista.globs import GlobSet, Globstar
 
@@ -22,9 +23,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from copybarista.config import (
+        FileSelection,
         ForbiddenPathRule,
         ForbiddenTextRule,
         LeakCheck,
+        Transform,
+        WorkflowConfig,
     )
 
 
@@ -57,13 +61,21 @@ def check_leaks(
     *,
     root: Path,
     policy: LeakCheck,
+    files: FileSelection,
+    transforms: tuple[Transform, ...] = (),
     globstar: Globstar = "one_or_more",
 ) -> tuple[LeakViolation, ...]:
     """Return leak-check violations for a transformed tree.
 
+    Every ``files.exclude`` pattern is also a forbidden path: an exported file
+    whose source-root path (``move`` transforms and ``files.moves`` undone) is
+    excluded was put back by a ``[[files.copy]]`` or ``[[files.write]]``.
+
     Args:
       root: Exported tree root to scan.
       policy: Leak-check rules from workflow config.
+      files: Workflow file selection whose excludes are forbidden.
+      transforms: Workflow transforms; ``move`` entries are undone first.
       globstar: Workflow ``**`` semantics for rule path globs.
 
     Returns:
@@ -73,12 +85,18 @@ def check_leaks(
       LeakCheckError: If `root` is not a directory and policy has rules.
 
     """
-    if not policy.forbidden_path and not policy.forbidden_text:
+    if not policy.forbidden_path and not policy.forbidden_text and not files.exclude:
         return ()
     if not root.is_dir():
         raise LeakCheckError(f"Leak check root does not exist: {root}")
     listing = _list_tree(root)
     return (
+        *_excluded_path_violations(
+            files=files,
+            transforms=transforms,
+            rel_paths=listing.regular_files,
+            globstar=globstar,
+        ),
         *_forbidden_path_violations(
             rules=policy.forbidden_path,
             rel_paths=listing.paths,
@@ -96,18 +114,22 @@ def check_leaks(
 def enforce_leak_check(
     *,
     root: Path,
-    policy: LeakCheck,
-    globstar: Globstar = "one_or_more",
+    config: WorkflowConfig,
 ) -> None:
-    """Raise when a transformed tree violates leak-check policy.
+    """Raise when a transformed tree violates the workflow's leak-check policy.
 
     Args:
-      root: Root.
-      policy: Policy.
-      globstar: Globstar.
+      root: Transformed export tree.
+      config: Workflow whose leak policy, excludes, and moves apply.
 
     """
-    violations = check_leaks(root=root, policy=policy, globstar=globstar)
+    violations = check_leaks(
+        root=root,
+        policy=config.leak_check,
+        files=config.files,
+        transforms=config.transforms,
+        globstar=config.globstar,
+    )
     if violations:
         lines = "\n".join(violation.format() for violation in violations)
         raise LeakCheckError(f"Leak check failed:\n{lines}")
@@ -147,6 +169,36 @@ def _list_tree(root: Path) -> _TreeListing:
 
 def _entry_segments(entry: tuple[str, bool]) -> list[str]:
     return entry[0].split("/")
+
+
+# Excludes are source-root-relative, so only a path a ``files.moves`` entry placed is in
+# their space. An unmoved path is a ``[[files.copy]]`` destination (``.export/uv.lock``
+# at the root, ``typings/<pkg>``), and judging it would forbid the copy itself. With no
+# moves the export root IS the source root, so every path is judged.
+def _excluded_path_violations(
+    *,
+    files: FileSelection,
+    transforms: tuple[Transform, ...],
+    rel_paths: tuple[str, ...],
+    globstar: Globstar,
+) -> tuple[LeakViolation, ...]:
+    """Return exported files whose source-root path ``files.exclude`` matches."""
+    if not files.exclude:
+        return ()
+    excluded = GlobSet(include=files.exclude, globstar=globstar)
+    violations: list[LeakViolation] = []
+    for rel in rel_paths:
+        staged = reverse_move_transforms(public_path=rel, transforms=transforms)
+        source, moved = reverse_file_moves(staged, files.moves)
+        if (moved or not files.moves) and excluded.matches(source):
+            violations.append(
+                LeakViolation(
+                    rule_id="excluded-path",
+                    path=rel,
+                    message="files.exclude path was exported",
+                ),
+            )
+    return tuple(violations)
 
 
 def _forbidden_path_violations(

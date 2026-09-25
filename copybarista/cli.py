@@ -264,14 +264,7 @@ def _run_publish_git(flags: _Flags) -> None:
 def _run_check_leaks(flags: _Flags) -> None:
     """Run leak policy checks against an existing tree."""
     config = load_config(Path(flags.config), workflow_name=flags.workflow)
-    # Thread ``config.globstar`` so the standalone gate applies the same ``**``
-    # semantics as the export path (workflow.stage); omitting it defaults to
-    # ``one_or_more`` and can pass a tree a ``zero_or_more`` export would fail.
-    enforce_leak_check(
-        root=Path(flags.root),
-        policy=config.leak_check,
-        globstar=config.globstar,
-    )
+    enforce_leak_check(root=Path(flags.root), config=config)
 
 
 def _run_import_change(flags: _Flags) -> None:
