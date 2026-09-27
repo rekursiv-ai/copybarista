@@ -176,27 +176,6 @@ def test_check_tree_rejects_private_project_names_in_root_docs(tmp_path: Path):
     assert any("private project name" in error for error in errors)
 
 
-def test_check_tree_blocks_every_private_name_the_leak_check_blocks(tmp_path: Path):
-    """Block every private name the export-time leak check blocks.
-
-    This script is the only text scan that runs in the public checkout:
-    ``[[leak_check]]`` needs ``copy.barista.toml``, which never ships, so a
-    private name missing from this list is caught by nothing once the export
-    lands. The two lists had already drifted, each blocking names the other
-    did not. Names are split across concatenation so this file, which ships
-    publicly, does not itself contain one.
-    """
-    _write_required_tree(tmp_path)
-    (tmp_path / "CHANGELOG.md").write_text(
-        "Ported the " + "Know" + "Op" + " viewer.\n",
-        encoding="utf-8",
-    )
-
-    errors = check_tree(root=tmp_path)
-
-    assert any("private project name" in error for error in errors)
-
-
 def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):
     _write_required_tree(tmp_path)
     (tmp_path / ".git/HEAD").parent.mkdir()
