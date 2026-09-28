@@ -1,3 +1,6 @@
+# NEVER EDIT THIS FILE!
+# uv sync --all-groups --all-extras --frozen
+
 [project]
 name = "copybarista"
 version = "0.1.4"
@@ -24,8 +27,6 @@ dependencies = [
 [dependency-groups]
 # NEVER ADD MORE DEPENDENCIES!
 
-# uv sync --all-groups --all-extras --frozen
-
 lint = [
     "codespell>=2.2.4",
     "ruff",
@@ -34,6 +35,7 @@ test = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
     "pytest>=7.0",
+    "hypothesis>=6.155.1",
     "pytest-cov>=7",
 ]
 typecheck = [
@@ -473,7 +475,14 @@ section-order = [
 typeCheckingMode = "recommended"
 failOnWarnings = true  # Warnings fail the check (basedpyright default; pinned explicitly).
 useLibraryCodeForTypes = false
+# `stubPath` (not `extraPaths`) is the one root that resolves ahead of an
+# installed package's inline types.
 stubPath = "typings"
+# `rekursiv-ai-typeshed` (a `typecheck` dependency): the checkers' bundled stdlib
+# with `int`/`float` `__pow__` returning `float` rather than typeshed's `Any`,
+# which would otherwise make every `x ** 0.5` a `reportAny` violation.
+# `uv sync` installs it as shared data at this path; the `basedpyright/` tree
+# also carries configgle's `Intersection` polyfill.
 typeshedPath = ".venv/share/rekursiv-ai-typeshed/basedpyright"
 # `exclude` and `ignore` are the SAME list on purpose. `exclude` stops a path
 # from being a checked source; `ignore` also silences diagnostics when an
@@ -506,7 +515,7 @@ ignore = [
     # NEVER ADD MORE IGNORES! SUPPRESS IN FILE!
 ]
 pythonPlatform = "Linux"
-pythonVersion = "3.12"
+pythonVersion = "3.12"  # Intentional; test at 3.12 for exports.
 
 reportCallInDefaultInitializer = false     # Immutable constructors (e.g. NamedTuple) in defaults are safe.
 reportImplicitStringConcatenation = false  # Conflicts with ruff ISC003.
@@ -519,12 +528,13 @@ reportInvalidCast = false                  # All cast() calls are intentional.
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.12"  # Intentional; test at 3.12 for exports.
+# Same patch as `[tool.basedpyright] typeshedPath`, with ty's real `ty_extensions`.
 typeshed = ".venv/share/rekursiv-ai-typeshed/ty"
 extra-paths = ["typings"]
 
 # Mirrors `[tool.basedpyright] exclude`, minus entries ty never walks anyway
-# (`.ipynb`, `node_modules/`).
+# (`.ipynb`, `node_modules/`). `typings/` is resolved via `extra-paths` and is
 # not source; ty follows imports into an excluded directory, so nothing is lost.
 [tool.ty.src]
 exclude = [
