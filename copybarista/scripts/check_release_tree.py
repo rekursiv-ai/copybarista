@@ -188,14 +188,14 @@ def _content_errors(root: Path) -> tuple[str, ...]:
         (r"\b[Kk]now" + r"[Oo]p", "private project name"),
     )
     blocked_text_by_path = {
-        ".gitignore": ("private/fixtures",),
+        ".gitignore": ("private/testdata",),
         # The exported pre-commit config is the repo-root one with monorepo-only
         # regions stripped by marker. A surviving marker means the strip did not
         # run, so it -- not any particular exclude line -- is what to block.
         ".pre-commit-config.yaml": ("copybarista:internal",),
         "pyproject.toml": (
             '"private/**"',
-            '"private/fixtures/**/*.py"',
+            '"private/testdata/**/*.py"',
         ),
     }
     errors: list[str] = []

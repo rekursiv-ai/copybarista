@@ -115,7 +115,7 @@ def test_check_tree_rejects_unstripped_internal_marker(tmp_path: Path):
 def test_check_tree_rejects_source_only_config_text(tmp_path: Path):
     _write_required_tree(tmp_path)
     (tmp_path / ".gitignore").write_text(
-        "!private/fixtures/**/.venv/\n",
+        "!private/testdata/**/.venv/\n",
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(
