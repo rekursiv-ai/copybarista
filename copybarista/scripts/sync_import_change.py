@@ -280,7 +280,7 @@ def import_commit_subject(sync_label: str, public_sha: str) -> str:
     Validating at the WRITE side is what makes that unrepresentable. The read
     side already anchors on ``[0-9a-f]{40}``; composing a subject and pushing
     it without checking left an abbreviated or reworded one to fail silently
-    hours later, in a different repository, as a skipped export.
+    hours later, in a different repository, as a blocked export.
 
     Args:
       sync_label: Import label, e.g. ``Wesearch``.

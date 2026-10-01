@@ -2781,36 +2781,40 @@ def test_pending_import_branches_ignores_other_projects(
     )
 
 
-def test_run_export_sync_skips_while_an_import_is_pending(
+def test_run_export_sync_fails_while_an_import_is_pending(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A pending import means the source is stale; exporting would revert it.
+    """An open import PR must FAIL the run, not skip it and pass.
 
-    The export force-writes the public checkout, so running it while the
-    source has not yet absorbed a public change silently reverts that change.
-    Skipping leaves the public repo stale instead, which is recoverable.
+    Blocking is correct: the export force-writes the public checkout, so
+    running it before the source absorbs a public change reverts that change.
+    But the block does not clear on its own -- an import PR can stall
+    unmerged. Exiting green let madcatter sit un-exported for ~40h behind
+    an empty import PR while every export run reported success.
     """
     request = replace(
         _export_request(tmp_path),
-        import_branch_prefix="trackinizer/import/",
+        import_branch_prefix="madcatter/import/",
         source_repo="rekursiv-ai/loop",
+        sync_label="Madcatter",
     )
-    ran: list[str] = []
 
-    def fake_pending(**_: object) -> tuple[str, ...]:
-        return ("#68 trackinizer/import/sha-abc",)
+    def one_pending(**_: object) -> tuple[str, ...]:
+        return ("#598 madcatter/import/sha-abc",)
 
-    def fake_run_export_sync(request: ExportRequest) -> None:
-        del request
-        ran.append("ran")
+    def unreached(request: ExportRequest) -> None:
+        raise AssertionError(f"the export must not run: {request.sync_label}")
 
-    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", fake_pending)
-    monkeypatch.setattr(sync_export_pr, "_run_export_sync", fake_run_export_sync)
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", one_pending)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
 
-    sync_export_pr.run_export_sync(request)
+    with pytest.raises(sync_export_pr.ExportGuardError) as excinfo:
+        sync_export_pr.run_export_sync(request)
 
-    assert ran == [], "export must not run while an import PR is open"
+    message = str(excinfo.value)
+    assert "#598 madcatter/import/sha-abc" in message, "must name the open PR"
+    assert "Madcatter" in message, "the error must name the project"
 
 
 def test_run_export_sync_proceeds_with_no_pending_import(
@@ -2917,35 +2921,6 @@ def test_skipped_export_annotates_the_workflow_run(
     assert "bbbb222" in message, "the error must name the blocking commit"
     assert "Sagent" in message, "the error must name the project"
     del capsys
-
-
-def test_pending_import_skip_annotates_the_workflow_run(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The open-import-PR skip is the same stall, so it annotates too."""
-    request = replace(
-        _export_request(tmp_path),
-        import_branch_prefix="sagent/import/",
-        source_repo="rekursiv-ai/loop",
-        sync_label="Sagent",
-    )
-
-    def unreached(request: ExportRequest) -> None:
-        raise AssertionError(f"the export must not run: {request.sync_label}")
-
-    def one_pending(**_: object) -> tuple[str, ...]:
-        return ("sagent/import/x",)
-
-    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", one_pending)
-    monkeypatch.setattr(sync_export_pr, "_run_export_sync", unreached)
-
-    sync_export_pr.run_export_sync(request)
-
-    out = capsys.readouterr().out
-    assert "::warning::" in out, "a skipped export must annotate the run"
-    assert "sagent/import/x" in out, "the annotation must name the open PR"
 
 
 def test_public_head_unimported_aborts_when_the_ledger_is_unreadable(

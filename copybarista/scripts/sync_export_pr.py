@@ -281,21 +281,23 @@ class PrReplayError(RuntimeError):
 
 
 class ExportGuardError(RuntimeError):
-    """The data-loss guard could not determine whether the export is safe."""
+    """The data-loss guard blocked the export or could not prove it safe."""
 
 
 def run_export_sync(request: ExportRequest) -> None:
     """Validate, export, replace the public checkout, and open/update a PR.
 
-    Skips entirely while an import PR for this project is still open. The
-    export force-writes the public checkout from the source tree, so running
-    it before the source has absorbed a public change silently reverts that
-    change -- the public commit stays in history but its content is gone.
-    Skipping leaves the public repo stale instead, which the next export
-    fixes on its own.
+    Refuses to export while the source has not absorbed the public head:
+    an import PR for this project is still open, or a public commit has no
+    landed import. The export force-writes the public checkout from the
+    source tree, so running it then silently reverts that public change --
+    the commit stays in history but its content is gone.
 
     Args:
       request: Export parameters and credentials.
+
+    Raises:
+      ExportGuardError: The export would revert unimported public work.
 
     """
     if request.import_branch_prefix and request.source_repo:
@@ -304,13 +306,20 @@ def run_export_sync(request: ExportRequest) -> None:
             repo=request.source_repo,
             cwd=request.source_dir,
         )
+        # Both blocks below FAIL rather than skip. Neither clears on its own:
+        # an open import PR can stall unmerged, and a failed import opens no
+        # PR at all. Exiting green means the project silently stops syncing
+        # while every run reports success. Measured: wesearch sat wedged ~4h
+        # across three green runs (2026-08-19, failed import), and madcatter
+        # ~40h behind an unmerged empty import PR (2026-09-30, rekursiv-ai/
+        # loop#598).
         if pending:
-            _warn(
-                f"Skipping {request.sync_label} export: import PR(s) still open, "
-                "so the source tree does not yet contain the public changes: "
-                f"{', '.join(pending)}.",
+            raise ExportGuardError(
+                f"{request.sync_label} export is blocked: import PR(s) still "
+                "open, so the source does not yet contain the public changes: "
+                f"{', '.join(pending)}. Land or close them, then re-run this "
+                "export.",
             )
-            return
         # An import that failed (merge conflict, validation error) opens no PR
         # at all, so the check above sees nothing while the source is stale --
         # exactly when a force-write does the most damage. Ask the content
@@ -323,13 +332,6 @@ def run_export_sync(request: ExportRequest) -> None:
             sync_user_email=request.sync_user_email,
         )
         if unimported:
-            # FAIL, where the open-PR case above merely returns. That one is
-            # transient -- the next export runs once the PR merges. This one
-            # never clears on its own: a failed import opens no PR, so nothing
-            # will land the marker, and exiting green here means the project
-            # silently stops syncing while every run reports success. Measured
-            # 2026-08-19: wesearch sat wedged for roughly four hours, across
-            # three green export runs, before anyone read a log.
             raise ExportGuardError(
                 f"{request.sync_label} export is blocked: public commit "
                 f"{unimported[:12]} has not been imported into the source "
@@ -723,15 +725,6 @@ def _log(message: str) -> None:
     """Write one flushed workflow log line."""
     sys.stdout.write(f"{message}\n")
     sys.stdout.flush()
-
-
-# A skipped export exits green, so without an annotation a project can stall
-# indefinitely with every run reporting success. ``::warning::`` surfaces the skip on
-# the run summary and in the Actions UI without failing the job -- the skip itself is
-# correct, its invisibility was not.
-def _warn(message: str) -> None:
-    """Log a message and raise a GitHub workflow annotation for it."""
-    _log(f"::warning::{message}")
 
 
 def _run_export_sync(request: ExportRequest) -> None:
