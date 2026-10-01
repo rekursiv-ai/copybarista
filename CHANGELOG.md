@@ -7,6 +7,11 @@ All notable copybarista changes are documented here. This project follows
 
 ### Changed
 
+- **An export blocked by an open import PR now fails the run.** It used to
+  exit green with a `::warning::`, assuming the PR would merge and the next
+  export would catch up. An import PR that stalls unmerged instead left the
+  project un-exported indefinitely while every run reported success. The
+  error names the open PR(s); land or close them, then re-run the export.
 - **Every `files.exclude` pattern is now a forbidden path.** The leak check maps
   each exported path back through `move` transforms and `files.moves` and
   reports `excluded-path` when the source-root path is excluded, so an excluded
