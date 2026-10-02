@@ -85,11 +85,10 @@ def test_last_synced_public_sha_ignores_forged_export_commit_message(
     back. The three-way merge then used that stale ledger SHA as the common
     ancestor and re-presented already-exported work as 39 file conflicts.
 
-    An export commit lands on public main via squash-merge, whose body carries
-    ``<label> export branch: <branch>`` (the same marker the workflow's own
-    ``if:`` guard greps). The resolver, given the public checkout, must return
-    the NEWEST public commit that is either the ledger SHA or an export commit
-    -- here the later export -- not the stale ledger SHA.
+    The fix lets an export commit advance the baseline, recognized by the
+    ``<label> export branch: <branch>`` line its squash-merge body carries. That
+    text is forgeable, so here no such branch holds the commit's tree: the
+    resolver must ignore it and keep the ledger SHA.
     """
     target = tmp_path / "target"
     public = tmp_path / "public"

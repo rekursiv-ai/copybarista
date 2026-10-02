@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 import dataclasses
+import os
+import re
+import shutil
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -25,9 +31,10 @@ from copybarista.sync_setup import (
 )
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 
 def _settings(**kwargs: object) -> SyncSettings:
@@ -773,6 +780,53 @@ def test_import_workflow_keeps_explicit_base_semantics_off_the_ledger():
     assert 'git check-ref-format --allow-onelevel "$ref"' in run
 
 
+@pytest.mark.cli_bash
+@pytest.mark.cli_git
+@pytest.mark.cli_python_subprocess
+def test_import_workflow_skips_a_push_the_source_already_reflects(tmp_path: Path):
+    """An export landing on public main must not open an empty import PR.
+
+    Every export squash-merges onto public main, and that push re-runs this
+    workflow. The source already holds that content, so the import is a no-op,
+    yet it still opened an empty ledger PR that blocked the next export until
+    someone merged it. A commit behind the synced base is reflected too: main
+    moved on before this run checked it out.
+    """
+    shas = _public_history_with_export(tmp_path)
+
+    for head, before in (("export", "prior"), ("prior", "initial")):
+        outputs = _resolve_push_refs(tmp_path, head=shas[head], before=shas[before])
+        assert outputs.get("import") == "false", head
+
+
+@pytest.mark.cli_bash
+@pytest.mark.cli_git
+@pytest.mark.cli_python_subprocess
+def test_import_workflow_imports_a_push_past_the_synced_base(tmp_path: Path):
+    """A public commit after the newest export is new content and must import."""
+    shas = _public_history_with_export(tmp_path)
+
+    outputs = _resolve_push_refs(tmp_path, head=shas["human"], before=shas["export"])
+
+    assert outputs == {
+        "base_ref": shas["export"],
+        "head_ref": shas["human"],
+        "import": "true",
+    }
+
+
+def test_import_workflow_gates_every_import_step_on_the_refs_decision():
+    """A skipped push must not check out, validate, import, or open a PR."""
+    steps = _import_steps(import_workflow(_settings(system_packages=("git",))))
+    refs = _step_index(steps, lambda step: step.get("id") == "refs")
+
+    assert [
+        str(step.get("name", step.get("uses", "")))
+        for step in steps[refs + 1 :]
+        if "steps.refs.outputs.import == 'true'" not in str(step.get("if"))
+    ] == ["Upload import report"]
+
+
 def test_import_workflow_keeps_import_token_off_public_code_steps():
     """The import token stays on the credential-free checkout and the PR step."""
     steps = _import_steps(import_workflow(_settings()))
@@ -868,6 +922,105 @@ def _checkout_path(step: dict[str, object]) -> str:
         return ""
     with_config = DictCodec.coerce(step.get("with", {}))
     return str(with_config.get("path", ""))
+
+
+# Public main: initial, prior, a landed Configgle export (its export branch points at
+# it, which is what authenticates it), then a later human commit. Trees play no part in
+# the decision, so every commit is empty. `target` aliases the public repo: it walks to
+# no import subjects, i.e. a source with no ledger, without a second repository.
+def _public_history_with_export(root: Path) -> dict[str, str]:
+    """Create the `target` and `public-history` checkouts; return public SHAs."""
+    public = root / "public-history"
+    _git(root, "init", "-q", "-b", "main", str(public))
+    (root / "target").symlink_to(public)
+    commits = (
+        ("initial", "Initial commit"),
+        ("prior", "Prior change"),
+        ("export", "Publish export\n\nConfiggle export branch: configgle/export/main"),
+        ("human", "Human change"),
+    )
+    for _, message in commits:
+        _git(public, "commit", "-q", "--allow-empty", "-m", message)
+    log = _git(public, "log", "--reverse", "--format=%H").split()
+    shas = {name: sha for (name, _), sha in zip(commits, log, strict=True)}
+    _git(public, "branch", "configgle/export/main", shas["export"])
+    return shas
+
+
+# Executes the rendered step rather than matching its text: the decision spans the
+# shell, the trusted helper's baseline walk, and git ancestry, and a substring check
+# passes while any one of them is wired to the wrong directory or output name.
+def _resolve_push_refs(root: Path, *, head: str, before: str) -> dict[str, str]:
+    """Run 'Resolve public refs' as a push of `head`; return its step outputs."""
+    steps = _import_steps(import_workflow(_settings()))
+    run = str(steps[_step_index(steps, lambda step: step.get("id") == "refs")]["run"])
+    expressions = {"github.event_name": "push", "github.event.before": before}
+    bin_dir = root / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    # The step runs the helper via `uv ... run --no-project python`; this test's own
+    # interpreter stands in, so no uv environment is resolved per call.
+    (bin_dir / "uv").write_text(
+        f'#!/bin/sh\nwhile [ "$1" != python ]; do shift; done\nshift\n'
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "uv").chmod(0o755)
+    output = root / "github-output"
+    output.write_text("", encoding="utf-8")
+    bash = shutil.which("bash")
+    assert bash is not None
+    subprocess.run(  # noqa: S603 -- Fixed bash argv; the script is the rendered workflow step.
+        [
+            bash,
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            re.sub(r"\$\{\{ (.+?) \}\}", lambda m: expressions.get(m[1], ""), run),
+        ],
+        cwd=root,
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_SHA": head,
+            "COPYBARISTA_SYNC_LABEL": "Configgle",
+            "TRUSTED_IMPORT_SCRIPT": str(
+                _CWD / "scripts" / "sync_import_change.py",
+            ),
+        },
+    )
+    return {
+        key: value
+        for key, _, value in (
+            line.partition("=")
+            for line in output.read_text(encoding="utf-8").splitlines()
+        )
+    }
+
+
+def _git(cwd: Path, *args: str) -> str:
+    """Run git in `cwd` with a fixed identity; return its stripped stdout."""
+    git = shutil.which("git")
+    assert git is not None
+    return subprocess.run(  # noqa: S603 -- Fixed git subcommands over test paths.
+        [
+            git,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_workflow_dir_prefers_the_staged_export_over_a_source_only_github(

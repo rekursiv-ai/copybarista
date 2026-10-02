@@ -7,6 +7,12 @@ All notable copybarista changes are documented here. This project follows
 
 ### Changed
 
+- **A public push the source already reflects no longer opens an import PR.**
+  Each export's own squash-merge re-ran the import workflow, which recorded an
+  empty ledger PR, and the export guard then blocked the next export until
+  someone merged it. The import now skips when the pushed commit is at or
+  behind the resolved baseline, judged by git ancestry rather than commit
+  text. Regenerate public workflows with `copybarista write-public-workflows`.
 - **An export blocked by an open import PR now fails the run.** It used to
   exit green with a `::warning::`, assuming the PR would merge and the next
   export would catch up. An import PR that stalls unmerged instead left the
