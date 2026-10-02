@@ -1455,103 +1455,143 @@ def test_main_print_synced_base_prefers_export_from_public_dir(
     assert capsys.readouterr().out.strip() == public_shas[1]
 
 
+_MERGE_ARGV = [
+    "gh",
+    "pr",
+    "merge",
+    "pkg/import/sha-abc",
+    "--repo",
+    "rekursiv-ai/source",
+    "--squash",
+    "--subject",
+    "Import Package public changes abc",
+    "--body",
+    "Package import branch: pkg/import/sha-abc",
+]
+_ADMIN_FAILED = "Admin merge unavailable; queueing auto-merge behind source checks.\n"
+_AUTO_FAILED = (
+    "Auto-merge unavailable (no branch protection / pending checks); "
+    "merging the import PR directly.\n"
+)
+
+
+# ``results`` maps a mode flag (``--admin``, ``--auto``, or ``""`` for the direct merge)
+# to that call's returncode, stdout, and stderr.
+def _merge_with(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    results: dict[str, tuple[int, str, str]],
+) -> list[tuple[list[str], dict[str, object]]]:
+    """Run ``_merge_import_pr`` against a fake ``gh``; return every call made."""
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run_gh(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        mode = next((flag for flag in ("--admin", "--auto") if flag in argv), "")
+        code, out, err = results.get(mode, (0, "", ""))
+        return subprocess.CompletedProcess(argv, code, stdout=out, stderr=err)
+
+    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
+    sync_import_change._merge_import_pr(
+        branch="pkg/import/sha-abc",
+        target_repo="rekursiv-ai/source",
+        title="Import Package public changes abc",
+        sync_label="Package",
+        cwd=tmp_path,
+    )
+    return calls
+
+
 def test_import_pr_auto_merges_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A clean import merges itself; a human adds nothing to that decision.
 
     The public change is already reviewed and already live -- the source is
     the render authority, not a second approval gate. Waiting on a human is
-    also what stalls the export, since an unmerged import blocks it.
+    also what stalls the export, since an unmerged import blocks it. A red
+    source CI must not hold it either, so the first attempt is ``--admin``.
     """
-    merged: list[list[str]] = []
+    calls = _merge_with(monkeypatch, tmp_path, results={})
 
-    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        if "merge" in argv:
-            merged.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="")
-
-    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
-
-    sync_import_change._merge_import_pr(
-        branch="pkg/import/sha-abc",
-        target_repo="rekursiv-ai/source",
-        title="Import Package public changes abc",
-        sync_label="Package",
-        cwd=tmp_path,
-    )
-
-    assert merged, "a clean import must merge without waiting for a human"
-    assert "--squash" in merged[0]
-    assert "--admin" in merged[0], "a red source CI must not hold the import"
+    assert calls == [
+        ([*_MERGE_ARGV, "--admin"], {"cwd": tmp_path, "capture": True, "check": False}),
+    ]
+    assert capsys.readouterr().err == ""
 
 
 def test_import_pr_falls_back_to_auto_merge_without_bypass(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A token that cannot bypass branch rules still queues the merge."""
-    calls: list[list[str]] = []
-
-    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
-        if "--admin" in argv:
-            return subprocess.CompletedProcess(
-                argv,
-                1,
-                stdout="",
-                stderr="Repository rule violations found.",
-            )
-        return subprocess.CompletedProcess(argv, 0, stdout="")
-
-    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
-
-    sync_import_change._merge_import_pr(
-        branch="pkg/import/sha-abc",
-        target_repo="rekursiv-ai/source",
-        title="Import Package public changes abc",
-        sync_label="Package",
-        cwd=tmp_path,
+    calls = _merge_with(
+        monkeypatch,
+        tmp_path,
+        results={"--admin": (1, "", "Repository rule violations found.")},
     )
 
-    assert "--admin" in calls[0]
-    assert "--auto" in calls[1]
+    kwargs = {"cwd": tmp_path, "capture": True, "check": False}
+    assert calls == [
+        ([*_MERGE_ARGV, "--admin"], kwargs),
+        ([*_MERGE_ARGV, "--auto"], kwargs),
+    ]
+    assert capsys.readouterr().err == _ADMIN_FAILED
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ("", "Protected branch rules not configured."),
+        ("GraphQL: enablePullRequestAutoMerge is not allowed", ""),
+    ],
+)
 def test_import_pr_merges_directly_when_auto_merge_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stdout: str,
+    stderr: str,
 ) -> None:
-    """Without branch protection, ``--auto`` fails; merge immediately instead."""
-    calls: list[list[str]] = []
+    """Without deferrable merges, ``--auto`` fails; merge immediately instead.
 
-    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
-        if "--admin" in argv:
-            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="denied")
-        if "--auto" in argv:
-            return subprocess.CompletedProcess(
-                argv,
-                1,
-                stdout="",
-                stderr="Protected branch rules not configured.",
-            )
-        return subprocess.CompletedProcess(argv, 0, stdout="")
-
-    monkeypatch.setattr(sync_import_change, "_run_gh", fake_run_gh)
-
-    sync_import_change._merge_import_pr(
-        branch="pkg/import/sha-abc",
-        target_repo="rekursiv-ai/source",
-        title="Import Package public changes abc",
-        sync_label="Package",
-        cwd=tmp_path,
+    Either stream may carry the refusal, in any case.
+    """
+    calls = _merge_with(
+        monkeypatch,
+        tmp_path,
+        results={"--admin": (1, "", "denied"), "--auto": (1, stdout, stderr)},
     )
 
-    assert len(calls) == 3, "must retry without --admin, then without --auto"
-    assert "--auto" not in calls[2]
-    assert "--admin" not in calls[2]
+    kwargs = {"cwd": tmp_path, "capture": True, "check": False}
+    assert calls == [
+        ([*_MERGE_ARGV, "--admin"], kwargs),
+        ([*_MERGE_ARGV, "--auto"], kwargs),
+        (_MERGE_ARGV, {"cwd": tmp_path}),
+    ]
+    assert capsys.readouterr().err == _ADMIN_FAILED + _AUTO_FAILED
+
+
+def test_import_pr_unrecognized_auto_merge_failure_exits_with_its_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An ``--auto`` failure that is not a missing-protection refusal is fatal."""
+    with pytest.raises(SystemExit) as raised:
+        _merge_with(
+            monkeypatch,
+            tmp_path,
+            results={"--admin": (1, "", "denied"), "--auto": (4, "", "HTTP 403")},
+        )
+
+    assert raised.value.code == 4
 
 
 def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:

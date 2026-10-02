@@ -1043,7 +1043,7 @@ def _pr_title_sha(public_sha: str) -> str:
 # commit is authoritative and still needs its ledger entry.
 #
 # ``--admin`` merges without waiting on source CI. Source-only breakage (a loop caller
-# of a moved API, a house-lint rule the public repo does not run) otherwise leaves the
+# of a moved API, a houselint rule the public repo does not run) otherwise leaves the
 # import PR red, and the export guard then blocks every export behind it. Landing it
 # lets source CI on ``main`` report the breakage instead of jamming both directions.
 #
