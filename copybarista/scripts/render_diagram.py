@@ -41,7 +41,7 @@ def render(input_path: Path, output_path: Path, width: int, scale: int) -> None:
     """
     npx = _require_tool("npx")
     cwebp = _require_tool("cwebp")
-    with TemporaryDirectory() as tmp:
+    with TemporaryDirectory(prefix="render-diagram-") as tmp:
         png = Path(tmp) / "diagram.png"
         subprocess.run(  # noqa: S603 -- fixed command with validated file paths.
             [
