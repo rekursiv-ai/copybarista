@@ -19,6 +19,7 @@ from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
 from copybarista.lib.custom_json import DictCodec, ListCodec
 from copybarista.sync_setup import (
+    PG_MAJOR,
     SyncSettings,
     check_sync_config,
     export_workflow,
@@ -544,6 +545,71 @@ def test_apt_is_bounded_and_retried_in_every_workflow(
     )
 
 
+@pytest.mark.parametrize(
+    ("render", "job", "guard"),
+    [
+        (package_validation_workflow, "validate", {}),
+        (export_workflow, "export-pr", {}),
+        (
+            import_workflow,
+            "import-change",
+            {"if": "steps.refs.outputs.import == 'true'"},
+        ),
+    ],
+    ids=["package-validation", "export", "import"],
+)
+def test_apt_steps_cache_debs_and_serve_postgresql_from_pgdg(
+    render: Callable[[SyncSettings], str],
+    job: str,
+    guard: dict[str, str],
+) -> None:
+    """Pin both rendered apt steps; only the import job gates them on its refs.
+
+    ``postgresql`` must never reach the distro install line: the metapackage
+    would pull Ubuntu's older major beside PGDG's pinned one.
+    """
+    workflow = render(_settings(system_packages=("ripgrep", "postgresql")))
+    steps = _job_steps(workflow, job=job)
+    cache = steps[
+        _step_index(steps, lambda step: step.get("name") == "Cache apt packages")
+    ]
+    install = steps[
+        _step_index(steps, lambda step: step.get("name") == "Install system packages")
+    ]
+    with_config = DictCodec.coerce(cache.pop("with"))
+
+    assert cache == {
+        "name": "Cache apt packages",
+        **guard,
+        "uses": action_ref("actions/cache"),
+    }
+    assert with_config.pop("path") == "/var/cache/apt/archives"
+    assert re.fullmatch(
+        r"apt-\$\{\{ runner\.os \}\}-[0-9a-f]{16}",
+        str(with_config.pop("key")),
+    )
+    assert not with_config
+    assert install == {
+        "name": "Install system packages",
+        **guard,
+        "run": (
+            "for attempt in 1 2 3; do\n"
+            "  timeout 120 sudo apt-get update && break\n"
+            '  echo "apt-get update stalled (attempt $attempt)" >&2\n'
+            "  sleep $((attempt * 10))\n"
+            "done\n"
+            "timeout 300 sudo apt-get install -y --no-install-recommends ripgrep\n"
+            "sudo apt-get install -y --no-install-recommends "
+            "postgresql-common ca-certificates curl gnupg\n"
+            "sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y\n"
+            "timeout 120 sudo apt-get update\n"
+            "timeout 300 sudo apt-get install -y --no-install-recommends "
+            f"postgresql-{PG_MAJOR} postgresql-client-{PG_MAJOR} "
+            f"postgresql-{PG_MAJOR}-pgvector\n"
+        ),
+    }
+
+
 def test_check_sync_config_rejects_package_validation_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
     workflow = tmp_path / ".github/workflows/package-validation.yml"
@@ -899,10 +965,15 @@ def test_generated_toml_escapes_strings(tmp_path: Path):
 
 def _import_steps(workflow: str) -> list[dict[str, object]]:
     """Return the parsed steps of the generated import job, in file order."""
+    return _job_steps(workflow, job="import-change")
+
+
+def _job_steps(workflow: str, *, job: str) -> list[dict[str, object]]:
+    """Return the parsed steps of one generated workflow job, in file order."""
     parsed = DictCodec.coerce(yaml.safe_load(workflow))
     jobs = DictCodec.coerce(parsed["jobs"])
-    job = DictCodec.coerce(jobs["import-change"])
-    steps = ListCodec.coerce(job["steps"], object)
+    job_config = DictCodec.coerce(jobs[job])
+    steps = ListCodec.coerce(job_config["steps"], object)
     return [DictCodec.coerce(step) for step in steps]
 
 
