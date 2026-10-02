@@ -1390,7 +1390,7 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
     """Render the apt system-package install step for a validation workflow."""
     if not packages:
         return ""
-    guard = "        if: steps.settings.outputs.enabled == 'true'\n" if guarded else ""
+    guard = "        if: steps.refs.outputs.import == 'true'\n" if guarded else ""
     # ``postgresql`` is a request, not an apt name to pass through: it is
     # served from PGDG below, never the distro metapackage (see there).
     names = " ".join(package for package in packages if package != "postgresql")

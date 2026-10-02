@@ -310,9 +310,9 @@ def export_commit_marker(sync_label: str) -> str:
     body is exactly ``<label> export branch: <branch>`` (see
     ``sync_export_pr._enable_export_pr_auto_merge``). The per-branch
     ``copybarista-source-rev-sha256=`` digests live on the export BRANCH commit
-    and do not survive the squash, so this branch line -- the same marker the
-    import workflow's own ``if:`` guard greps out of the pushed commit message
-    -- is the only export identity that reaches public ``main``.
+    and do not survive the squash, so this branch line is the only export
+    identity that reaches public ``main``. Anyone can write it, so it only
+    nominates a candidate; the named branch's history authenticates it.
 
     Args:
       sync_label: Export label, e.g. ``Sagent``.
