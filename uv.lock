@@ -111,7 +111,7 @@ dev = [
     { name = "hypothesis", specifier = ">=6.155.1" },
     { name = "pre-commit", specifier = ">=4.6" },
     { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-cov", specifier = ">=7" },
+    { name = "pytest-cov" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "rekursiv-ai-typeshed", directory = "packages/rekursiv-ai-typeshed" },
@@ -129,7 +129,7 @@ pre-commit = [
     { name = "hypothesis", specifier = ">=6.155.1" },
     { name = "pre-commit", specifier = ">=4.6" },
     { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-cov", specifier = ">=7" },
+    { name = "pytest-cov" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "rekursiv-ai-typeshed", directory = "packages/rekursiv-ai-typeshed" },
@@ -139,7 +139,7 @@ pre-commit = [
 test = [
     { name = "hypothesis", specifier = ">=6.155.1" },
     { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-cov", specifier = ">=7" },
+    { name = "pytest-cov" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]
