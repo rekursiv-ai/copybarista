@@ -1563,7 +1563,10 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
 
 
 def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
-    with pytest.raises(sync_export_pr.PrReplayError, match="Existing generated PR"):
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^Existing generated PR has no Copybarista replay marker\. Branch:",
+    ):
         sync_export_pr._replay_base(
             request=_export_request(tmp_path),
             current_source_rev="source-head",
@@ -1579,6 +1582,62 @@ def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
                 exists=True,
             ),
         )
+
+
+def test_existing_pr_marker_takes_precedence_over_branch_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def resolve(*, source_dir: Path, marker: str, marker_source: str) -> str:
+        assert source_dir == tmp_path
+        assert marker == "sha256:pr-digest"
+        assert marker_source == "PR applied marker"
+        return "pr-source"
+
+    monkeypatch.setattr(sync_export_pr, "_resolve_source_marker", resolve)
+    assert (
+        sync_export_pr._replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=sync_export_pr.CurrentPr(
+                title="Public title",
+                body="<!-- copybarista:pr-state version=1 applied=sha256:pr-digest -->\n",
+                number=7,
+                url="https://example.test/pr/7",
+            ),
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="branch-digest",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+        == "pr-source"
+    )
+
+
+def test_release_tree_check_runs_the_project_policy_against_the_export(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_export_pr, "_run", run)
+    sync_export_pr._check_release_tree(
+        project=tmp_path / "source",
+        root=tmp_path / "export",
+        script=Path("scripts/check_release_tree.py"),
+    )
+    assert calls == [
+        [
+            sys.executable,
+            str(tmp_path / "source/scripts/check_release_tree.py"),
+            str(tmp_path / "export"),
+        ],
+    ]
 
 
 def test_export_commit_message_contains_replay_markers():
@@ -1696,6 +1755,66 @@ def test_replay_without_metadata_keeps_generic_pr_text():
     )
 
     assert replay_pr_metadata(base=base, patches=()) == base
+
+
+def test_replay_deduplicates_entries_and_preserves_applied_provenance():
+    author = SourceAuthor(name="Author", email="author@example.com")
+    patch = PrMetadataPatch(
+        commit_sha="new",
+        scope="",
+        title="",
+        author=author,
+        body="New update.",
+        body_mode="append",
+    )
+    base = replace(
+        _pr_state(),
+        body_entries=(PrBodyEntry(commit_sha="old", text="Old update."),),
+    )
+    state = replay_pr_metadata(
+        base=base,
+        patches=(
+            replace(patch, commit_sha="old", body="Old update."),
+            patch,
+            patch,
+            replace(patch, body=""),
+        ),
+    )
+    assert state == replace(
+        base,
+        authors=(author,),
+        body_entries=(
+            *base.body_entries,
+            PrBodyEntry(commit_sha="new", text="New update."),
+        ),
+        metadata_count=4,
+    )
+
+
+def test_replay_replacement_allows_reappending_a_discarded_entry():
+    author = SourceAuthor(name="Author", email="author@example.com")
+    patch = PrMetadataPatch(
+        commit_sha="old",
+        scope="",
+        title="",
+        author=author,
+        body="Old update.",
+        body_mode="append",
+    )
+    base = replace(
+        _pr_state(),
+        body_entries=(PrBodyEntry(commit_sha="old", text="Old update."),),
+    )
+    state = replay_pr_metadata(
+        base=base,
+        patches=(replace(patch, body="Replacement.", body_mode="replace"), patch),
+    )
+    assert state == replace(
+        base,
+        authors=(author,),
+        body_intro="Replacement.",
+        metadata_count=2,
+    )
 
 
 def test_export_pr_text_uses_defaults_without_commit_message_opt_in():
@@ -2678,6 +2797,35 @@ def test_preleakcheck_validation_runs_lint_not_types(
     assert not any(argv[0] == "basedpyright" for argv in calls)
 
 
+@pytest.mark.cli_git
+@pytest.mark.parametrize("empty", [False, True])
+def test_validation_builds_can_read_a_commit_of_the_exported_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty: bool,
+) -> None:
+    """Build provenance can read HEAD, including a package with an empty tree."""
+    config = tmp_path / "gitconfig"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    public = tmp_path / "public"
+    public.mkdir()
+    if not empty:
+        (public / "package.py").write_text("value = 1\n", encoding="utf-8")
+
+    _validate_public(
+        public_dir=public,
+        validation_commands=(
+            "git cat-file -e 'HEAD^{commit}'",
+            "git ls-tree -r --name-only HEAD > tracked.txt",
+        ),
+    )
+
+    assert (public / "tracked.txt").read_text(encoding="utf-8") == (
+        "" if empty else "package.py\n"
+    )
+
+
 def test_validate_public_runs_each_validation_command_via_bash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2740,10 +2888,21 @@ def test_validate_public_runs_nothing_without_commands(
 
     # The tree is still made a repository: an empty command set is a config
     # that validates nothing, not a signal to skip setup.
-    assert [call[:2] for call in calls] == [
-        ["git", "init"],
-        ["git", "add"],
-        ["git", "-c"],
+    assert calls == [
+        ["git", "init", "--quiet", "--initial-branch=main"],
+        ["git", "add", "--all"],
+        [
+            "git",
+            "-c",
+            "user.name=copybarista",
+            "-c",
+            "user.email=copybarista@example.com",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Copybarista validation snapshot",
+        ],
     ]
 
 
