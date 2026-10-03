@@ -2700,10 +2700,26 @@ def test_validate_public_runs_each_validation_command_via_bash(
 
     # The validation tree is copied WITHOUT .git, but the command set now runs
     # pre-commit, which refuses to work outside a repository -- and only sees
-    # tracked files, so the `git add` matters as much as the `git init`.
+    # tracked files, so the `git add` matters as much as the `git init`. The
+    # commit gives HEAD to a build that stamps its commit.
     assert calls == [
         (["git", "init", "--quiet", "--initial-branch=main"], public_dir),
         (["git", "add", "--all"], public_dir),
+        (
+            [
+                "git",
+                "-c",
+                "user.name=copybarista",
+                "-c",
+                "user.email=copybarista@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "Copybarista validation snapshot",
+            ],
+            public_dir,
+        ),
         (["bash", "-c", "uv sync --all-groups"], public_dir),
         (["bash", "-c", "uv run pytest"], public_dir),
     ]
@@ -2724,9 +2740,10 @@ def test_validate_public_runs_nothing_without_commands(
 
     # The tree is still made a repository: an empty command set is a config
     # that validates nothing, not a signal to skip setup.
-    assert calls == [
-        ["git", "init", "--quiet", "--initial-branch=main"],
-        ["git", "add", "--all"],
+    assert [call[:2] for call in calls] == [
+        ["git", "init"],
+        ["git", "add"],
+        ["git", "-c"],
     ]
 
 

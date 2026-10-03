@@ -1238,7 +1238,9 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
 # deliberately omits ``.git``, but the validation set now runs ``pre-commit``, which
 # refuses to operate outside a repository ("git failed. Is it installed, and are you in
 # a Git repository directory?") -- and pre-commit only sees TRACKED files, so an
-# uncommitted tree would validate nothing at all.
+# untracked tree would validate nothing at all. The tree is also committed: a build
+# that stamps its commit (trackinizer's web app runs ``git rev-parse HEAD``) fails in
+# a repository with no commit. This disposable history is never published.
 def _validate_public(
     *,
     public_dir: Path,
@@ -1251,9 +1253,24 @@ def _validate_public(
 
 
 def _init_validation_repo(public_dir: Path) -> None:
-    """Make a disposable git repository so pre-commit can see every file."""
+    """Commit a disposable git snapshot, so checks see every file and HEAD resolves."""
     _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=public_dir)
     _run(["git", "add", "--all"], cwd=public_dir)
+    _run(
+        [
+            "git",
+            "-c",
+            f"user.name={DEFAULT_SYNC_USER_NAME}",
+            "-c",
+            f"user.email={DEFAULT_SYNC_USER_EMAIL}",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Copybarista validation snapshot",
+        ],
+        cwd=public_dir,
+    )
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
