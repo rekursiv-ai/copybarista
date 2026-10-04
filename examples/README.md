@@ -11,10 +11,10 @@ tokens exist.
 - [`python-package/source-repo`](python-package/source-repo): source
   repository with a runnable Python package, export config, import rewriting,
   and private README block stripping.
-- [`python-package/github/source-to-public.yml`](python-package/github/source-to-public.yml):
+- [`python-package/github/internal-to-external.yml`](python-package/github/internal-to-external.yml):
   source repository workflow that exports the package and opens a public
   repository PR.
-- [`python-package/github/public-to-source.yml`](python-package/github/public-to-source.yml):
+- [`python-package/github/external-to-internal.yml`](python-package/github/external-to-internal.yml):
   public repository workflow that validates or imports public changes back to
   source.
 - [`python-package/github/protect-main-ruleset.json`](python-package/github/protect-main-ruleset.json):
@@ -33,8 +33,8 @@ source-repo/
     tests/test_widget.py
     widget/__init__.py
 github/
-  source-to-public.yml
-  public-to-source.yml
+  internal-to-external.yml
+  external-to-internal.yml
   protect-main-ruleset.json
 ```
 
@@ -113,11 +113,11 @@ packages/widget/
 Copy the source-to-public workflow:
 
 ```text
-.github/workflows/source-to-public.yml
+.github/workflows/internal-to-external.yml
 ```
 
 Use the contents of
-`examples/python-package/github/source-to-public.yml`.
+`examples/python-package/github/internal-to-external.yml`.
 
 Expected result: the source repository has the source package, the
 Copybarista config, and a manually dispatched `Export public repository`
@@ -131,13 +131,13 @@ verified export is safest.
 Copy the public-to-source workflow into the public repository:
 
 ```text
-.github/workflows/public-to-source.yml
+.github/workflows/external-to-internal.yml
 ```
 
 Use the contents of
-`examples/python-package/github/public-to-source.yml`.
+`examples/python-package/github/external-to-internal.yml`.
 
-Expected result: the public repository has an `Public→Private` workflow,
+Expected result: the public repository has a `Public→Private` workflow,
 even before it has package source files.
 The first push that creates this workflow has no previous public commit to
 compare against, so the import job is skipped.
@@ -460,7 +460,7 @@ GitHub documents fine-grained token repository permissions at
 | `Cannot read config` or `test -f "$PROJECT_PATH/copy.barista.toml"` fails. | `COPYBARISTA_SOURCE_PROJECT_PATH` points at the wrong directory. | Use `.` when `copy.barista.toml` is at the source repository root; otherwise use the directory that contains it. |
 | Public PR opens with private files or wrong imports. | `copy.barista.toml` include/exclude or transforms are incomplete. | Run the local export first, inspect `/tmp/widget-public`, and update the config before running the workflow. |
 | Initial public push does not open a source PR. | GitHub reports an all-zero `before` SHA for the first push. | This is expected; merge or push a real public change after the first export. |
-| `Cannot resolve public base ref.` appears on initial public setup. | The public repository is using an older workflow that did not skip all-zero first-push events. | Update `public-to-source.yml` from this example. |
+| `Cannot resolve public base ref.` appears on initial public setup. | The public repository is using an older workflow that did not skip all-zero first-push events. | Update the public workflow from this example's `external-to-internal.yml`. |
 | Public `push` opens a source PR after merging a generated export PR. | Generated export merge was not recognized. | Keep `Copybarista export branch: ...` or `copybarista/export/` in the squash-merge title/body. |
 | Public PR validation fails with an unmapped or non-reversible path. | The public PR changed a path that Copybarista cannot safely map back. | Change a reversible file, add explicit reverse transforms, or keep that path source-owned. |
 | `auto_merge` fails or leaves the PR waiting. | The public repository has not enabled auto-merge, required checks are missing, or branch protection does not require the expected checks. | Leave `auto_merge` disabled until branch protection and required checks are installed. |
