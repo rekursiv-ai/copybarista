@@ -19,8 +19,8 @@ Copybarista also ships a lower-level two-way GitHub setup under
 `examples/python-package/`:
 
 - `examples/python-package/source-repo`
-- `examples/python-package/github/source-to-public.yml`
-- `examples/python-package/github/public-to-source.yml`
+- `examples/python-package/github/internal-to-external.yml`
+- `examples/python-package/github/external-to-internal.yml`
 - `examples/python-package/github/protect-main-ruleset.json`
 
 Use `examples/README.md` as a manual reference when you need to hand-wire a
@@ -61,13 +61,16 @@ The generated public files are:
 - `copybarista.sync.toml` -- package metadata such as package name, source path,
   public repo, branch prefixes, smoke import, type-check targets, and public
   validation commands.
-- `.github/workflows/public-to-source.yml` -- public-to-source import workflow.
+- `.github/workflows/configgle-to-loop.yml` -- public-to-source import
+  workflow, named `<package>-to-loop.yml` (the generator calls the source side
+  `loop`).
 - `.github/workflows/package-validation.yml` -- public package correctness
   workflow.
 
-Package identity is data in `copybarista.sync.toml`; workflow names identify
-the package, while generated file names stay stable across packages. This
-avoids `sync_<package>.py` wrappers and package-specific environment names.
+Package identity is data in `copybarista.sync.toml`; workflow names and the
+import workflow's file name identify the package, while scripts and environment
+names stay the same across packages. This avoids `sync_<package>.py` wrappers
+and package-specific environment names.
 Generated workflows use shared
 `COPYBARISTA_` names internally and fill them from `copybarista.sync.toml`:
 
@@ -83,7 +86,7 @@ Generate the source-repository export workflow from the same metadata:
 
 ```bash
 copybarista write-export-workflow copybarista.sync.toml \
-  --output .github/workflows/source-to-public-configgle.yml
+  --output .github/workflows/loop-to-configgle.yml
 ```
 
 Review the generated workflow before committing it; it is intentionally plain
@@ -92,8 +95,8 @@ repository policy differs. Run `init-sync --overwrite` only when intentionally
 regenerating existing sync files.
 
 The generated package validation workflow runs package-owned commands from
-`copybarista.sync.toml`. Defaults install all dependency groups, run Ruff,
-codespell, full-project ty, basedpyright over `type_check_targets`, pytest, a
+`copybarista.sync.toml`. Defaults install all dependency groups, run the
+package's own `pre-commit` hooks at the `pre-commit` and `pre-push` stages, a
 smoke import, and `uv build`. Pass `--release-check-script` during setup, or
 set `release_check_script` in `copybarista.sync.toml`, when the source export
 workflow should run an additional project-relative release-tree checker before
@@ -102,8 +105,9 @@ Set `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
 lockfile is private or source-specific but the public repository should publish
 a generated `uv.lock`; pair it with `uv sync --frozen --all-groups` in package
 validation commands. The generated public-to-source import workflow then
-ignores public `uv.lock` during source mapping because that file is regenerated
-from public package metadata instead of imported into the source checkout.
+ignores the public root `uv.lock` during source mapping because that file is
+regenerated from public package metadata instead of imported into the source
+checkout.
 Use repeated `--validation-python-version` and `--validation-command` flags when
 a package needs a different public correctness contract. `check-sync-config`
 validates that `.github/workflows/package-validation.yml` still matches those
@@ -135,9 +139,9 @@ temporary setup commits, private path names, or incomplete release metadata.
 ## Action Triggers
 
 The source repository owns source-to-public export. The example
-`source-to-public.yml` runs on `workflow_dispatch` so maintainers can choose a
-public-safe PR title, description, and optional branch name for each export. The
-workflow checks out the source repository and public repository, runs
+`internal-to-external.yml` runs on `workflow_dispatch` so maintainers can choose
+a public-safe PR title, description, and optional branch name for each export.
+The workflow checks out the source repository and public repository, runs
 `copybarista export`, replaces the public checkout while preserving `.github/`,
 validates it, and opens or updates a public pull request.
 
@@ -153,7 +157,7 @@ defaults plus replayed `Copybarista-PR-*` commit metadata for public-safe PR
 text.
 
 The public repository owns public-to-source import. The example
-`public-to-source.yml` runs in three situations:
+`external-to-internal.yml` runs in three situations:
 
 - `pull_request` to `main`: validate that a trusted same-repository public PR
   can be imported, but do not open a source PR yet.
@@ -169,11 +173,15 @@ pull-request validation path because its source of truth is the source repositor
 export. Direct public edits, other same-repository branches, and manually
 dispatched imports still flow back through `copybarista import-change`.
 
-Merged generated export PRs should also be skipped on public `main` pushes.
-The generated workflow detects them by sync author email or a generated export
-branch marker in the merge commit message. Auto-merge writes a
-`<sync label> export branch: ...` marker into the squash body; manual squash
-merges should keep that marker or the generated export branch in the title/body.
+Merged generated export PRs import nothing on public `main` pushes. The
+generated workflow resolves the newest public commit the source already
+reflects, either a landed import or a merged generated export, and skips a
+pushed commit at or behind it. A merged export counts only when its squash body
+carries the `<sync label> export branch: <branch>` line that auto-merge writes
+and that branch's history contains the merged tree, so manual squash merges
+must keep that line and the export branch must outlive the merge. The example
+workflow instead skips pushes by sync author email or an export branch marker
+in the commit message.
 
 Generated sync branches must stay under package-owned namespaces. The default
 prefixes come from `copybarista.sync.toml`, e.g. `configgle/export/*` for
@@ -339,11 +347,15 @@ ruleset requires one review by default; set
 `require_last_push_approval` to `false` before installing it if generated
 export PRs should merge without human approval.
 
-Public-to-source imports auto-merge by default. A clean import carries no
-decision a maintainer can improve: the public change is already reviewed and
-published, and an unmerged import blocks the export in the other direction
-until it lands. A conflicting or failing import never reaches the merge, so
-only a clean import merges unattended. Set the public repository variable
+Public-to-source imports auto-merge by default. The public change is already
+reviewed and published, and an unmerged import blocks the export in the other
+direction until it lands. The import helper merges with `gh pr merge --admin`
+first, so a token allowed to bypass branch protection lands the import without
+waiting for source checks and source CI on `main` reports any source-only
+breakage; otherwise it queues auto-merge behind those checks. A conflicting
+import never reaches the merge. A push to public `main` whose import fails
+validation is still recorded and merged, because that commit is already
+published, and the workflow run then fails. Set the public repository variable
 `COPYBARISTA_IMPORT_AUTO_MERGE` to `false` to require a maintainer to merge
 the generated import PR instead.
 
@@ -356,10 +368,12 @@ COPYBARISTA_SYNC_USER_NAME=copybarista
 COPYBARISTA_SYNC_USER_EMAIL=copybarista@example.com
 ```
 
-Set the same name and email in both repositories. The public-to-source workflow
-uses that email, plus the generated export branch marker, to distinguish
-generated export merges from public-authored changes that should be imported
-back to source.
+Set the same name and email in both repositories. The example public-to-source
+workflow uses that email, plus the export branch marker, to skip generated
+export merges. Generated workflows read the identity from `sync_user_name` and
+`sync_user_email` in `copybarista.sync.toml`, and the generated export guard
+uses that email to tell commits the export wrote on public `main` from
+public-authored changes it must not overwrite.
 
 The identity can be a machine user, a GitHub App installation, or a fine-grained
 token owner. The important property is stability: changing the email without
@@ -563,14 +577,16 @@ Recommended repository settings:
 - Enable squash merge.
 - Disable merge commits.
 - Disable rebase merge unless your project intentionally wants it.
-- Keep generated branches after merge when branch names are used as sync
-  history.
+- Keep generated branches after merge.
 
-Squash merge keeps generated public history concise. Keeping generated branches
-is optional, but it can make sync audits easier because branch names encode the
-export project or imported public SHA. Generated branch updates should use
-`git push --force-with-lease`; protected default branches should not allow force
-pushes.
+Squash merge keeps generated public history concise. Keep generated export
+branches: the generated import workflow recognizes a merged export by finding
+its tree on the export branch, so deleting the branch moves the import baseline
+back to an older synced commit, and the three-way merge can then present
+already-exported work as conflicts. Kept branches also make sync audits easier
+because branch names encode the export project or imported public SHA.
+Generated branch updates should use `git push --force-with-lease`; protected
+default branches should not allow force pushes.
 
 Check current settings:
 

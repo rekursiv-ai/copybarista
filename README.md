@@ -200,20 +200,22 @@ copybarista init-sync . \
 ```
 
 This writes `copy.barista.toml`, `copybarista.sync.toml`, the public import
-workflow `.github/workflows/public-to-source.yml`, and the public package
-validation workflow `.github/workflows/package-validation.yml`. The package name
-lives in `copybarista.sync.toml`; generated workflow names identify the package,
-while script file names and environment variable names stay stable. New packages
-do not need `sync_<package>.py` files or package-specific environment names. Use
-`init-sync --overwrite` only when intentionally regenerating existing sync
-files.
+workflow `.github/workflows/configgle-to-loop.yml` (`<package>-to-loop.yml`;
+the generator calls the source side `loop`), and the public package validation
+workflow `.github/workflows/package-validation.yml`. The package name lives in
+`copybarista.sync.toml`; generated workflow names and the import workflow's
+file name identify the package, while script file names and environment
+variable names stay stable. New packages do not need `sync_<package>.py` files
+or package-specific environment names. Use `init-sync --overwrite` only when
+intentionally regenerating existing sync files.
 
 The validation workflow runs package-owned commands from `copybarista.sync.toml`.
-By default it syncs dependencies, runs Ruff, codespell, ty, basedpyright,
-pytest, a smoke import, and `uv build`. Pass `--release-check-script` when the
-source export workflow should run a project-relative release-tree checker before
-opening the public PR. Override validation commands at setup time when a package
-needs different public correctness gates:
+By default it syncs dependencies, runs the package's own `pre-commit` hooks at
+the `pre-commit` and `pre-push` stages, a smoke import, and `uv build`. Pass
+`--release-check-script` when the source export workflow should run a
+project-relative release-tree checker before opening the public PR. Override
+validation commands at setup time when a package needs different public
+correctness gates:
 
 ```bash
 copybarista init-sync . \
@@ -234,7 +236,7 @@ Validate the scaffolding before wiring GitHub Actions:
 ```bash
 copybarista check-sync-config .
 copybarista write-export-workflow copybarista.sync.toml \
-  --output source-to-public-configgle.yml
+  --output loop-to-configgle.yml
 ```
 
 Generated export PRs can use public-safe commit metadata for their title and
@@ -429,10 +431,11 @@ Copybarista sync is PR-based in both directions:
 The public repository CI checks release-tree policy, lint, formatting, types,
 unit tests, package build, and installed-wheel import. The reverse-sync
 workflow also runs on trusted public PRs as an import validation check, except
-for generated export PRs whose source of truth is the export workflow. Public
-`main` pushes from merged generated export PRs are skipped for the same reason
-when the push commit is authored by `copybarista` or the commit message
-identifies a generated export branch. Reverse sync only opens a
+for generated export PRs whose source of truth is the export workflow. It runs
+on every later push to public `main` too, but a push the source already
+reflects imports nothing: the workflow resolves the newest public commit the
+source has absorbed, through a landed import or a merged generated export, and
+skips a pushed commit at or behind it. Reverse sync therefore only opens a
 source PR for direct public changes or manual-dispatch runs.
 
 No workflow should push directly to a protected default branch. Generated sync
@@ -448,8 +451,9 @@ changed the same public file, import the public PR to source first or
 re-export source and resolve the PR diff explicitly.
 
 Source-to-public auto-merge is safe only as PR auto-merge after required checks
-pass, not as direct default-branch pushes. Keep public-to-source imports manual
-unless your project has a separate review policy for accepting public changes.
+pass, not as direct default-branch pushes. Generated public-to-source import
+PRs merge automatically by default; set the public repository variable
+`COPYBARISTA_IMPORT_AUTO_MERGE` to `false` to review and merge them by hand.
 For protected branches, required checks, bot-authored PRs, and token
 permissions, see
 [GitHub setup](https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md).
