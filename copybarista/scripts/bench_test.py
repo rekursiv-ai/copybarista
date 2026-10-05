@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from copybarista.lib.custom_json import DictCodec, loads
+from copybarista.lib.custom_json import convert, parse
 from copybarista.scripts import bench
 
 
@@ -65,9 +65,9 @@ def test_report_json_is_machine_readable():
         ),
     )
 
-    data = DictCodec.coerce(loads(report.to_json()))
+    data = parse(report.to_json(), dict[str, object])
 
-    copybarista = DictCodec.coerce(data["copybarista"])
+    copybarista = convert(data["copybarista"], dict[str, object])
     assert copybarista["median_sec"] == 0.2
     assert set(data) == {"copybarista"}
 

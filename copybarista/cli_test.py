@@ -15,7 +15,7 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
-from copybarista.lib.custom_json import DictCodec, ListCodec, loads
+from copybarista.lib.custom_json import convert, parse
 
 
 if TYPE_CHECKING:
@@ -66,8 +66,8 @@ def test_cli_export_writes_json_manifest(
         ],
     )
 
-    manifest = DictCodec.coerce(loads(capsys.readouterr().out))
-    files = ListCodec.mappings(manifest["files"])
+    manifest = parse(capsys.readouterr().out, dict[str, object])
+    files = convert(manifest["files"], list[dict[str, object]])
     assert files[0]["destination"] == "README.md"
 
 

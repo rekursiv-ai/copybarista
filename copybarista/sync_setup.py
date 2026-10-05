@@ -19,7 +19,7 @@ import yaml
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
-from copybarista.lib.custom_json import DictCodec
+from copybarista.lib.custom_json import convert
 
 
 if TYPE_CHECKING:
@@ -229,11 +229,14 @@ def load_sync_settings(path: Path) -> SyncSettings:
 
     """
     try:
-        raw = DictCodec.coerce(tomllib.loads(path.read_text(encoding="utf-8")))
+        raw = convert(
+            tomllib.loads(path.read_text(encoding="utf-8")),
+            dict[str, object],
+        )
     except tomllib.TOMLDecodeError as err:
         raise ConfigError(f"Cannot read sync config {path}: {err}") from err
-    sync = DictCodec.coerce(raw.get("sync", {}))
-    pull_request = DictCodec.coerce(raw.get("pull_request", {}))
+    sync = convert(raw.get("sync"), dict[str, object], default={})
+    pull_request = convert(raw.get("pull_request"), dict[str, object], default={})
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -814,7 +817,7 @@ def _validate_import_workflow_yaml(
 ) -> None:
     """Validate the exported repo-to-loop import workflow matches settings."""
     try:
-        parsed = DictCodec.coerce(yaml.safe_load(workflow_text))
+        parsed = convert(yaml.safe_load(workflow_text), dict[object, object])
     except yaml.YAMLError as err:
         raise ConfigError(f"Cannot read sync workflow: {err}") from err
     workflow = parsed

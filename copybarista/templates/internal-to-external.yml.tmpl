@@ -79,6 +79,10 @@ jobs:
       - uses: @@USES_SETUP_UV@@
         with:
           working-directory: source
+          # The export installs three small tools. setup-uv's default cache key
+          # hashes the source's lock files, so it would restore the source repo's
+          # full-environment uv cache, which can outgrow the runner's disk.
+          enable-cache: false
       - uses: @@USES_CHECKOUT@@
         with:
           repository: ${{ env.TARGET_REPO }}
@@ -94,7 +98,8 @@ jobs:
         env:
           PYTHONPATH: source
         run: |
-          uv --quiet run --no-project --with pyyaml --with ruff python3 \
+          uv --quiet run --no-project --with msgspec --with pyyaml --with rignore --with ruff \
+            python3 \
             @@SYNC_EXPORT_SCRIPT@@ \
             --source-dir source \
             --project-path @@SOURCE_ROOT@@ \

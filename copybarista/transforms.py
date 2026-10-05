@@ -188,12 +188,10 @@ def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
       count: Number of marker regions processed.
 
     """
+    # ``split`` leaves a final newline as an empty last line, which no marker
+    # matches, so ``join`` restores the text's ending as it was. Popping that
+    # line and re-adding a newline would turn an empty text into one.
     lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-        trailing_newline = True
-    else:
-        trailing_newline = False
     result: list[str] = []
     i = 0
     count = 0
@@ -225,10 +223,7 @@ def uncomment_source_text(text: str, transform: Transform) -> tuple[str, int]:
         else:
             result.append(lines[i])
             i += 1
-    final = "\n".join(result)
-    if trailing_newline:
-        final += "\n"
-    return final, count
+    return "\n".join(result), count
 
 
 def line_has_marker_token(line: str, marker: str) -> bool:
@@ -657,6 +652,7 @@ def _ruff_format(
             raise TransformError(f"Transformation '{transform.id}' matched no files")
         return _TransformResult(changed=0, count=0, files=())
     before = _snapshot_regular_files(root=root, target=target)
+    newest_tick = _newest_tick_contents(root=root, snapshot=before)
     runner = CommandRunner()
     try:
         runner.run(
@@ -682,7 +678,10 @@ def _ruff_format(
         ) from err
     after = _snapshot_regular_files(root=root, target=target)
     changed_paths = tuple(
-        path for path in _sorted_by_segments(after) if before.get(path) != after[path]
+        path
+        for path in _sorted_by_segments(after)
+        if before.get(path) != after[path]
+        or (path in newest_tick and (root / path).read_bytes() != newest_tick[path])
     )
     deleted_paths = tuple(
         path for path in _sorted_by_segments(before) if path not in after
@@ -751,12 +750,10 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
 
 def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
     """Replace an internal/public conditional block with its else branch."""
+    # ``split`` leaves a final newline as an empty last line, which no marker
+    # matches, so ``join`` restores the text's ending as it was. Popping that
+    # line and re-adding a newline would turn an empty text into one.
     lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-        trailing_newline = True
-    else:
-        trailing_newline = False
     result: list[str] = []
     i = 0
     count = 0
@@ -793,10 +790,7 @@ def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
         else:
             result.append(lines[i])
             i += 1
-    final = "\n".join(result)
-    if trailing_newline:
-        final += "\n"
-    return final, count
+    return "\n".join(result), count
 
 
 def _file_report(
@@ -863,10 +857,11 @@ def _read_text(path: Path) -> str:
         raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
 
 
-# Not the bytes: reading every staged file twice cost 0.36s of a priml export. A same-
-# length rewrite is still caught because ruff runs as a subprocess whose startup exceeds
-# the filesystem timestamp tick, so any file it writes carries a later ``mtime_ns`` than
-# the snapshot taken before it was spawned.
+# Not the bytes: reading every staged file twice cost 0.36s of a priml export. Size and
+# mtime miss only a same-size rewrite within the snapshot's own timestamp tick: ruff's
+# quote normalization keeps the size, and on a filesystem stamping whole seconds a file
+# the preceding transform wrote milliseconds earlier keeps its mtime through ruff's
+# rewrite. ``_newest_tick_contents`` keeps the bytes of just the files in that tick.
 #
 # ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``: the two
 # snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s as strings.
@@ -888,3 +883,19 @@ def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, in
             rel = full[prefix:].replace(os.sep, "/")
             snapshot[rel] = (status.st_size, status.st_mtime_ns)
     return snapshot
+
+
+# Every write after the snapshot lands in its newest tick or a later one, so a file
+# stamped earlier cannot be rewritten without its mtime moving. Measuring the tick from
+# the newest mtime rather than the clock needs no assumption about its length.
+def _newest_tick_contents(
+    root: Path,
+    snapshot: dict[str, tuple[int, int]],
+) -> dict[str, bytes]:
+    """Return the bytes of the snapshot's files that share its newest mtime."""
+    newest = max((mtime_ns for _, mtime_ns in snapshot.values()), default=None)
+    return {
+        path: (root / path).read_bytes()
+        for path, (_, mtime_ns) in snapshot.items()
+        if mtime_ns == newest
+    }

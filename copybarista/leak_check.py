@@ -8,20 +8,21 @@ markers, and similar release mistakes before any destination is mutated.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import os
-import re
 
 from copybarista.config import reverse_file_moves, reverse_move_transforms
 from copybarista.errors import LeakCheckError
 from copybarista.globs import GlobSet, Globstar
+from copybarista.lib.files.grep import GrepError, Query, grep
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from copybarista.config import (
         FileSelection,
         ForbiddenPathRule,
@@ -157,8 +158,12 @@ def _list_tree(root: Path) -> _TreeListing:
         with os.scandir(pending.pop()) as scan:
             for entry in scan:
                 rel = entry.path[prefix:].replace(os.sep, "/")
-                entries.append((rel, entry.is_file(follow_symlinks=False)))
-                if entry.is_dir(follow_symlinks=False):
+                # pragma: no mutate start -- follow_symlinks=None is falsy too.
+                is_file = entry.is_file(follow_symlinks=False)
+                is_dir = entry.is_dir(follow_symlinks=False)
+                # pragma: no mutate end
+                entries.append((rel, is_file))
+                if is_dir:
                     pending.append(entry.path)
     entries.sort(key=_entry_segments)
     return _TreeListing(
@@ -223,6 +228,9 @@ def _forbidden_path_violations(
     return tuple(violations)
 
 
+# Each rule names its files by ``GlobSet``, so they are handed over by name and searched
+# whatever ripgrep's own ignore rules say. ``text`` searches a file with a NUL byte too:
+# a leak in one is still a leak.
 def _forbidden_text_violations(
     *,
     root: Path,
@@ -230,26 +238,69 @@ def _forbidden_text_violations(
     rel_files: tuple[str, ...],
     globstar: Globstar,
 ) -> tuple[LeakViolation, ...]:
-    """Return forbidden-text violations, reading each matched file once."""
-    texts: dict[str, str] = {}
-    violations: list[LeakViolation] = []
-    for rule in rules:
-        matcher = GlobSet(include=rule.paths, exclude=rule.exclude, globstar=globstar)
-        pattern = re.compile(rule.pattern, flags=re.MULTILINE)
-        for rel in rel_files:
-            if not matcher.matches(rel):
-                continue
-            if rel not in texts:
-                texts[rel] = (root / rel).read_text(encoding="utf-8", errors="replace")
-            match = pattern.search(texts[rel])
-            if match is None:
-                continue
-            violations.append(
-                LeakViolation(
-                    rule_id=rule.id,
-                    path=rel,
-                    line=texts[rel].count("\n", 0, match.start()) + 1,
-                    message=rule.message or "forbidden text matched",
-                ),
-            )
-    return tuple(violations)
+    """Return forbidden-text violations, one ripgrep search per rule, all at once."""
+    # Every rule is its own ``rg`` process, so they overlap instead of queueing.
+    # pragma: no mutate start -- the pool size changes speed, never the result.
+    with ThreadPoolExecutor(max_workers=max(1, len(rules))) as pool:
+        # pragma: no mutate end
+        search = partial(
+            _rule_violations,
+            root=root,
+            rel_files=rel_files,
+            globstar=globstar,
+        )
+        found = list(pool.map(search, rules))
+    return tuple(violation for violations in found for violation in violations)
+
+
+def _rule_violations(
+    rule: ForbiddenTextRule,
+    /,
+    *,
+    root: Path,
+    rel_files: tuple[str, ...],
+    globstar: Globstar,
+) -> list[LeakViolation]:
+    """Return one rule's violations: the first matching line of each file."""
+    matcher = GlobSet(include=rule.paths, exclude=rule.exclude, globstar=globstar)
+    prefix = f"{root}/"
+    names = {f"{prefix}{rel}": rel for rel in rel_files if matcher.matches(rel)}
+    # Multiline, so a rule written with ``\s`` can match across lines as
+    # Python ``re.search`` over the whole text did.
+    query = Query(
+        pattern=rule.pattern,
+        output_mode="content",
+        multiline=True,
+        text=True,
+    )
+    try:
+        rows = grep([Path(name) for name in names], query)
+    except GrepError as error:
+        raise LeakCheckError(
+            f"Leak check rule {rule.id!r} could not run: {error}",
+        ) from error
+    first: dict[str, int] = {}
+    for row in rows:
+        name, line = _located(row, names=names)
+        first.setdefault(name, line)
+    return [
+        LeakViolation(
+            rule_id=rule.id,
+            path=name,
+            line=line,
+            message=rule.message or "forbidden text matched",
+        )
+        for name, line in first.items()
+    ]
+
+
+# A path may itself hold ``:`` followed by digits, so the row is cut at the first
+# colon whose prefix is a searched file, never at a pattern.
+def _located(row: str, *, names: dict[str, str]) -> tuple[str, int]:
+    """Split a ``path:line:text`` row into its root-relative path and line."""
+    name = row.partition(":")[0]
+    rest = row[len(name) + 1 :]
+    while name not in names:
+        head, _, rest = rest.partition(":")
+        name = f"{name}:{head}"
+    return names[name], int(rest.partition(":")[0])

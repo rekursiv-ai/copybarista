@@ -17,7 +17,7 @@ import yaml
 
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
-from copybarista.lib.custom_json import DictCodec, ListCodec
+from copybarista.lib.custom_json import convert
 from copybarista.sync_setup import (
     PG_MAJOR,
     SyncSettings,
@@ -576,7 +576,7 @@ def test_apt_steps_cache_debs_and_serve_postgresql_from_pgdg(
     install = steps[
         _step_index(steps, lambda step: step.get("name") == "Install system packages")
     ]
-    with_config = DictCodec.coerce(cache.pop("with"))
+    with_config = convert(cache.pop("with"), dict[str, object])
 
     assert cache == {
         "name": "Cache apt packages",
@@ -714,6 +714,18 @@ def test_export_workflow_can_guard_sync_token_login():
     assert 'COPYBARISTA_SYNC_TOKEN_LOGIN: "rekursiv-bot"' in workflow
     assert "gh api user --jq .login" in workflow
     assert "git author settings cannot change GitHub push or PR attribution" in workflow
+
+
+def test_export_workflow_skips_the_source_repos_uv_cache():
+    steps = _job_steps(export_workflow(_settings()), job="export-pr")
+    setup_uv = steps[
+        _step_index(
+            steps,
+            lambda step: step.get("uses") == action_ref("astral-sh/setup-uv"),
+        )
+    ]
+
+    assert convert(setup_uv["with"], dict[str, object])["enable-cache"] is False
 
 
 def test_generated_workflows_keep_readable_line_continuations():
@@ -897,7 +909,7 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
     """The import token stays on the credential-free checkout and the PR step."""
     steps = _import_steps(import_workflow(_settings()))
     ledger = steps[_step_index(steps, lambda step: _checkout_path(step) == "target")]
-    with_config = DictCodec.coerce(ledger["with"])
+    with_config = convert(ledger["with"], dict[str, object])
 
     assert with_config.get("persist-credentials") is False
     assert with_config.get("token") == "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}"
@@ -970,11 +982,11 @@ def _import_steps(workflow: str) -> list[dict[str, object]]:
 
 def _job_steps(workflow: str, *, job: str) -> list[dict[str, object]]:
     """Return the parsed steps of one generated workflow job, in file order."""
-    parsed = DictCodec.coerce(yaml.safe_load(workflow))
-    jobs = DictCodec.coerce(parsed["jobs"])
-    job_config = DictCodec.coerce(jobs[job])
-    steps = ListCodec.coerce(job_config["steps"], object)
-    return [DictCodec.coerce(step) for step in steps]
+    parsed = convert(yaml.safe_load(workflow), dict[object, object])
+    jobs = convert(parsed["jobs"], dict[str, object])
+    job_config = convert(jobs[job], dict[str, object])
+    steps = convert(job_config["steps"], list[object])
+    return [convert(step, dict[str, object]) for step in steps]
 
 
 def _step_index(
@@ -991,7 +1003,7 @@ def _checkout_path(step: dict[str, object]) -> str:
     """Return the `path` a checkout step writes to, or empty for other steps."""
     if step.get("uses") != action_ref("actions/checkout"):
         return ""
-    with_config = DictCodec.coerce(step.get("with", {}))
+    with_config = convert(step.get("with"), dict[str, object], default={})
     return str(with_config.get("path", ""))
 
 
