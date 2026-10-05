@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 
+import os
 import sys
 
 import pytest
@@ -16,6 +18,7 @@ from copybarista.transforms import (
     apply_transforms,
     strip_source_regions,
     strip_source_text,
+    uncomment_source_text,
 )
 
 
@@ -414,6 +417,70 @@ def test_strip_block_rejects_nested_start_marker(tmp_path: Path):
                 ),
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("keep\n# S\nsecret\n", "did not find end marker"),
+        # The nested start is the NEXT one after the block opens, not the last.
+        ("# S\na\n# S\nb\n# E\n# S\nc\n# E\n", "nested start"),
+    ],
+)
+def test_strip_block_names_a_malformed_block(
+    tmp_path: Path,
+    source: str,
+    message: str,
+) -> None:
+    (tmp_path / "m.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(TransformError, match=message):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="x",
+                    type="strip_block",
+                    path="m.py",
+                    start="# S",
+                    end="# E",
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "start", "end", "exported"),
+    [
+        # The scan resumes where it cut, so a marker the cut itself spells is text.
+        ("## S\nx\n# E S\n", "# S", "# E", "# S\n"),
+        # One repeated marker fences a block, as does an end extending its start.
+        ("a\n# --\nsecret\n# --\nb\n", "# --", "# --", "a\nb\n"),
+        ("a\n# int\nsecret\n# int end\nb\n", "# int", "# int end", "a\nb\n"),
+        # A blank first line survives a block that runs to the end of the file.
+        ("\n# S\nx\n# E", "# S", "# E", "\n"),
+    ],
+)
+def test_strip_block_export_matches_the_reverse_import_oracle(
+    tmp_path: Path,
+    source: str,
+    start: str,
+    end: str,
+    exported: str,
+) -> None:
+    """The file transform and ``strip_source_text`` strip the same way.
+
+    The reverse import re-inserts the regions ``strip_source_text`` reports, so
+    an export that strips differently from it cannot be imported back.
+    """
+    transform = Transform(id="x", type="strip_block", path="m.py", start=start, end=end)
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+
+    apply_transforms(tmp_path, (transform,))
+
+    assert path.read_text(encoding="utf-8") == exported
+    assert strip_source_text(source, transform) == exported
 
 
 def test_strip_block_non_inclusive_preserves_spacing(tmp_path: Path):
@@ -961,6 +1028,60 @@ def test_ruff_format_uses_current_python_environment(
     assert calls[1][:3] == [sys.executable, "-m", "ruff"]
 
 
+def test_ruff_format_reports_a_same_size_rewrite_within_one_tick(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Quote normalization keeps the size; a coarse clock keeps the mtime.
+
+    The transform before ``ruff_format`` writes the file milliseconds before
+    ruff starts, so on a filesystem stamping whole seconds ruff's rewrite lands
+    in the same tick, and a report built from size and mtime leaves it out.
+    """
+    module = tmp_path / "module.py"
+    module.write_text("x = 'a'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        transforms,
+        "CommandRunner",
+        partial(_Rewriter, path=module, text='x = "a"\n', keep_mtime=True),
+    )
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (Transform(id="ruff", type="ruff_format", path="."),),
+    )
+
+    assert [file.destination for file in report.files] == ["module.py"]
+
+
+def test_ruff_format_reports_only_files_whose_bytes_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A file read because it was the newest is reported only if it changed.
+
+    Ruff's rewrite of ``other.py`` makes it the newest file, so ``module.py``
+    leaves the newest tick during the run; that alone is not a change.
+    """
+    module = tmp_path / "module.py"
+    module.write_text("x = 1\n", encoding="utf-8")
+    other = tmp_path / "other.py"
+    other.write_text("y = 'b'\n", encoding="utf-8")
+    os.utime(other, ns=(2_000_000_000, 2_000_000_000))
+    monkeypatch.setattr(
+        transforms,
+        "CommandRunner",
+        partial(_Rewriter, path=other, text='y = "b"\n', keep_mtime=False),
+    )
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (Transform(id="ruff", type="ruff_format", path="."),),
+    )
+
+    assert [file.destination for file in report.files] == ["other.py"]
+
+
 def test_uncomment_single_line(tmp_path: Path):
     path = tmp_path / "setup.cfg"
     path.write_text(
@@ -1139,6 +1260,74 @@ def test_uncomment_block_missing_end_raises(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize(
+    ("source", "uncommented"),
+    [
+        # An empty block drops just its two marker lines.
+        ("# S\n# E\ny = 2\n", "y = 2\n"),
+        # The end is sought after the start line, which may name it.
+        ("# S -- through # E\n# x = 1\n# E\ny = 2\n", "x = 1\ny = 2\n"),
+    ],
+)
+def test_uncomment_block_closes_at_the_next_end_marker(
+    source: str,
+    uncommented: str,
+) -> None:
+    transform = Transform(id="x", type="uncomment", path="m.py", start="# S", end="# E")
+
+    assert uncomment_source_text(source, transform) == (uncommented, 1)
+
+
+@pytest.mark.parametrize(
+    ("source", "uncommented"),
+    [
+        ("", ""),
+        ("y = 2", "y = 2"),
+        ("# x = 1  # MARK\n\ny = 2", "x = 1\n\ny = 2"),
+        ("# x = 1  # MARK\n\ny = 2\n", "x = 1\n\ny = 2\n"),
+    ],
+)
+def test_uncomment_keeps_the_ending_it_was_given(
+    source: str,
+    uncommented: str,
+) -> None:
+    """Uncommenting rewrites marked lines only, never how the text ends.
+
+    An empty text used to come back as a lone newline.
+    """
+    transform = Transform(id="x", type="uncomment", path="m.py", start="# MARK")
+
+    assert uncomment_source_text(source, transform)[0] == uncommented
+
+
+@pytest.mark.parametrize(
+    ("source", "exported"),
+    [
+        ("", ""),
+        ("a\n# IF\nx\n# ELSE\n# y\n# END\nb", "a\ny\nb"),
+        ("a\n# IF\nx\n# ELSE\n# y\n# END\nb\n", "a\ny\nb\n"),
+    ],
+)
+def test_strip_block_if_else_keeps_the_ending_it_was_given(
+    source: str,
+    exported: str,
+) -> None:
+    """The ``else`` strip rewrites its blocks only, never how the text ends.
+
+    An empty text used to come back as a lone newline.
+    """
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m.py",
+        start="# IF",
+        end="# END",
+        else_marker="# ELSE",
+    )
+
+    assert strip_source_text(source, transform) == exported
+
+
 def test_uncomment_required_fails_when_no_marker_found(tmp_path: Path):
     (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
 
@@ -1176,6 +1365,23 @@ def test_uncomment_optional_allows_no_matches(tmp_path: Path):
     assert path.read_text(encoding="utf-8") == "x = 1\n"
     assert result.changed == 0
     assert result.count == 0
+
+
+class _Rewriter:
+    """Stands in for ruff: its ``format`` call rewrites one file in place."""
+
+    def __init__(self, *, path: Path, text: str, keep_mtime: bool) -> None:
+        self._path = path
+        self._text = text
+        self._keep_mtime = keep_mtime
+
+    def run(self, argv: list[str], **_: object) -> object:
+        if "format" in argv:
+            mtime_ns = self._path.stat().st_mtime_ns
+            self._path.write_text(self._text, encoding="utf-8")
+            if self._keep_mtime:
+                os.utime(self._path, ns=(mtime_ns, mtime_ns))
+        return object()
 
 
 def _entry(source: str, destination: str) -> ManifestEntry:

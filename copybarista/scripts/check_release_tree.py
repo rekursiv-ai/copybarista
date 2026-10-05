@@ -124,10 +124,12 @@ def check_tree(*, root: Path, allow_root_git: bool = False) -> tuple[str, ...]:
 
 def _parser() -> argparse.ArgumentParser:
     """Build the release-tree validation CLI parser."""
+    # pragma: no mutate start -- all split variants select the same description.
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 2)[2],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # pragma: no mutate end
     parser.add_argument("root")
     parser.add_argument("--allow-root-git", action="store_true")
     return parser
@@ -198,15 +200,19 @@ def _content_errors(root: Path) -> tuple[str, ...]:
             '"private/testdata/**/*.py"',
         ),
     }
+    # Standard library only: the script runs by path from a bare checkout, where
+    # neither this package nor its dependencies are importable.
     errors: list[str] = []
     for path in _content_paths(root):
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         if any(marker in text for marker in private_sync_markers):
             errors.append(f"Private sync marker must not be exported: {rel}")
-        for pattern, label in blocked_text:
-            if re.search(pattern, text, flags=re.IGNORECASE):
-                errors.append(f"{label} must not be exported: {rel}")
+        errors.extend(
+            f"{label} must not be exported: {rel}"
+            for pattern, label in blocked_text
+            if re.search(pattern, text, flags=re.IGNORECASE)
+        )
         errors.extend(
             f"Source-only config text must not be exported: {rel}"
             for token in blocked_text_by_path.get(rel, ())

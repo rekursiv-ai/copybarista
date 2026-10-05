@@ -32,7 +32,7 @@ import time
 import tomllib
 
 from copybarista.config import Transform, load_config
-from copybarista.lib.custom_json import DictCodec, ListCodec, loads
+from copybarista.lib.custom_json import ReadError, convert, loads
 from copybarista.scripts.sync_import_change import (
     ImportBaseError,
     last_synced_public_sha,
@@ -1217,10 +1217,10 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
     """Return ``--upgrade-package`` flags for every git-branch dependency."""
     table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     for key in ("tool", "uv", "sources"):
-        table = DictCodec.coerce(table).get(key, {})
+        table = convert(table, dict[str, object]).get(key, {})
     return [
         flag
-        for name, source in DictCodec.coerce(table).items()
+        for name, source in convert(table, dict[str, object]).items()
         if isinstance(source, dict) and "branch" in source
         for flag in ("--upgrade-package", name)
     ]
@@ -1544,11 +1544,11 @@ def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]
     )
     parsed = _json_from_gh(result.stdout, context=f"open PR list for {repo}")
     try:
-        items = ListCodec.coerce(parsed, default=None)
-    except TypeError as err:
+        items = convert(parsed, list[object])
+    except ReadError as err:
         raise PrReplayError(f"Open PR list for {repo} is not a list.") from err
     out: list[str] = []
-    for row in ListCodec.mappings(items):
+    for row in convert(items, list[dict[str, object]]):
         branch = str(row.get("headRefName", ""))
         if branch.startswith(prefix):
             out.append(f"#{row.get('number', 0)} {branch}")
@@ -1578,8 +1578,8 @@ def _current_pr(*, branch: str, repo: str, cwd: Path) -> CurrentPr | None:
         context=f"GitHub PR state for branch {branch}",
     )
     try:
-        raw = DictCodec.coerce(parsed, default=None)
-    except TypeError as err:
+        raw = convert(parsed, dict[str, object])
+    except ReadError as err:
         raise PrReplayError(
             f"GitHub PR state for branch {branch} is not a mapping.",
         ) from err
