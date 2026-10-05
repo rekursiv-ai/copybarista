@@ -1223,13 +1223,19 @@ def _matches_transform(
 # only the path ``"pkg"`` itself, never ``pkg/foo.py`` (and a glob on ``"."`` matches
 # nothing), which would silently skip the post-import reformat for every file under the
 # target.
+#
+# Within that subtree ruff's directory walk formats only Python sources. The post-import
+# reformat names each file, and an explicit path bypasses the walk: ruff then parses a
+# JSON object as a Python dict and adds trailing commas no JSON parser accepts. So a
+# subtree matches only ruff's default source suffixes, while a single-file target still
+# matches itself, because forward passes it to ruff verbatim.
 def _ruff_format_matches(transform: Transform, public_path: str) -> bool:
     """Return whether a ``ruff_format`` transform reformats a public path."""
-    path = transform.path
-    if path in (".", "", "./"):
+    path = transform.path.removesuffix("/")
+    if public_path == path:
         return True
-    path = path.removesuffix("/")
-    return public_path == path or public_path.startswith(f"{path}/")
+    in_subtree = path in (".", "") or public_path.startswith(f"{path}/")
+    return in_subtree and public_path.endswith((".py", ".pyi", ".ipynb"))
 
 
 def _has_explicit_reversal(transform: Transform) -> bool:

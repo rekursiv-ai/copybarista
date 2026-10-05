@@ -1001,6 +1001,62 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
     ), f"whole-tree ruff_format did not reformat imported file:\n{written}"
 
 
+@pytest.mark.cli_python_subprocess
+def test_import_leaves_json_untouched_under_whole_tree_ruff_format(tmp_path: Path):
+    """A whole-tree ``ruff_format`` never rewrites an imported JSON file.
+
+    Forward, ``ruff format .`` walks only Python sources. The post-import reformat
+    names each file, which bypasses that walk, so ruff parsed a JSON object as a
+    Python dict and added trailing commas no JSON parser accepts (priml's etth1
+    ``results/local_cpu.json``).
+    """
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo").mkdir(parents=True)
+    (source_base / "internal/demo/module.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    public_base.mkdir()
+    (public_base / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    body = '{\n  "losses": [\n    0.5,\n    0.25\n  ],\n  "equal": true\n}\n'
+    (public_head / "result.json").write_text(body, encoding="utf-8")
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            verify=False,
+        ),
+    )
+
+    assert (destination / "internal/demo/result.json").read_text(
+        encoding="utf-8",
+    ) == body
+
+
 @pytest.mark.parametrize(
     ("ruff_path", "public_path", "expected"),
     [
@@ -1020,6 +1076,15 @@ def test_import_reformats_with_whole_tree_ruff_format_path(tmp_path: Path):
         # A single-file target matches exactly that file.
         ("pkg/module.py", "pkg/module.py", True),
         ("pkg/module.py", "pkg/other.py", False),
+        # Ruff's directory walk keeps only Python sources, so a subtree never
+        # formats data, prose, or golden text forward.
+        (".", "pkg/stub.pyi", True),
+        (".", "notebook.ipynb", True),
+        (".", "pkg/results/local_cpu.json", False),
+        (".", "README.md", False),
+        ("pkg", "pkg/testdata/golden.txt", False),
+        # Forward passes a single-file target to ruff verbatim, whatever its type.
+        ("pkg/result.json", "pkg/result.json", True),
     ],
 )
 def test_ruff_format_matches_treats_path_as_subtree(
@@ -1030,9 +1095,10 @@ def test_ruff_format_matches_treats_path_as_subtree(
     """``ruff_format`` path matching mirrors the forward whole-subtree format.
 
     Forward ``_ruff_format`` formats ``root / transform.path`` as a subtree, so a
-    subdir path (``pkg``) must match every file under it on import -- not only the
-    literal path string. A literal-glob match would silently skip the post-import
-    reformat for every file under a non-``"."`` target.
+    subdir path (``pkg``) must match every Python source under it on import -- not
+    only the literal path string. A literal-glob match would silently skip the
+    post-import reformat for every file under a non-``"."`` target, and matching a
+    non-Python file would reformat what the forward walk never touches.
     """
     transform = Transform(
         id="fmt",
