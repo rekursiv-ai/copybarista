@@ -2280,6 +2280,39 @@ def test_anchor_places_trailing_run_after_rewritten_neighbor():
     assert out.index("note") > out.index("real = 2")
 
 
+@pytest.mark.parametrize(
+    ("source", "public"),
+    [
+        # No blank line precedes the slot: the blank line was silently dropped.
+        ("a\n# S\nx\n# E\n\nb\n", "top\na\nb\n"),
+        # A blank line precedes the slot: the run was rejected as detached.
+        ("a\n\nc\n# S\nx\n# E\n\nb\n", "top\na\n\nc\nb\n"),
+    ],
+)
+def test_anchor_restores_blank_lines_an_inclusive_block_cut_took(
+    source: str,
+    public: str,
+):
+    """Anchoring must treat the blank lines an inclusive cut took as source-only.
+
+    Export collapses the blank lines after an inclusive block into the cut, so
+    they are absent from public. Counted as kept, each one aligned to nothing:
+    the run before it was rejected whenever public held any earlier blank line,
+    and otherwise re-inserted without it -- a source the re-strip gate accepts
+    while the blank line is gone. The edit above the block shifts every offset,
+    so placement goes through anchoring rather than the offset splice.
+    """
+    block = Transform(id="x", type="strip_block", path="m", start="# S", end="# E")
+
+    out = _anchor_source_only_regions(
+        source_text=source,
+        public_text=public,
+        transform=block,
+    )
+
+    assert out == f"top\n{source}"
+
+
 def test_removed_regions_rejects_else_block_rewrite():
     """An ``else``-branch strip_block cannot be reversed by re-insertion.
 

@@ -1842,32 +1842,30 @@ def _align_kept_to_public(
     return aligned
 
 
+# Read off the export's own walk rather than a second marker scan: an inclusive cut also
+# takes the blank lines after its block, which a marker scan counted as kept. Absent from
+# public, each aligned to nothing, so the run before it was rejected as detached, or was
+# re-inserted while the blank line silently vanished from source. A line the cut only
+# partly covers (a mid-line marker) stays kept; it matches no public line either way.
 def _source_only_line_mask(
     *,
     source_lines: list[str],
     transform: Transform,
 ) -> list[bool]:
     """Return a per-line mask of which source lines the transform removes."""
-    if transform.type == "internal_lines":
-        marker = transform.start
-        return [line_has_marker_token(line, marker) for line in source_lines]
-    # strip_block: mark lines inside a start..end block (inclusive of markers when
-    # the transform is inclusive, exclusive of them otherwise).
-    start, end = transform.start, transform.end
-    inside = False
+    # Each region's offset is into the stripped text; the regions removed before
+    # it shift that back to its source offset.
+    spans: list[tuple[int, int]] = []
+    shift = 0
+    for offset, text in strip_source_regions("".join(source_lines), transform)[1]:
+        spans.append((offset + shift, offset + shift + len(text)))
+        shift += len(text)
     mask: list[bool] = []
+    line_start = 0
     for line in source_lines:
-        is_start = bool(start) and start in line
-        is_end = bool(end) and end in line
-        if is_start and not inside:
-            inside = True
-            mask.append(transform.inclusive)
-            continue
-        if is_end and inside:
-            inside = False
-            mask.append(transform.inclusive)
-            continue
-        mask.append(inside)
+        line_end = line_start + len(line)
+        mask.append(any(lo <= line_start and line_end <= hi for lo, hi in spans))
+        line_start = line_end
     return mask
 
 
