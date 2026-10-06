@@ -1384,6 +1384,63 @@ class _Rewriter:
         return object()
 
 
+@pytest.mark.parametrize(
+    "transform",
+    [
+        Transform(id="r", type="replace", path="**/m.py", before="X", after="Y"),
+        Transform(id="s", type="strip_block", path="**/m.py", start="# S", end="# E"),
+        Transform(id="i", type="internal_lines", path="**/m.py", start="# S"),
+        Transform(id="u", type="uncomment", path="**/m.py", start="# S"),
+    ],
+    ids=["replace", "strip_block", "internal_lines", "uncomment"],
+)
+def test_every_text_transform_honors_one_or_more_globstar(
+    tmp_path: Path,
+    transform: Transform,
+):
+    """``**/m.py`` needs at least one directory, so a root ``m.py`` is untouched.
+
+    Dropping the workflow's ``globstar`` anywhere on the way to the matcher
+    falls back to ``zero_or_more``, which also rewrites the root file.
+    """
+    text = "X\n# S\n# X\n# E\n"
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "m.py").write_text(text, encoding="utf-8")
+    (tmp_path / "sub" / "m.py").write_text(text, encoding="utf-8")
+
+    (report,) = apply_transforms(tmp_path, (transform,), globstar="one_or_more")
+
+    assert (tmp_path / "m.py").read_text(encoding="utf-8") == text
+    assert (tmp_path / "sub" / "m.py").read_text(encoding="utf-8") != text
+    assert [file.destination for file in report.files] == ["sub/m.py"]
+
+
+def test_apply_transform_alone_walks_root_and_defaults_to_one_or_more(
+    tmp_path: Path,
+):
+    """Called without a listing or a globstar, it lists ``root`` itself."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "m.py").write_text("X\n", encoding="utf-8")
+    (tmp_path / "sub" / "m.py").write_text("X\n", encoding="utf-8")
+    transform = Transform(
+        id="swap",
+        type="replace",
+        path="**/m.py",
+        before="X",
+        after="Y",
+    )
+
+    report = transforms.apply_transform(
+        tmp_path,
+        transform=transform,
+        sources_by_destination={},
+    )
+
+    assert (tmp_path / "m.py").read_text(encoding="utf-8") == "X\n"
+    assert (tmp_path / "sub" / "m.py").read_text(encoding="utf-8") == "Y\n"
+    assert (report.id, report.type, report.path) == ("swap", "replace", "**/m.py")
+
+
 def _entry(source: str, destination: str) -> ManifestEntry:
     return ManifestEntry(
         source=source,
