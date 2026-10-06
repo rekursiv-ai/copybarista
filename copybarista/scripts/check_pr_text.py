@@ -48,7 +48,9 @@ def main() -> int:
       exit_code: 0 if no violations, 1 if monorepo references found.
 
     """
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 2)[2])
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
+    )
     _add_arguments(parser)
     args = parser.parse_args()
     message = Path(cast(str, args.message_file)).read_text(encoding="utf-8")

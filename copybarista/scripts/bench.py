@@ -173,7 +173,7 @@ class _Flags(Protocol):
 def _parser() -> argparse.ArgumentParser:
     """Build the benchmark CLI parser."""
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("config")

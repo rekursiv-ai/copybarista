@@ -126,7 +126,7 @@ def _parser() -> argparse.ArgumentParser:
     """Build the release-tree validation CLI parser."""
     # pragma: no mutate start -- all split variants select the same description.
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # pragma: no mutate end

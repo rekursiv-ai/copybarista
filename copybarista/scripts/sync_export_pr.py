@@ -801,7 +801,7 @@ def _run_export_sync(request: ExportRequest) -> None:
 def _parser() -> argparse.ArgumentParser:
     """Build the source-to-public sync CLI parser."""
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
