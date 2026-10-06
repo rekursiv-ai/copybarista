@@ -431,8 +431,7 @@ def _replace(
         matched_files += 1
         original = _read_text(path)
         if template is not None:
-            replacements = template.count(original)
-            updated = template.apply(original)
+            updated, replacements = template.apply_counted(original)
         else:
             replacements = original.count(transform.before)
             updated = original.replace(transform.before, transform.after)

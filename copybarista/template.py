@@ -51,6 +51,10 @@ class ReplaceTemplate:
     # while ``apply``/``count`` stay a single ``re`` pass.
     alternatives: tuple[tuple[str, int], ...] = ()
 
+    # A substring every match contains. Most files hold none of a rule's text, and
+    # ``in`` rejects them far faster than the regex engine can.
+    required: str = ""
+
     def apply(self, text: str) -> str:
         """Return ``text`` with every ``before`` match rendered as ``after``.
 
@@ -61,7 +65,7 @@ class ReplaceTemplate:
           result: The str.
 
         """
-        return self.pattern.sub(self.render, text)
+        return self.apply_counted(text)[0]
 
     def count(self, text: str) -> int:
         """Return how many non-overlapping ``before`` matches occur in ``text``.
@@ -73,7 +77,21 @@ class ReplaceTemplate:
           result: The int.
 
         """
-        return sum(1 for _ in self.pattern.finditer(text))
+        return self.apply_counted(text)[1]
+
+    def apply_counted(self, text: str) -> tuple[str, int]:
+        """Return ``apply(text)`` and ``count(text)`` from one regex pass.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The rewritten text and the number of matches replaced.
+
+        """
+        if self.required not in text:
+            return text, 0
+        return self.pattern.subn(self.render, text)
 
     def render(self, match: re.Match[str]) -> str:
         """Render the ``after`` template for one ``before`` match.
@@ -148,7 +166,15 @@ def compile_replace(
             + ", ".join(sorted(unused)),
         )
     pattern = _build_pattern(tokens=before_tokens, groups=groups)
-    return ReplaceTemplate(pattern=pattern, after_tokens=after_tokens)
+    return ReplaceTemplate(
+        pattern=pattern,
+        after_tokens=after_tokens,
+        required=max(
+            (token.value for token in before_tokens if not token.is_group),
+            key=len,
+            default="",
+        ),
+    )
 
 
 # Python spells one module two ways: the dotted token (``import a.b.c``,
@@ -212,6 +238,8 @@ def compile_module_replace(*, before: str, after: str) -> ReplaceTemplate:
             _Token(value="ft", is_group=True),
         ),
         alternatives=(("dl", 3), ("fl", 8)),
+        # Both alternatives spell the parent: ``before`` starts with it.
+        required=before_parent,
     )
 
 
