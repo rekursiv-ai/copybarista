@@ -630,7 +630,7 @@ def _export_copybarista_requirements(*, target_dir: Path, runner_temp: Path) -> 
 def _parser() -> argparse.ArgumentParser:
     """Build the public-to-source sync CLI parser."""
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--public-base", default="public-base")
