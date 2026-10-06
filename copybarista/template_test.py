@@ -108,6 +108,12 @@ def test_rejects_after_group_absent_from_before() -> None:
         )
 
 
+def test_rejects_groups_that_are_valid_alone_but_not_together() -> None:
+    # Each ``(?P<a>x)`` compiles; using ``a`` twice redefines the group name.
+    with pytest.raises(ConfigError, match="produce an invalid pattern"):
+        compile_replace(before="${a}${a}", after="${a}", regex_groups=(("a", "x"),))
+
+
 def test_rejects_invalid_group_regex() -> None:
     # Reported per group rather than from the assembled pattern, so the message
     # names the offending group.
