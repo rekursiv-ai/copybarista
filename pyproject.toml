@@ -21,7 +21,6 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "msgspec>=0.22.0",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
 ]
