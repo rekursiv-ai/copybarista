@@ -15,7 +15,7 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
-from copybarista.lib.custom_json import convert, parse
+from copybarista.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -66,8 +66,8 @@ def test_cli_export_writes_json_manifest(
         ],
     )
 
-    manifest = parse(capsys.readouterr().out, dict[str, object])
-    files = convert(manifest["files"], list[dict[str, object]])
+    manifest = from_plain(loads(capsys.readouterr().out), dict[str, object])
+    files = from_plain(manifest["files"], list[dict[str, object]])
     assert files[0]["destination"] == "README.md"
 
 

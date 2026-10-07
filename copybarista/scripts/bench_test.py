@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from copybarista.lib.custom_json import convert, parse
+from copybarista.lib.codec import from_plain, loads
 from copybarista.scripts import bench
 
 
@@ -65,9 +65,9 @@ def test_report_json_is_machine_readable():
         ),
     )
 
-    data = parse(report.to_json(), dict[str, object])
+    data = from_plain(loads(report.to_json()), dict[str, object])
 
-    copybarista = convert(data["copybarista"], dict[str, object])
+    copybarista = from_plain(data["copybarista"], dict[str, object])
     assert copybarista["median_sec"] == 0.2
     assert set(data) == {"copybarista"}
 
