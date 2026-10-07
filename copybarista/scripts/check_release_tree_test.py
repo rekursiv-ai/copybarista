@@ -365,7 +365,9 @@ def test_the_script_imports_only_the_standard_library():
     } | {
         node.module.split(".")[0]
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and node.level == 0
     }
 
     assert roots - {"mutmut"} <= sys.stdlib_module_names
