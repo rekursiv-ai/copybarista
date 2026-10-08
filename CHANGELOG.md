@@ -3,6 +3,45 @@
 All notable copybarista changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.6 - 2026-10-07
+
+### Changed
+
+- **Breaking:** the vendored `copybarista.lib.custom_json` is replaced by
+  `copybarista.lib.codec`. Sync settings and export PR metadata are now read
+  with its typed `from_plain`; a malformed value raises `ReadError` where it
+  raised `TypeError`.
+- The leak check's `forbidden_text` rules run through ripgrep (`rg` when
+  installed, else the Rust `ignore` walker via the new `rignore` dependency),
+  one search per rule in parallel. Rules keep their meaning: one violation per
+  file, at its first matching line. A pattern ripgrep cannot compile now fails
+  the check with `LeakCheckError` naming the rule.
+- `replace` transforms skip any file that lacks the rule's longest literal
+  text and rewrite and count in one regex pass.
+- The generated export workflow no longer restores the source repository's uv
+  cache, which could outgrow the runner's disk, and installs `rignore` for the
+  release-tree check.
+- Development: the bundled typeshed patch, pre-commit configuration and pytest
+  options are updated, and a worker-count helper is vendored as
+  `copybarista.lib.worker_count`. The supported Python versions (3.12+) are
+  unchanged.
+
+### Fixed
+
+- Import no longer drops or misplaces blank lines that an `inclusive`
+  `strip_block` collapsed on export: the source-only line mask now comes from
+  the export's own strip walk.
+- `ruff_format` transforms on a directory reverse only Python sources
+  (`.py`, `.pyi`, `.ipynb`) on import.
+- `ruff_format` reports a file it rewrote at the same size within one
+  filesystem timestamp tick (quote normalization on a whole-second
+  filesystem) as changed, instead of missing the rewrite.
+- `uncomment` and `strip_block` with `else` keep an empty file empty instead
+  of adding a newline.
+- `check_release_tree.py` runs by path from a bare checkout again, and the
+  bundled scripts' `--help` works when module docstrings are stripped
+  (`python -OO`).
+
 ## 0.1.5 - 2026-10-03
 
 ### Added
