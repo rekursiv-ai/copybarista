@@ -14,7 +14,7 @@ import re
 import shlex
 import tomllib
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import yaml
 
