@@ -14,12 +14,13 @@ import re
 import shlex
 import tomllib
 
+from treekle.codec import from_plain
+
 import yaml
 
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
-from copybarista.lib.codec import from_plain
 
 
 if TYPE_CHECKING:

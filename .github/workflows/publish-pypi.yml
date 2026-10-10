@@ -34,5 +34,13 @@ jobs:
           uv run --isolated --with "$wheel" python -c \
             "import copybarista; from copybarista.cli import main; print('ok')"
 
+      # Resolve the wheel against PyPI alone -- a symbol that exists only on
+      # treekle main fails HERE, before an irreversible upload, instead of in a
+      # user's `pip install`.
+      - name: Validate against published dependencies
+        run: |
+          wheels=(dist/copybarista-*.whl)
+          uv run --isolated --with "${wheels[0]}" python -P -c "import copybarista"
+
       - name: Publish package
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

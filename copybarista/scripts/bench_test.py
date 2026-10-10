@@ -7,9 +7,10 @@ from typing import Final
 
 import os
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from copybarista.lib.codec import from_plain, loads
 from copybarista.scripts import bench
 
 
