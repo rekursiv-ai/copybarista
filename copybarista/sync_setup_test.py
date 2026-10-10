@@ -12,12 +12,13 @@ import shutil
 import subprocess
 import sys
 
+from treekle.codec import from_plain
+
 import pytest
 import yaml
 
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
-from copybarista.lib.codec import from_plain
 from copybarista.sync_setup import (
     PG_MAJOR,
     SyncSettings,

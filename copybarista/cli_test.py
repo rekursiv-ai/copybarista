@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from copybarista.cli import _exit_code, main
@@ -15,7 +17,6 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
-from copybarista.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:

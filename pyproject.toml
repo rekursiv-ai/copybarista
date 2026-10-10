@@ -21,6 +21,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
+    "treekle",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
 ]
@@ -633,4 +634,5 @@ rekursiv-ai-typeshed = [
 compile-bytecode = true
 
 [tool.uv.sources]
+treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }
 rekursiv-ai-typeshed = { path = "packages/rekursiv-ai-typeshed" }
