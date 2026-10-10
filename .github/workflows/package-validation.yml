@@ -56,4 +56,4 @@ jobs:
           uv run python -c "import copybarista"
           rm -rf dist
           uv build --out-dir dist
-          wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"; uv run --isolated --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle" python -P -c "import copybarista; from copybarista.cli import main; print('ok')"
+          wheels=(dist/copybarista-*.whl); wheel="${wheels[0]}"; uv run --isolated --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import copybarista; from copybarista.cli import main; print('ok')"
