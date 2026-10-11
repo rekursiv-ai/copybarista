@@ -67,7 +67,7 @@ def test_report_json_is_machine_readable():
         ),
     )
 
-    data = from_plain(json_loads(report.to_json()), dict[str, object])
+    data = json_loads(report.to_json(), dict[str, object])
 
     copybarista = from_plain(data["copybarista"], dict[str, object])
     assert copybarista["median_sec"] == 0.2
