@@ -31,7 +31,8 @@ import tempfile
 import time
 import tomllib
 
-from treekle import ReadError, from_plain, loads
+from treekle import ReadError, from_plain
+from treekle.wire import json_loads
 
 from copybarista.config import Transform, load_config
 from copybarista.scripts.sync_import_change import (
@@ -529,7 +530,7 @@ def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
 def _json_from_gh(output: str, *, context: str) -> object:
     """Parse GitHub CLI JSON output with context."""
     try:
-        return loads(output)
+        return json_loads(output)
     except json.JSONDecodeError as err:
         raise PrReplayError(f"{context} was not valid JSON.") from err
 
