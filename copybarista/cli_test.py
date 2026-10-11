@@ -68,7 +68,7 @@ def test_cli_export_writes_json_manifest(
         ],
     )
 
-    manifest = from_plain(json_loads(capsys.readouterr().out), dict[str, object])
+    manifest = json_loads(capsys.readouterr().out, dict[str, object])
     files = from_plain(manifest["files"], list[dict[str, object]])
     assert files[0]["destination"] == "README.md"
 
