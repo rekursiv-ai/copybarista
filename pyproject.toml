@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "treekle",
+    "treekle>=0.1.0",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
 ]
