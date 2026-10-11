@@ -1546,11 +1546,11 @@ def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]
     )
     parsed = _json_from_gh(result.stdout, context=f"open PR list for {repo}")
     try:
-        items = from_plain(parsed, list[object])
+        items = from_plain(parsed, list[dict[str, object]])
     except ReadError as err:
         raise PrReplayError(f"Open PR list for {repo} is not a list.") from err
     out: list[str] = []
-    for row in from_plain(items, list[dict[str, object]]):
+    for row in items:
         branch = str(row.get("headRefName", ""))
         if branch.startswith(prefix):
             out.append(f"#{row.get('number', 0)} {branch}")
