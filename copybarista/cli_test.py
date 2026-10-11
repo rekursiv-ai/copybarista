@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -67,7 +68,7 @@ def test_cli_export_writes_json_manifest(
         ],
     )
 
-    manifest = from_plain(loads(capsys.readouterr().out), dict[str, object])
+    manifest = from_plain(json_loads(capsys.readouterr().out), dict[str, object])
     files = from_plain(manifest["files"], list[dict[str, object]])
     assert files[0]["destination"] == "README.md"
 

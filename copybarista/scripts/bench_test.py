@@ -7,7 +7,8 @@ from typing import Final
 
 import os
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -66,7 +67,7 @@ def test_report_json_is_machine_readable():
         ),
     )
 
-    data = from_plain(loads(report.to_json()), dict[str, object])
+    data = from_plain(json_loads(report.to_json()), dict[str, object])
 
     copybarista = from_plain(data["copybarista"], dict[str, object])
     assert copybarista["median_sec"] == 0.2
