@@ -31,8 +31,7 @@ import tempfile
 import time
 import tomllib
 
-from treekle import ReadError, from_plain
-from treekle.wire import json_loads
+from treekle import ReadError, from_plain, json_loads
 
 from copybarista.config import Transform, load_config
 from copybarista.scripts.sync_import_change import (
