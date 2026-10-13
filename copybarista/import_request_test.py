@@ -3721,6 +3721,6 @@ def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path
 
 
 if __name__ == "__main__":
-    from copybarista.lib.testing.main import test_main
+    from copybarista.lib.testing.runner import test_main
 
     test_main(__file__)

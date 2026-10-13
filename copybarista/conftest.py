@@ -8,9 +8,9 @@ after export, the installer's -- real clone cache.
 
 from __future__ import annotations
 
-from copybarista.lib.testing.resource_markers import pytest_collection_modifyitems
-from copybarista.lib.userdirs_fixture import (
+from copybarista.lib.testing.resources import (
     isolate_user_dirs,
+    pytest_collection_modifyitems,
     pytest_configure,
 )
 
