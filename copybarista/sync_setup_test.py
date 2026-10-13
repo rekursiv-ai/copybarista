@@ -1130,6 +1130,6 @@ def test_workflow_dir_falls_back_for_a_fresh_scaffold(tmp_path: Path):
 
 
 if __name__ == "__main__":
-    from copybarista.lib.testing.main import test_main
+    from copybarista.lib.testing.runner import test_main
 
     test_main(__file__)
