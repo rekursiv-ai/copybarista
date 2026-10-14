@@ -892,14 +892,32 @@ def _export_public_tree(
     # repository directory?". The list's other two consumers (the public repo's
     # package-validation.yml and the export gate) run inside a real checkout, so
     # only this path has to supply one. Staging is what makes the files visible
-    # to `--all-files`; no commit is needed, and the tree is discarded after.
+    # to `--all-files`; the commit gives HEAD to tests that record their
+    # checkout's commit (craftax ghosts' build provenance), as a real checkout
+    # has one. Mirrors ``sync_export_pr._init_validation_repo``, which this
+    # stdlib-only copy cannot import. The tree is discarded after.
     if request.refresh_public_lockfile:
         # The committed lock pins branch-tracking siblings at a stale SHA; the
         # export relocks them before validating, so validating the pin here
         # failed imports on sibling bugs already fixed on their branch.
         _run(["uv", "lock", *_git_branch_upgrades(tree / "pyproject.toml")], cwd=tree)
-    _run(["git", "init", "--quiet"], cwd=tree)
+    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=tree)
     _run(["git", "add", "--all"], cwd=tree)
+    _run(
+        [
+            "git",
+            "-c",
+            f"user.name={request.sync_user_name}",
+            "-c",
+            f"user.email={request.sync_user_email}",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Copybarista validation snapshot",
+        ],
+        cwd=tree,
+    )
     return tree
 
 

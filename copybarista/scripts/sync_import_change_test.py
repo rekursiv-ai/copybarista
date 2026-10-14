@@ -1700,10 +1700,50 @@ def test_export_public_tree_initializes_git_repo(
     )
 
     git_calls = [c for c in calls if c[:1] == ["git"]]
-    assert [c[1] for c in git_calls] == ["init", "add"], calls
+    assert [c[1] for c in git_calls[:2]] == ["init", "add"], calls
+    assert git_calls[2][-5:-2] == ["commit", "--quiet", "--allow-empty"], calls
+    assert len(git_calls) == 3, calls
     # Ordering matters: the repo must exist before any validation command runs,
     # and `_validate_target` runs them immediately after this returns.
     assert calls.index(git_calls[0]) > 0, "export must precede git init"
+
+
+@pytest.mark.cli_git
+def test_export_public_tree_gives_validation_a_head_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A validated test that records its checkout's commit must find one.
+
+    The public repo validates in a real checkout, so ``git rev-parse HEAD``
+    works there; a staged but uncommitted tree has no HEAD, which failed the
+    craftax ghosts tests only on import.
+    """
+    runner_temp = tmp_path / "runner"
+    tree = runner_temp / "copybarista-validation-tree"
+    real_run = sync_import_change._run
+
+    def fake_run(
+        argv: list[str],
+        **kwargs: Path | None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[:1] == ["git"]:
+            return real_run(argv, cwd=kwargs.get("cwd"))
+        tree.mkdir(parents=True)
+        (tree / "README.md").write_text("Exported.\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    sync_import_change._export_public_tree(
+        request=_import_request(target_dir=tmp_path / "target"),
+        project=tmp_path / "target" / "package",
+        runner_temp=runner_temp,
+        requirements=tmp_path / "copybarista-requirements.txt",
+    )
+
+    head = real_run(["git", "rev-parse", "HEAD"], cwd=tree, check=False, capture=True)
+    assert head.returncode == 0, head.stderr
 
 
 def test_no_op_import_still_writes_the_ledger_commit(
