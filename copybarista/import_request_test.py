@@ -20,7 +20,7 @@ from copybarista.config import (
     reverse_file_moves,
     reverse_relocation,
 )
-from copybarista.errors import ImportRequestError
+from copybarista.errors import ConfigError, ImportRequestError
 from copybarista.import_request import (
     ChangeRequestImporter,
     ImportRequest,
@@ -29,6 +29,7 @@ from copybarista.import_request import (
     _anchor_source_only_regions,
     _recomment_block,
     _removed_regions,
+    _reverse_else_blocks,
     _ruff_format_matches,
     _splice_public_edits,
     _splice_source_only_regions,
@@ -1657,6 +1658,147 @@ def test_merge_import_keeps_source_only_lines_a_deletion_spans():
 
     assert "SRC_ONLY\n" in spliced.splitlines(keepends=True)
     assert "a\n" not in spliced.splitlines(keepends=True)
+
+
+@pytest.mark.parametrize(
+    ("source", "ours", "edited", "expected"),
+    [
+        # A dropped source-only line between two aligned lines survives an edit
+        # to its neighbour; a line at the boundary is not "dropped".
+        ("a b SRC c", "a b c", "a B c", "a B SRC c"),
+        ("SRC a b", "a b", "a B", "SRC a B"),
+        ("a b SRC", "a b", "A b", "A b SRC"),
+        # An edited line keeps the source-only line above it in place.
+        ("a SRC b c", "a b c", "a B c", "a SRC B c"),
+        # A pure insertion at the start, middle and end; an unaligned leading
+        # source line is kept, not replaced by an insertion before it.
+        ("a b", "a b", "X a b", "X a b"),
+        ("a SRC b", "a b", "a X b", "a X SRC b"),
+        ("a b", "a b", "a b X", "a b X"),
+        ("s a", "a", "X a", "X s a"),
+        # Nothing aligns at all: the edit replaces the whole source.
+        ("s", "o", "N", "N"),
+        # A mis-reversed edge line is replaced, not kept beside its edit. (Between
+        # two aligned lines it is indistinguishable from a source-only line.)
+        ("s a", "o a", "N a", "N a"),
+        ("a s", "a o", "a N", "a N"),
+        ("s a b", "o a b", "N a b", "N a b"),
+        # Two independent hunks, each spliced at its own position.
+        ("a b SRC c d", "a b c d", "A b c D", "A b SRC c D"),
+        # A deletion spanning a dropped line keeps it.
+        ("a SRC b c", "a b c", "c", "SRC c"),
+    ],
+)
+def test_splice_public_edits_applies_each_hunk_at_its_source_position(
+    source: str,
+    ours: str,
+    edited: str,
+    expected: str,
+) -> None:
+    def lines(text: str) -> list[str]:
+        return [f"{word}\n" for word in text.split()]
+
+    spliced = _splice_public_edits(
+        reversed_ours_lines=lines(ours),
+        reversed_lines=lines(edited),
+        source_lines=lines(source),
+    )
+
+    assert spliced == "".join(lines(expected))
+
+
+def test_splice_public_edits_keeps_a_one_line_hunk_in_a_file_of_blank_lines():
+    """``autojunk`` treats a line in over 1% of a 200+ line file as junk.
+
+    A blank line qualifies in nearly every real file, so the one-line edit's hunk
+    absorbed all 100 blank lines after it, and the source-only line among them
+    moved to the end of the hunk.
+    """
+    ours = ["\n"] * 150 + ["A\n"] + ["\n"] * 100
+    edited = ["\n"] * 150 + ["B\n"] + ["\n"] * 100
+    source = ["\n"] * 150 + ["A\n"] + ["\n"] * 50 + ["SRC\n"] + ["\n"] * 50
+
+    spliced = _splice_public_edits(
+        reversed_ours_lines=ours,
+        reversed_lines=edited,
+        source_lines=source,
+    )
+
+    assert spliced == "".join(["\n"] * 150 + ["B\n"] + source[151:])
+
+
+@pytest.mark.parametrize(
+    ("public", "expected"),
+    [
+        # Each block's exported form is swapped back, once, in order.
+        (
+            "a\npub1\nb\npub2\nc\n",
+            (
+                "a\n# IF\nint1\n# ELSE\n# pub1\n# ENDIF\nb\n"
+                "# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\n"
+            ),
+        ),
+        # Only the first occurrence is a block; a later identical line stays.
+        (
+            "a\npub1\nb\npub2\nc\npub1\n",
+            (
+                "a\n# IF\nint1\n# ELSE\n# pub1\n# ENDIF\nb\n"
+                "# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\npub1\n"
+            ),
+        ),
+        # A block the public edit rewrote is left as the public text.
+        (
+            "a\nPUB1\nb\npub2\nc\n",
+            "a\nPUB1\nb\n# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\n",
+        ),
+    ],
+)
+def test_reverse_else_blocks_restores_each_block_once(
+    public: str,
+    expected: str,
+) -> None:
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = (
+        "a\n# IF\nint1\n# ELSE\n# pub1\n# ENDIF\nb\n"
+        "# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\n"
+    )
+
+    assert (
+        _reverse_else_blocks(
+            source_text=source,
+            public_text=public,
+            transform=transform,
+        )
+        == expected
+    )
+
+
+def test_reverse_else_blocks_skips_a_block_with_an_empty_else_branch() -> None:
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "a\n# IF\nint\n# ELSE\n# ENDIF\nb\n"
+
+    assert (
+        _reverse_else_blocks(
+            source_text=source,
+            public_text="a\nb\n",
+            transform=transform,
+        )
+        == "a\nb\n"
+    )
 
 
 def test_recomment_block_rebuilds_an_inline_marker():
@@ -3572,6 +3714,177 @@ def test_merge_import_propagates_delete_of_unmapped_path(tmp_path: Path):
     assert (destination / "internal/demo/pkg/module.py").read_text(
         encoding="utf-8",
     ) == "VALUE = 'base'\n"
+
+
+# A tree the export stopped shipping because its source moved elsewhere in the
+# monorepo: an edit landing in the public copy before that copy is deleted must
+# reach the new home, not the stale identity path.
+def _relocated_fixture(tmp_path: Path) -> _FixturePaths:
+    """Build a fixture whose public ``typings/`` now lives at ``shared/stubs``."""
+    paths = _unmapped_fixture(tmp_path)
+    (paths.source_base / "shared/stubs/brotli").mkdir(parents=True)
+    (paths.source_base / "shared/stubs/brotli/__init__.pyi").write_text(
+        "MODE_TEXT: int\n\nMODE_GENERIC: int\n",
+        encoding="utf-8",
+    )
+    paths.config.write_text(
+        paths.config.read_text(encoding="utf-8")
+        + """
+        [[files.relocated]]
+        public = "typings"
+        source = "shared/stubs"
+        """,
+        encoding="utf-8",
+    )
+    return paths
+
+
+def test_source_path_maps_a_relocated_tree_to_its_new_home(tmp_path: Path):
+    mapper = PathMapper(config=load_config(_relocated_fixture(tmp_path).config))
+
+    assert (
+        mapper.source_path("typings/brotli/__init__.pyi")
+        == "shared/stubs/brotli/__init__.pyi"
+    )
+    assert mapper.source_path("pub/pkg/module.py") == "internal/demo/pkg/module.py"
+
+
+def test_merge_import_lands_a_relocated_edit_at_its_new_home(tmp_path: Path):
+    """The source's copy drifted (``MODE_TEXT``); the public edit merges onto it."""
+    paths = _relocated_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "typings/brotli/__init__.pyi").write_text(
+        "MODE_GENERIC: int\n\nMODE_FONT: int\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [change.source for change in result.changes] == [
+        "shared/stubs/brotli/__init__.pyi",
+    ]
+    merged = (destination / "shared/stubs/brotli/__init__.pyi").read_text()
+    assert "MODE_TEXT: int" in merged
+    assert "MODE_FONT: int" in merged
+    assert not (destination / "typings").exists()
+
+
+def test_source_path_prefers_the_first_matching_relocation(tmp_path: Path):
+    """A narrower entry listed first wins, e.g. a package's own stub override."""
+    paths = _relocated_fixture(tmp_path)
+    text = paths.config.read_text(encoding="utf-8")
+    paths.config.write_text(
+        text.replace(
+            "[[files.relocated]]",
+            '[[files.relocated]]\n        public = "typings/torch"\n'
+            '        source = "internal/demo/.export/typings/torch"\n\n'
+            "        [[files.relocated]]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    mapper = PathMapper(config=load_config(paths.config))
+
+    assert (
+        mapper.source_path("typings/torch/__init__.pyi")
+        == "internal/demo/.export/typings/torch/__init__.pyi"
+    )
+    assert (
+        mapper.source_path("typings/brotli/__init__.pyi")
+        == "shared/stubs/brotli/__init__.pyi"
+    )
+
+
+def test_source_path_prefers_a_move_that_still_ships_the_tree(tmp_path: Path):
+    """A ``[[files.moves]]`` back-move still exports the path, so it owns it."""
+    paths = _relocated_fixture(tmp_path)
+    paths.config.write_text(
+        paths.config.read_text(encoding="utf-8").replace(
+            "[[files.relocated]]",
+            '[[files.moves]]\n        path = "pub/typings"\n'
+            '        destination = "typings"\n\n'
+            "        [[files.relocated]]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    mapper = PathMapper(config=load_config(paths.config))
+
+    assert (
+        mapper.source_path("typings/brotli/__init__.pyi")
+        == "internal/demo/typings/brotli/__init__.pyi"
+    )
+
+
+def test_merge_import_creates_a_relocated_file_at_its_new_home(tmp_path: Path):
+    paths = _relocated_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "typings/zstd").mkdir()
+    (public_head / "typings/zstd/__init__.pyi").write_text("LEVEL: int\n")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert (
+        destination / "shared/stubs/zstd/__init__.pyi"
+    ).read_text() == "LEVEL: int\n"
+
+
+def test_merge_import_drops_a_relocated_deletion(tmp_path: Path):
+    """The export removing its stale copy must not delete the new home."""
+    paths = _relocated_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    shutil.rmtree(public_head / "typings")
+    destination = _copy_tree(paths.source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert (destination / "shared/stubs/brotli/__init__.pyi").is_file()
+
+
+def test_config_rejects_a_relocated_entry_without_both_paths(tmp_path: Path):
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        source_root = "internal/demo"
+
+        [[files.relocated]]
+        public = "typings"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"files\.relocated"):
+        load_config(config)
 
 
 def test_source_path_rejects_excluded_path_outside_prefix(tmp_path: Path):

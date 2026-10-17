@@ -171,6 +171,20 @@ Copybarista fails if a generated file collides with another exported file.
 Import workflows treat generated paths as unmapped, so public edits to those
 files must be handled by updating the export config.
 
+`[[files.relocated]]`:
+
+Import-only map for a public tree the export no longer ships because its source
+moved elsewhere in the monorepo. A public edit under `public` imports to the
+same path under `source`; a public deletion there imports as a no-op, so the
+export retiring its old copy never deletes the new home. Entries match in
+order, so list a narrower `public` first.
+
+```toml
+[[files.relocated]]
+public = "typings"
+source = "shared/typings/stubs"
+```
+
 ## `[leak_check]`
 
 Leak checks are read-only release gates over the transformed export tree. They
