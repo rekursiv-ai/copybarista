@@ -109,6 +109,34 @@ def test_loads_moves_config(tmp_path: Path):
     assert reparsed.files.moves == config.files.moves
 
 
+def test_relocated_entries_round_trip_in_order(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        source_root = "internal/pkg"
+
+        [[files.relocated]]
+        public = "typings/torch"
+        source = "internal/pkg/.export/typings/torch"
+
+        [[files.relocated]]
+        public = "typings"
+        source = "shared/stubs"
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert [(r.public, r.source) for r in config.files.relocated] == [
+        ("typings/torch", "internal/pkg/.export/typings/torch"),
+        ("typings", "shared/stubs"),
+    ]
+    reparsed = parse_config(tomllib.loads(workflow_to_toml(config)))
+    assert reparsed.files.relocated == config.files.relocated
+
+
 def test_rejects_move_with_empty_destination_and_nonempty_path():
     """A non-whole-tree move with empty destination flattens irreversibly.
 

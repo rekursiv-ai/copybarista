@@ -153,6 +153,26 @@ class FileMove:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FileRelocation:
+    """Import-only map for a public tree whose source moved within the monorepo.
+
+    The export no longer ships ``public``, but the public repository may still
+    hold it, and an edit there must land at ``source``, not at the stale
+    identity path. Deleting ``public`` imports as a no-op: it is the export
+    retiring its copy, not a request to delete the new home.
+
+    Attributes:
+      public: Public-root-relative tree the export used to ship.
+      source: Source-checkout-relative tree that now holds it.
+
+    """
+
+    public: str
+
+    source: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FileSelection:
     """Include and exclude patterns relative to the source root.
 
@@ -169,6 +189,8 @@ class FileSelection:
     copy: tuple[FileCopy, ...] = ()
 
     write: tuple[FileWrite, ...] = ()
+
+    relocated: tuple[FileRelocation, ...] = ()
 
     use_default_python_excludes: bool = False
 
@@ -461,6 +483,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             "moves",
             "copy",
             "write",
+            "relocated",
             "use_default_python_excludes",
         },
         "files",
@@ -493,6 +516,10 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
         write=tuple(
             _parse_file_write(idx=idx, raw_write=entry)
             for idx, entry in enumerate(_list(files, "write"), start=1)
+        ),
+        relocated=tuple(
+            _parse_file_relocation(idx=idx, raw_relocation=entry)
+            for idx, entry in enumerate(_list(files, "relocated"), start=1)
         ),
     )
 
@@ -582,6 +609,10 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
         lines.extend(["", "[[files.write]]"])
         lines.append(f"path = {_toml_string(file_write.path)}")
         lines.append(f"content = {_toml_string(file_write.content)}")
+    for relocation in config.files.relocated:
+        lines.extend(["", "[[files.relocated]]"])
+        lines.append(f"public = {_toml_string(relocation.public)}")
+        lines.append(f"source = {_toml_string(relocation.source)}")
     if config.leak_check.forbidden_path or config.leak_check.forbidden_text:
         lines.extend(["", "[leak_check]"])
     for rule in config.leak_check.forbidden_path:
@@ -776,6 +807,20 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
             default=False,
         ),
     )
+
+
+def _parse_file_relocation(idx: int, raw_relocation: object) -> FileRelocation:
+    """Parse one `[[files.relocated]]` table into an import-only path map."""
+    if not isinstance(raw_relocation, dict):
+        raise ConfigError("Each files.relocated entry must be a table")
+    raw_relocation = cast(dict[str, object], raw_relocation)
+    label = f"files.relocated[{idx}]"
+    _check_keys(raw_relocation, {"public", "source"}, label)
+    public = _relative_path(_string(raw_relocation, "public", default=""), label)
+    source = _relative_path(_string(raw_relocation, "source", default=""), label)
+    if not public or not source:
+        raise ConfigError(f"{label} needs a non-empty public and source")
+    return FileRelocation(public=public, source=source)
 
 
 def _parse_file_move(idx: int, raw_move: object) -> FileMove:
