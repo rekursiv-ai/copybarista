@@ -111,6 +111,11 @@ GITHUB_ACTION_PINS: Final = {
             version="v4",
         ),
         ActionPin(
+            action="PyO3/maturin-action",
+            sha="e83996d129638aa358a18fbd1dfb82f0b0fb5d3b",
+            version="v1.51.0",
+        ),
+        ActionPin(
             action="pypa/gh-action-pypi-publish",
             sha="dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
             version="v1.14.2",
