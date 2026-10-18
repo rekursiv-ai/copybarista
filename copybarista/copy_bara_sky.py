@@ -936,14 +936,8 @@ class _CopyBaraSkyParser:
                         "core.replace on a marker requires multiline = True",
                     )
                 return replace(marker, path=paths.include[0])
-            # Group patterns decide newline spanning here, so honouring
-            # ``multiline`` would be a no-op. Accepting and ignoring it lets a
-            # config read as if it controls matching when it does not.
-            if multiline:
-                raise ConfigError(
-                    "core.replace multiline is not supported with regex_groups; "
-                    "the group patterns control newline spanning",
-                )
+            # Matching here is whole-file either way; Copybara needs
+            # ``multiline`` for a rule spanning a newline to fire at all.
             return [
                 Transform(
                     id="",

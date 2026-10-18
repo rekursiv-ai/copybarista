@@ -164,6 +164,116 @@ def test_defaults_sky_git_destination_branch_to_main(tmp_path: Path):
     assert config.git.branch == "main"
 
 
+def _destination_sky(tmp_path: Path, destination: str, *, origin: str = "") -> Path:
+    return _write_sky(
+        tmp_path,
+        f"""
+        URL = "file:///tmp/named.git"
+        core.workflow(
+            name = "export",
+            origin = folder.origin({origin}),
+            destination = {destination},
+            origin_files = glob(["**"]),
+            authoring = authoring.pass_thru("Demo User <user@copybarista.test>"),
+            mode = "SQUASH",
+            transformations = [],
+        )
+        """,
+    )
+
+
+@pytest.mark.parametrize(
+    ("destination", "url", "branch"),
+    [
+        pytest.param(
+            'git.destination(url = "file:///tmp/kw.git", push = "release")',
+            "file:///tmp/kw.git",
+            "release",
+            id="push",
+        ),
+        pytest.param(
+            'git.destination(url = "file:///tmp/kw.git", fetch = "stable")',
+            "file:///tmp/kw.git",
+            "stable",
+            id="fetch-only",
+        ),
+        pytest.param(
+            'git.destination(url = "file:///tmp/kw.git", fetch = "a", push = "b")',
+            "file:///tmp/kw.git",
+            "b",
+            id="push-wins",
+        ),
+        pytest.param(
+            'git.destination(URL, push = "release")',
+            "file:///tmp/named.git",
+            "release",
+            id="positional-name",
+        ),
+        pytest.param("folder.destination()", "", "main", id="folder"),
+    ],
+)
+def test_sky_destination_sets_git_url_and_branch(
+    tmp_path: Path,
+    destination: str,
+    url: str,
+    branch: str,
+):
+    config = load_config(_destination_sky(tmp_path, destination))
+
+    assert (config.git.url, config.git.branch) == (url, branch)
+
+
+@pytest.mark.parametrize(
+    ("destination", "origin", "message"),
+    [
+        pytest.param(
+            'git.destination("file:///a.git", "file:///b.git")',
+            "",
+            "^git.destination accepts at most one positional url$",
+            id="two-positional",
+        ),
+        pytest.param(
+            'git.destination("file:///a.git", url = "file:///b.git")',
+            "",
+            "^git.destination url specified twice$",
+            id="url-twice",
+        ),
+        pytest.param(
+            "git.destination(True)",
+            "",
+            "^git.destination.url must be a string$",
+            id="positional-not-string",
+        ),
+        pytest.param(
+            "git.destination(url = True)",
+            "",
+            "^git.destination.url must be a string$",
+            id="url-not-string",
+        ),
+        pytest.param(
+            'git.destination(url = "file:///a.git", push = True)',
+            "",
+            "^git.destination.push must be a string$",
+            id="push-not-string",
+        ),
+        pytest.param(
+            "folder.destination()",
+            "URL",
+            r"^folder.origin\(\) options are not supported$",
+            id="origin-options",
+        ),
+    ],
+)
+def test_sky_destination_rejects_malformed_calls(
+    tmp_path: Path,
+    destination: str,
+    origin: str,
+    message: str,
+):
+    with pytest.raises(ConfigError, match=message):
+        load_config(_destination_sky(tmp_path, destination, origin=origin))
+
+
 def test_accepts_absent_sky_destination_files(tmp_path: Path):
     config_path = _write_sky(
         tmp_path,
@@ -1747,15 +1857,8 @@ def test_rejects_marker_strip_with_more_than_two_markers(tmp_path: Path):
         load_config(config_path)
 
 
-def test_rejects_multiline_with_regex_groups(tmp_path: Path):
-    """``multiline`` must not be accepted and then discarded.
-
-    The ``regex_groups`` branch returned before the ``multiline`` handling, so
-    the kwarg was dropped: newline spanning came from the group patterns
-    instead, and the "before containing newlines requires multiline" guard was
-    bypassed. A config that reads correct behaved differently.
-    """
-    config_path = _write_sky(
+def _regex_groups_newline_sky(tmp_path: Path) -> Path:
+    return _write_sky(
         tmp_path,
         """
         core.workflow(
@@ -1768,19 +1871,32 @@ def test_rejects_multiline_with_regex_groups(tmp_path: Path):
             mode = "SQUASH",
             transformations = [
                 core.replace(
-                    before = "a${g}b",
-                    after = "c",
-                    regex_groups = { "g" : "[a-z]*" },
+                    before = "${head}tail\\n",
+                    after = "tail\\n${head}",
+                    regex_groups = { "head" : "head\\n" },
                     multiline = True,
-                    paths = glob(["conf.yaml"]),
+                    paths = glob(["conf.txt"]),
                 ),
             ],
         )
         """,
     )
 
-    with pytest.raises(ConfigError, match="multiline"):
-        load_config(config_path)
+
+def test_regex_groups_with_multiline_spans_lines(tmp_path: Path):
+    """``multiline`` is how Copybara lets a ``regex_groups`` rule span lines.
+
+    Rejecting it left no spelling both tools honor: Copybara matches line by
+    line without it, so the compat mirror's import reorder never fired there.
+    """
+    config_path = _regex_groups_newline_sky(tmp_path)
+    target = tmp_path / "conf.txt"
+    target.write_text("head\ntail\n", encoding="utf-8")
+
+    (transform,) = load_config(config_path).transforms
+    apply_transform(root=tmp_path, transform=transform, sources_by_destination={})
+
+    assert target.read_text(encoding="utf-8") == "tail\nhead\n"
 
 
 @pytest.mark.parametrize(
