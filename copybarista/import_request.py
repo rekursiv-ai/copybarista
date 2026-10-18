@@ -145,8 +145,13 @@ class TreeSnapshot:
           snapshot: Deterministic file and symlink snapshot.
 
         """
+        if root.is_symlink() or not root.is_dir():
+            raise ImportRequestError(f"Cannot snapshot tree root: {root}")
         entries: dict[str, TreeEntry] = {}
-        for current, dirnames, filenames in walk(root):
+        for current, dirnames, filenames in walk(
+            root,
+            onerror=_raise_snapshot_error,
+        ):
             current_path = Path(current)
             dirnames.sort()
             for dirname in tuple(dirnames):
@@ -179,14 +184,23 @@ class TreeSnapshot:
           result: TreeDiff listing changes from self to other.
 
         """
+        before_parents = _entry_parent_paths(self.entries)
+        after_parents = _entry_parent_paths(other.entries)
+        replaced_directories = before_parents.intersection(other.entries)
         changes: list[TreeChange] = []
         for path in sorted(set(self.entries) | set(other.entries)):
             before = self.entries.get(path)
             after = other.entries.get(path)
             if before is None:
-                changes.append(TreeChange(path=path, action="created"))
+                action: ChangeAction = (
+                    "type_changed" if path in before_parents else "created"
+                )
+                changes.append(TreeChange(path=path, action=action))
             elif after is None:
-                changes.append(TreeChange(path=path, action="deleted"))
+                if _has_parent(path, parents=replaced_directories):
+                    continue
+                action = "type_changed" if path in after_parents else "deleted"
+                changes.append(TreeChange(path=path, action=action))
             elif before.kind != after.kind:
                 changes.append(TreeChange(path=path, action="type_changed"))
             elif before.data != after.data or before.executable != after.executable:
@@ -222,6 +236,7 @@ class PathMapper:
         public_path: str,
         *,
         action: ChangeAction = "modified",
+        exported_source: str = "",
     ) -> str:
         """Return the source-relative path for a public path.
 
@@ -231,6 +246,8 @@ class PathMapper:
             content to import, so an excluded path being deleted resolves to its
             identity path (a source-side no-op) rather than being rejected; only an
             add/modify of an excluded path is rejected (see below).
+          exported_source: Exact source recorded by the forward export, when the
+            public path already exists in that export.
 
         Returns:
           source_path: Source checkout path relative to the source root.
@@ -251,41 +268,66 @@ class PathMapper:
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}",
             )
-        copied_source = self._copied_source_path(source_public_path)
+        if exported_source:
+            return exported_source
+        copied_source, dedicated = self._copied_source_path(
+            source_public_path,
+            root_destination=False,
+        )
         if copied_source:
             return copied_source
+        if dedicated:
+            copied_source, _ = self._copied_source_path(
+                source_public_path,
+                root_destination=True,
+            )
+            if copied_source:
+                return copied_source
+            raise ImportRequestError(
+                f"Public path is excluded or unmapped: {public_path}",
+            )
         relocated = self.relocated_source_path(source_public_path)
         if relocated:
             return relocated
         prefixed = self._moved_source_relative_path(source_public_path)
-        if prefixed is None:
-            # A path under no relocation rule keeps its identical path on both
-            # sides -- it lives at the same repo-root location in source and
-            # public. Mirrors Copybara's CopyOrMove: a path matching no move glob
-            # is left untouched. Such a path is never under source_root, so it is
-            # returned as-is without the source_root prefix. This is how a
-            # deletion of a path whose export mapping was dropped from config
-            # (the typings/brotli class) imports as a no-op instead of wedging.
-            #
-            # A path the config explicitly EXCLUDES is never exported, so an
-            # add/modify of one in the public tree cannot come from a faithful
-            # export -- reject it rather than silently write it at its identity
-            # path. A DELETION of an excluded path carries no content and targets
-            # a path the source never held, so it must import as an identity no-op
-            # (mirrors the typings/brotli class): rejecting it would re-wedge the
-            # whole import exactly as the original CI regression did.
-            if action != "deleted" and self.matcher.excludes(source_public_path):
+        if prefixed is not None:
+            if not self.matcher.matches(prefixed):
                 raise ImportRequestError(
                     f"Public path is excluded or unmapped: {public_path}",
                 )
-            return source_public_path
-        if not self.matcher.matches(prefixed):
+            if not self.config.source_root:
+                return prefixed
+            return f"{self.config.source_root}/{prefixed}"
+        copied_source, root_copy = self._copied_source_path(
+            source_public_path,
+            root_destination=True,
+        )
+        if copied_source:
+            return copied_source
+        if root_copy:
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}",
             )
-        if not self.config.source_root:
-            return prefixed
-        return f"{self.config.source_root}/{prefixed}"
+        # A path under no relocation rule keeps its identical path on both
+        # sides -- it lives at the same repo-root location in source and
+        # public. Mirrors Copybara's CopyOrMove: a path matching no move glob
+        # is left untouched. Such a path is never under source_root, so it is
+        # returned as-is without the source_root prefix. This is how a
+        # deletion of a path whose export mapping was dropped from config
+        # (the typings/brotli class) imports as a no-op instead of wedging.
+        #
+        # A path the config explicitly EXCLUDES is never exported, so an
+        # add/modify of one in the public tree cannot come from a faithful
+        # export -- reject it rather than silently write it at its identity
+        # path. A DELETION of an excluded path carries no content and targets
+        # a path the source never held, so it must import as an identity no-op
+        # (mirrors the typings/brotli class): rejecting it would re-wedge the
+        # whole import exactly as the original CI regression did.
+        if action != "deleted" and self.matcher.excludes(source_public_path):
+            raise ImportRequestError(
+                f"Public path is excluded or unmapped: {public_path}",
+            )
+        return source_public_path
 
     # First match wins, so a narrower entry listed earlier (trackinizer's own
     # ``typings/transformers`` override) takes precedence over the shared tree.
@@ -324,62 +366,40 @@ class PathMapper:
             public_path == file_write.path for file_write in self.config.files.write
         )
 
-    def _copied_source_path(self, public_path: str) -> str:
-        """Map a public path produced by `[[files.copy]]` back to its source."""
+    def _copied_source_path(
+        self,
+        public_path: str,
+        *,
+        root_destination: bool,
+    ) -> tuple[str, bool]:
+        """Return a copied source and whether a copy covered the public path."""
+        covered = False
         for file_copy in self.config.files.copy:
+            is_root = file_copy.destination in (".", "./")
+            if is_root != root_destination:
+                continue
             matcher = GlobSet(
                 include=file_copy.include,
                 exclude=file_copy.effective_exclude(),
                 globstar=self.config.globstar,
             )
             if public_path == file_copy.destination:
+                covered = True
                 if matcher.matches(Path(file_copy.source).name):
-                    return file_copy.source
-                raise ImportRequestError(
-                    f"Public path is excluded or unmapped: {public_path}",
-                )
-            if file_copy.destination in (".", "./"):
-                # A directory copy with ``destination = "."`` lands its tree at
-                # the public root. It owns the root-level files it supplies (e.g.
-                # ``pyproject.toml``, ``CONTRIBUTING.md``); paths relocated under
-                # the package prefix come from the main source-root selection, not
-                # this copy, so only claim root-level paths.
-                #
-                # A root path a ``[[files.moves]]`` back-move keeps at the public
-                # root (its reverse maps it back under ``source_root``) is placed
-                # by the MAIN source-root selection, not by this ``.`` copy. It
-                # must yield to the main sweep so the reverse map returns
-                # ``<source_root>/<path>``; the ``.`` copy claiming it would place
-                # it inside ``.export`` and collide with the root copy on
-                # re-export. Matches Copybara reverse, which routes such a file
-                # back through the back-move.
-                #
-                # A root path a DEDICATED ``[[files.copy]]`` owns (its own
-                # ``destination = <path>``, e.g. the ``ops/github/shared/AI_POLICY.md`` copy)
-                # likewise yields, so that copy claims it below rather than the
-                # ``.`` copy shadowing it into ``.export/<path>``.
-                _, moved = reverse_file_moves(public_path, self.config.files.moves)
-                dedicated = any(
-                    other.destination == public_path for other in self.config.files.copy
-                )
-                if (
-                    "/" in public_path
-                    or not matcher.matches(public_path)
-                    or moved
-                    or dedicated
-                ):
+                    return file_copy.source, True
+                continue
+            if is_root:
+                if not matcher.matches(public_path):
                     continue
-                return f"{file_copy.source}/{public_path}"
+                return f"{file_copy.source}/{public_path}", True
             prefix = f"{file_copy.destination}/"
             if not public_path.startswith(prefix):
                 continue
+            covered = True
             rel = public_path.removeprefix(prefix)
             if matcher.matches(rel):
-                return f"{file_copy.source}/{rel}"
-            raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}",
-            )
-        return ""
+                return f"{file_copy.source}/{rel}", True
+        return "", covered
 
     # A path the ``[[files.moves]]`` sequence placed (whether under the package prefix
     # or kept at the public root by a back-move) belongs to the source-root selection:
@@ -492,27 +512,43 @@ class ChangeRequestImporter:
 
         """
         _validate_import_destination(self.destination)
-        if self.verify and not self.merge_import:
-            self._check_public_base()
-        diff = TreeSnapshot.from_root(self.public_base).diff(
-            TreeSnapshot.from_root(self.public_head),
-        )
+        _validate_snapshot_root(self.public_base, label="Public base")
+        _validate_snapshot_root(self.public_head, label="Public head")
+        source_owners = self._exported_source_owners()
+        public_base = TreeSnapshot.from_root(self.public_base)
+        public_head = TreeSnapshot.from_root(self.public_head)
+        diff = public_base.diff(public_head)
         mapper = PathMapper(config=self.config)
-        changes = tuple(
-            ImportChange(
-                public=change.path,
-                source=mapper.source_path(change.path, action=change.action),
-                action=change.action,
-                transforms=self._reverse_transform_ids(change.path),
-            )
-            for change in diff.changes
+        _validate_directory_replacement_owners(
+            public_base=public_base,
+            public_head=public_head,
+            source_owners=source_owners,
+            mapper=mapper,
+        )
+        changes: list[ImportChange] = []
+        for change in diff.changes:
+            exported_source = source_owners.get(change.path, "")
             # The export retiring a relocated copy is not a request to delete the
             # tree's new home, which it no longer ships at all.
-            if not (
-                change.action == "deleted" and mapper.relocated_source_path(change.path)
+            if (
+                change.action == "deleted"
+                and mapper.relocated_source_path(change.path)
+                and not exported_source
+            ):
+                continue
+            changes.append(
+                ImportChange(
+                    public=change.path,
+                    source=mapper.source_path(
+                        change.path,
+                        action=change.action,
+                        exported_source=exported_source,
+                    ),
+                    action=change.action,
+                    transforms=self._reverse_transform_ids(change.path),
+                ),
             )
-        )
-        return ImportPlan(changes=changes)
+        return ImportPlan(changes=tuple(changes))
 
     def import_changes(self) -> ImportResult:
         """Apply the public diff to the destination checkout.
@@ -564,17 +600,25 @@ class ChangeRequestImporter:
             )
             return change
         if public_path.is_dir():
-            raise ImportRequestError(f"Cannot import directory change: {change.public}")
+            if change.action != "type_changed":
+                raise ImportRequestError(
+                    f"Cannot import directory change: {change.public}",
+                )
+            _delete_path(target)
+            target.mkdir(parents=True)
+            shutil.copymode(public_path, dst=target)
+            return change
         head_data = self._reverse_changed_lines(
             public_path=change.public,
+            source_path=change.source,
             merged_public=public_path.read_bytes(),
             ours_public=self._public_base_bytes(change.public),
         )
-        if change.action == "type_changed" or target.is_symlink():
+        if change.action == "type_changed" or target.is_symlink() or target.is_dir():
             _delete_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(head_data)
-        shutil.copymode(public_path, target)
+        shutil.copymode(public_path, dst=target)
         self._reformat_imported_source(change=change, target=target)
         return change
 
@@ -663,25 +707,41 @@ class ChangeRequestImporter:
     # (``change.source == change.public``) fall back to the source file directly, so the
     # merge sees the real local side rather than an empty string that would spuriously
     # conflict with the incoming public edit.
-    def _ours_public_bytes(self, *, change: ImportChange, source_export: Path) -> bytes:
-        """Return the source's public-space bytes for the merge 'ours' side."""
+    def _ours_public_entry(
+        self,
+        *,
+        change: ImportChange,
+        source_export: Path,
+    ) -> TreeEntry | None:
+        """Return the source's public-space file-like state for merge."""
         exported = source_export / change.public
+        if exported.is_symlink():
+            return _tree_symlink(exported)
         if exported.is_file():
-            return exported.read_bytes()
+            return _tree_file(exported)
         # The export never ships a relocated tree, so its new home is the local side.
         relocated = PathMapper(config=self.config).relocated_source_path(change.public)
         if change.source in (change.public, relocated):
             source_file = self.source_base / change.source
-            if source_file.is_file() and not source_file.is_symlink():
-                return source_file.read_bytes()
-        return b""
+            if source_file.is_symlink():
+                return _tree_symlink(source_file)
+            if source_file.is_file():
+                return _tree_file(source_file)
+        return None
+
+    def _public_base_entry(self, public_path: str) -> TreeEntry | None:
+        """Return the public base's file-like state for a path."""
+        base_path = self.public_base / public_path
+        if base_path.is_symlink():
+            return _tree_symlink(base_path)
+        if base_path.is_file():
+            return _tree_file(base_path)
+        return None
 
     def _public_base_bytes(self, public_path: str) -> bytes:
-        """Return the public base's bytes for a path, or empty when absent."""
-        base_path = self.public_base / public_path
-        if base_path.is_file() and not base_path.is_symlink():
-            return base_path.read_bytes()
-        return b""
+        """Return the public base's regular-file bytes, or empty when absent."""
+        entry = self._public_base_entry(public_path)
+        return entry.data if entry is not None and entry.kind == "file" else b""
 
     # A namespace-collapse reverse is a guess: once the internal prefix is gone, public
     # text cannot distinguish a module reference from a path segment or prose. Where the
@@ -693,18 +753,17 @@ class ChangeRequestImporter:
         self,
         *,
         public_path: str,
+        source_path: str,
         merged_public: bytes,
         ours_public: bytes,
     ) -> bytes:
         """Reverse the public text, then restore lines the edit never touched."""
         reversed_whole = self._reverse_content(
             public_path=public_path,
+            source_path=source_path,
             data=merged_public,
         )
-        source_file = self.source_base / _source_path(
-            config=self.config,
-            public_path=public_path,
-        )
+        source_file = self.source_base / source_path
         if not source_file.is_file() or source_file.is_symlink():
             return reversed_whole
         try:
@@ -719,7 +778,11 @@ class ChangeRequestImporter:
         # text whose true form is known, so the two can be paired.
         try:
             reversed_ours_lines = (
-                self._reverse_content(public_path=public_path, data=ours_public)
+                self._reverse_content(
+                    public_path=public_path,
+                    source_path=source_path,
+                    data=ours_public,
+                )
                 .decode()
                 .splitlines(keepends=True)
             )
@@ -763,21 +826,25 @@ class ChangeRequestImporter:
             or public_path.is_dir()
         ):
             return self._apply_change(change), False
-        head_public = public_path.read_bytes()
-        ours_public = self._ours_public_bytes(
+        head_entry = _tree_file(public_path)
+        ours_entry = self._ours_public_entry(
             change=change,
             source_export=source_export,
         )
-        if ours_public == head_public:
+        if ours_entry == head_entry:
             return _with_outcome(change, "skipped"), False
-        base_path = self.public_base / change.public
+        base_entry = self._public_base_entry(change.public)
+        if ours_entry == base_entry:
+            return self._apply_change(change), False
+        if ours_entry is not None and ours_entry.kind != "file":
+            return self._apply_change(change), False
+        head_public = head_entry.data
+        ours_public = ours_entry.data if ours_entry is not None else b""
         base_public = (
-            base_path.read_bytes()
-            if base_path.is_file() and not base_path.is_symlink()
+            base_entry.data
+            if base_entry is not None and base_entry.kind == "file"
             else b""
         )
-        if ours_public == base_public:
-            return self._apply_change(change), False
         merged_public, conflicted = _three_way_merge(
             current=ours_public,
             base=base_public,
@@ -791,6 +858,7 @@ class ChangeRequestImporter:
             return _with_outcome(change, "merged"), True
         merged_source = self._reverse_changed_lines(
             public_path=change.public,
+            source_path=change.source,
             merged_public=merged_public,
             ours_public=ours_public,
         )
@@ -801,7 +869,7 @@ class ChangeRequestImporter:
             _delete_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(merged_source)
-        shutil.copymode(public_path, target)
+        shutil.copymode(public_path, dst=target)
         self._reformat_imported_source(change=change, target=target)
         return _with_outcome(change, "merged"), conflicted
 
@@ -811,7 +879,13 @@ class ChangeRequestImporter:
     # (the wesearch bare/dotted namespace pair). A ``strip_block`` / ``internal_lines``
     # reversal breaks a run because it re-inserts source-only regions between replace
     # groups; those runs are fused separately, preserving each strip's exact position.
-    def _reverse_content(self, *, public_path: str, data: bytes) -> bytes:
+    def _reverse_content(
+        self,
+        *,
+        public_path: str,
+        source_path: str,
+        data: bytes,
+    ) -> bytes:
         """Undo supported content transforms for one public file."""
         content = data
         match_path = reverse_move_transforms(
@@ -827,12 +901,14 @@ class ChangeRequestImporter:
             if transform.type == "uncomment":
                 content = self._flush_reverse_replaces(
                     public_path=public_path,
+                    source_path=source_path,
                     transforms=pending,
                     content=content,
                 )
                 pending = []
                 content = self._recomment_source_blocks(
                     public_path=public_path,
+                    source_path=source_path,
                     transform=transform,
                     content=content,
                 )
@@ -840,6 +916,7 @@ class ChangeRequestImporter:
             if transform.type in ("strip_block", "internal_lines"):
                 content = self._flush_reverse_replaces(
                     public_path=public_path,
+                    source_path=source_path,
                     transforms=pending,
                     content=content,
                 )
@@ -855,6 +932,7 @@ class ChangeRequestImporter:
                 # the public head; the import PR's CI is the human-review gate.
                 content = self._reinsert_source_only_regions(
                     public_path=public_path,
+                    source_path=source_path,
                     transform=transform,
                     content=content,
                 )
@@ -862,6 +940,7 @@ class ChangeRequestImporter:
             pending.append(transform)
         return self._flush_reverse_replaces(
             public_path=public_path,
+            source_path=source_path,
             transforms=pending,
             content=content,
         )
@@ -870,6 +949,7 @@ class ChangeRequestImporter:
         self,
         *,
         public_path: str,
+        source_path: str,
         transforms: list[Transform],
         content: bytes,
     ) -> bytes:
@@ -894,6 +974,7 @@ class ChangeRequestImporter:
             for transform in transforms:
                 self._check_injective_reverse(
                     public_path=public_path,
+                    source_path=source_path,
                     transform=transform,
                     text=text,
                 )
@@ -903,6 +984,7 @@ class ChangeRequestImporter:
         self,
         *,
         public_path: str,
+        source_path: str,
         transform: Transform,
         text: str,
     ) -> None:
@@ -915,14 +997,11 @@ class ChangeRequestImporter:
             )
         if _has_explicit_reversal(transform):
             return
-        source_path = self.source_base / _source_path(
-            config=self.config,
-            public_path=public_path,
-        )
-        if source_path.exists() and not source_path.is_symlink():
+        source_file = self.source_base / source_path
+        if source_file.exists() and not source_file.is_symlink():
             source_text = _read_import_text(
-                path=source_path,
-                label=f"Source base path is not UTF-8: {source_path}",
+                path=source_file,
+                label=f"Source base path is not UTF-8: {source_file}",
             )
             # Reject only STANDALONE occurrences of the replacement text in the
             # source -- i.e. occurrences not already accounted for by `before`
@@ -1006,19 +1085,17 @@ class ChangeRequestImporter:
         self,
         *,
         public_path: str,
+        source_path: str,
         transform: Transform,
         content: bytes,
     ) -> bytes:
         """Restore an ``uncomment`` transform's commented source form."""
-        source_path = self.source_base / _source_path(
-            config=self.config,
-            public_path=public_path,
-        )
-        if not source_path.exists() or source_path.is_symlink():
+        source_file = self.source_base / source_path
+        if not source_file.exists() or source_file.is_symlink():
             return content
         source_text = _read_import_text(
-            path=source_path,
-            label=f"Source base path is not UTF-8: {source_path}",
+            path=source_file,
+            label=f"Source base path is not UTF-8: {source_file}",
         )
         try:
             public_text = content.decode()
@@ -1026,40 +1103,34 @@ class ChangeRequestImporter:
             raise ImportRequestError(
                 f"Public path requires text reversal but is not UTF-8: {public_path}",
             ) from err
-        result = public_text
-        # Advances past each restored block, so two blocks with identical bodies
-        # do not both resolve to the first occurrence.
-        search_from = 0
-        for source_block in _uncomment_source_blocks(source_text, transform):
-            exported, _count = uncomment_source_text(source_block, transform)
-            if not exported or exported == source_block:
-                continue
-            replaced = _replace_whole_lines(
-                text=result,
-                needle=exported,
-                replacement=source_block,
-                search_from=search_from,
+        whole_export, _total = uncomment_source_text(source_text, transform=transform)
+        public_lines = public_text.splitlines(keepends=True)
+        replacements: list[tuple[int, int, str]] = []
+        for source_block in _uncomment_source_blocks(source_text, transform=transform):
+            exported, _count = uncomment_source_text(
+                source_block.text,
+                transform=transform,
             )
-            if replaced is not None:
-                result, search_from = replaced
+            if not exported or exported == source_block.text:
                 continue
-            whole_export, _total = uncomment_source_text(source_text, transform)
-            edited = _edited_block_body(
-                result=result,
-                exported=exported,
+            lower, upper = _edited_block_bounds(
+                public_text=public_text,
                 whole_export=whole_export,
+                exported_start=source_block.exported_start,
+                exported_length=len(exported.splitlines(keepends=True)),
             )
-            if edited is None:
-                continue
-            replaced = _replace_whole_lines(
-                text=result,
-                needle=edited,
-                replacement=_recomment_block(edited, source_block, transform),
-                search_from=search_from,
+            edited = "".join(public_lines[lower:upper])
+            rebuilt = (
+                source_block.text
+                if edited == exported
+                else _recomment_block(
+                    edited,
+                    source_block=source_block.text,
+                    transform=transform,
+                )
             )
-            if replaced is not None:
-                result, search_from = replaced
-        return result.encode()
+            replacements.append((lower, upper, rebuilt))
+        return _replace_line_spans(public_lines, replacements=replacements).encode()
 
     # ``strip_block`` and ``internal_lines`` both delete source-only content on export
     # (a marker-delimited block, or each line carrying the marker), which the public
@@ -1080,19 +1151,17 @@ class ChangeRequestImporter:
         self,
         *,
         public_path: str,
+        source_path: str,
         transform: Transform,
         content: bytes,
     ) -> bytes:
         """Re-insert a transform's source-only regions into reversed content."""
-        source_path = self.source_base / _source_path(
-            config=self.config,
-            public_path=public_path,
-        )
-        if not source_path.exists() or source_path.is_symlink():
+        source_file = self.source_base / source_path
+        if not source_file.exists() or source_file.is_symlink():
             return content
         source_text = _read_import_text(
-            path=source_path,
-            label=f"Source base path is not UTF-8: {source_path}",
+            path=source_file,
+            label=f"Source base path is not UTF-8: {source_file}",
         )
         try:
             public_text = content.decode()
@@ -1179,22 +1248,29 @@ class ChangeRequestImporter:
             )
         return rebuilt.encode()
 
-    def _check_public_base(self) -> None:
-        """Verify the supplied source base reproduces the public base tree."""
+    def _exported_source_owners(self) -> dict[str, str]:
+        """Return exact forward owners, verifying the strict public base."""
         with tempfile.TemporaryDirectory(prefix="copybarista-import-base-") as tmp:
             exported = Path(tmp) / "public-base"
-            export_folder(
+            manifest = export_folder(
                 config=self.config,
                 source_ref=self.source_base,
                 destination=exported,
                 force=True,
             )
-            if TreeSnapshot.from_root(exported) != TreeSnapshot.from_root(
-                self.public_base,
+            if (
+                self.verify
+                and not self.merge_import
+                and TreeSnapshot.from_root(exported)
+                != TreeSnapshot.from_root(self.public_base)
             ):
                 raise ImportRequestError(
                     "Configured source base does not reproduce public base",
                 )
+        return {
+            PurePosixPath(entry.destination).as_posix(): entry.source
+            for entry in manifest.files
+        }
 
     def _check_public_head(self) -> None:
         """Verify the imported destination reproduces the public head tree."""
@@ -1500,11 +1576,10 @@ def _splice_source_only_regions(
 # source block verbatim -- restoring the internal branch and the markers. Re-export
 # replays the same substitution, reproducing the public head.
 #
-# When a block's exported form is not found (the public edit rewrote it) the
-# substitution is skipped for that block: the internal branch cannot be re-derived, so
-# the import carries the public edit forward and the missing internal branch is a human-
-# review item -- never a silently corrupted tree, because the caller's re-strip gate
-# then rejects a source that no longer reproduces public.
+# When the public edit rewrites the exported else body, align its original position,
+# keep the source-only branch, and wrap the edited body back in the original markers.
+# Re-export then unwraps that edited body exactly; no verification gate can recover a
+# source-only branch after an importer silently drops it.
 def _reverse_else_blocks(
     *,
     source_text: str,
@@ -1512,73 +1587,90 @@ def _reverse_else_blocks(
     transform: Transform,
 ) -> str:
     """Reverse an ``if internal / else / endif`` strip block into ``public_text``."""
-    result = public_text
-    for source_block in _else_source_blocks(source_text, transform):
-        exported = _strip_blocks_with_else(source_block, transform)[0]
-        if exported and exported in result:
-            result = result.replace(exported, source_block, 1)
-    return result
+    whole_export = strip_source_text(source_text, transform=transform)
+    public_lines = public_text.splitlines(keepends=True)
+    replacements: list[tuple[int, int, str]] = []
+    for source_block in _else_source_blocks(source_text, transform=transform):
+        exported = _strip_blocks_with_else(source_block.text, transform=transform)[0]
+        if not exported:
+            continue
+        lower, upper = _edited_block_bounds(
+            public_text=public_text,
+            whole_export=whole_export,
+            exported_start=source_block.exported_start,
+            exported_length=len(exported.splitlines(keepends=True)),
+        )
+        edited = "".join(public_lines[lower:upper])
+        rebuilt = (
+            source_block.text
+            if edited == exported
+            else _recomment_else_block(
+                edited_body=edited,
+                source_block=source_block.text,
+                transform=transform,
+            )
+        )
+        replacements.append((lower, upper, rebuilt))
+    return _replace_line_spans(public_lines, replacements=replacements)
 
 
-# A bare ``str.replace`` matched the exported body anywhere, including as the suffix of
-# an unrelated line -- splicing a block's markers into the middle of that line and
-# producing a tree that no longer exports.
-#
-# Returns the new text and the line index just past the replacement, so a caller
-# restoring several blocks with IDENTICAL bodies advances past each and does not resolve
-# them all to the first occurrence.
-def _replace_whole_lines(
+def _edited_block_bounds(
     *,
-    text: str,
-    needle: str,
-    replacement: str,
-    search_from: int = 0,
-) -> tuple[str, int] | None:
-    """Replace ``needle`` where it occupies whole lines at/after ``search_from``."""
-    needle_lines = needle.splitlines(keepends=True)
-    if not needle_lines:
-        return None
-    text_lines = text.splitlines(keepends=True)
-    span = len(needle_lines)
-    for index in range(search_from, len(text_lines) - span + 1):
-        if text_lines[index : index + span] == needle_lines:
-            replaced = [*text_lines[:index], replacement, *text_lines[index + span :]]
-            return "".join(replaced), index + len(replacement.splitlines(keepends=True))
-    return None
-
-
-# Located by ALIGNING the original export against the incoming text, not by requiring
-# the surrounding lines to be byte-identical: an edit anywhere else in the file -- or an
-# earlier block already restored into ``result`` -- would otherwise disable
-# reconstruction and write the uncommented body to source.
-#
-# Returns ``None`` when the lines bracketing the block were themselves rewritten,
-# leaving no determined position.
-def _edited_block_body(*, result: str, exported: str, whole_export: str) -> str | None:
-    """Return the public text now occupying an ``uncomment`` block's position."""
+    public_text: str,
+    whole_export: str,
+    exported_start: int,
+    exported_length: int,
+) -> tuple[int, int]:
+    """Return the public line span at one block's original export position."""
     export_lines = whole_export.splitlines(keepends=True)
-    block_lines = exported.splitlines(keepends=True)
-    start = next(
-        (
-            index
-            for index in range(len(export_lines) - len(block_lines) + 1)
-            if export_lines[index : index + len(block_lines)] == block_lines
-        ),
-        None,
-    )
-    if start is None:
-        return None
-    result_lines = result.splitlines(keepends=True)
-    aligned = _align_kept_to_public(export_lines, result_lines)
+    public_lines = public_text.splitlines(keepends=True)
+    exported_stop = exported_start + exported_length
+    matcher = difflib.SequenceMatcher(a=export_lines, b=public_lines, autojunk=False)
+    for tag, a_start, a_stop, b_start, b_stop in matcher.get_opcodes():
+        if a_start > exported_start or exported_stop > a_stop:
+            continue
+        same_width = a_stop - a_start == b_stop - b_start
+        if tag == "equal" or (tag == "replace" and same_width):
+            lower = b_start + exported_start - a_start
+            return lower, lower + exported_length
+    for tag, a_start, a_stop, _b_start, _b_stop in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if a_start < exported_start < a_stop or a_start < exported_stop < a_stop:
+            raise ImportRequestError(
+                "Cannot determine transformed block positional boundary",
+            )
+    aligned = _align_kept_to_public(export_lines, public_lines=public_lines)
+    block_positions = aligned[exported_start:exported_stop]
+    if block_positions and all(position is not None for position in block_positions):
+        positions = [position for position in block_positions if position is not None]
+        if positions == list(range(positions[0], positions[0] + len(positions))):
+            return positions[0], positions[-1] + 1
     # The block's own lines may be edited past recognition, so bound it by the
     # nearest surviving line on each side.
-    before = _max_aligned(aligned, 0, start)
-    after = _min_aligned(aligned, start + len(block_lines), len(aligned))
+    before = _max_aligned(aligned, start=0, stop=exported_start)
+    after = _min_aligned(aligned, start=exported_stop, stop=len(aligned))
     lower = 0 if before is None else before + 1
-    upper = len(result_lines) if after is None else after
+    upper = len(public_lines) if after is None else after
     if upper < lower:
-        return None
-    return "".join(result_lines[lower:upper])
+        raise ValueError("Expected non-crossing block bounds.")
+    return lower, upper
+
+
+def _replace_line_spans(
+    lines: list[str],
+    *,
+    replacements: list[tuple[int, int, str]],
+) -> str:
+    """Replace non-overlapping line spans from right to left."""
+    result = list(lines)
+    previous_start = len(lines) + 1
+    for start, stop, replacement in reversed(replacements):
+        if stop > previous_start:
+            raise ImportRequestError("Cannot restore overlapping transformed blocks")
+        result[start:stop] = [replacement]
+        previous_start = start
+    return "".join(result)
 
 
 # The inline form is ONE line carrying both the body and a trailing marker, so it is
@@ -1591,10 +1683,12 @@ def _recomment_block(edited_body: str, source_block: str, transform: Transform) 
     if transform.start not in start_line:
         return source_block
     if not transform.end:
-        body = edited_body.rstrip("\n")
-        if not body:
+        body_lines = edited_body.splitlines()
+        if not body_lines:
             return source_block
-        return f"{_comment_line(f'{body}  {transform.start}')}\n"
+        return "".join(
+            f"{_comment_line(f'{line}  {transform.start}')}\n" for line in body_lines
+        )
     end_line = marker_lines[-1] if len(marker_lines) > 1 else ""
     if transform.end not in end_line:
         return source_block
@@ -1602,6 +1696,40 @@ def _recomment_block(edited_body: str, source_block: str, transform: Transform) 
         _comment_line(line) for line in edited_body.splitlines(keepends=True)
     )
     return f"{start_line}{commented}{end_line}"
+
+
+def _recomment_else_block(
+    *,
+    edited_body: str,
+    source_block: str,
+    transform: Transform,
+) -> str:
+    """Restore an else block while retaining its edited public branch."""
+    lines = source_block.splitlines(keepends=True)
+    else_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if transform.else_marker and transform.else_marker in line
+        ),
+        None,
+    )
+    end_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if transform.end and transform.end in line
+        ),
+        None,
+    )
+    if else_index is None or end_index is None or else_index >= end_index:
+        raise ImportRequestError(
+            f"Malformed else block for transform '{transform.id}'",
+        )
+    commented = "".join(
+        _comment_line(line) for line in edited_body.splitlines(keepends=True)
+    )
+    return "".join((*lines[: else_index + 1], commented, *lines[end_index:]))
 
 
 def _comment_line(line: str) -> str:
@@ -1675,15 +1803,27 @@ def _splice_public_edits(
     return "".join(result)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SourceBlock:
+    """One transformed source block and its original exported line position."""
+
+    text: str
+    exported_start: int
+
+
 # A block form spans ``start``..``end``; the inline form is the single line carrying the
-# marker.
-def _uncomment_source_blocks(source_text: str, transform: Transform) -> list[str]:
-    """Return each verbatim source region an ``uncomment`` transform rewrites."""
+# marker. The exported position comes from the same transform as forward export, so a
+# duplicate body elsewhere cannot steal the reversal.
+def _uncomment_source_blocks(
+    source_text: str,
+    transform: Transform,
+) -> list[_SourceBlock]:
+    """Return source regions and their original exported line positions."""
     start = transform.start
     if not start:
         return []
     lines = source_text.splitlines(keepends=True)
-    blocks: list[str] = []
+    blocks: list[_SourceBlock] = []
     index = 0
     total = len(lines)
     while index < total:
@@ -1694,21 +1834,41 @@ def _uncomment_source_blocks(source_text: str, transform: Transform) -> list[str
                 index += 1
             if index < total:
                 index += 1
-                blocks.append("".join(lines[block_start:index]))
+                exported_prefix, _count = uncomment_source_text(
+                    "".join(lines[:block_start]),
+                    transform=replace(transform, required=False),
+                )
+                blocks.append(
+                    _SourceBlock(
+                        text="".join(lines[block_start:index]),
+                        exported_start=len(
+                            exported_prefix.splitlines(keepends=True),
+                        ),
+                    ),
+                )
             continue
         if not transform.end and line_has_marker_token(lines[index], start):
-            blocks.append(lines[index])
+            exported_prefix, _count = uncomment_source_text(
+                "".join(lines[:index]),
+                transform=replace(transform, required=False),
+            )
+            blocks.append(
+                _SourceBlock(
+                    text=lines[index],
+                    exported_start=len(exported_prefix.splitlines(keepends=True)),
+                ),
+            )
         index += 1
     return blocks
 
 
-def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
-    """Return each verbatim ``start .. end`` else-block found in the source."""
+def _else_source_blocks(source_text: str, transform: Transform) -> list[_SourceBlock]:
+    """Return else blocks and their original exported line positions."""
     start, end = transform.start, transform.end
     if not start or not end:
         return []
     lines = source_text.splitlines(keepends=True)
-    blocks: list[str] = []
+    blocks: list[_SourceBlock] = []
     index = 0
     total = len(lines)
     while index < total:
@@ -1719,7 +1879,18 @@ def _else_source_blocks(source_text: str, transform: Transform) -> list[str]:
                 index += 1
             if index < total:
                 index += 1  # `include` the end-marker line.
-                blocks.append("".join(lines[block_start:index]))
+                exported_prefix = strip_source_text(
+                    "".join(lines[:block_start]),
+                    transform=replace(transform, required=False),
+                )
+                blocks.append(
+                    _SourceBlock(
+                        text="".join(lines[block_start:index]),
+                        exported_start=len(
+                            exported_prefix.splitlines(keepends=True),
+                        ),
+                    ),
+                )
             continue
         index += 1
     return blocks
@@ -1971,11 +2142,6 @@ def _three_way_merge(
         return result.stdout, result.returncode > 0
 
 
-def _source_path(*, config: WorkflowConfig, public_path: str) -> str:
-    """Return the source path corresponding to one public path."""
-    return PathMapper(config=config).source_path(public_path)
-
-
 def _read_import_text(*, path: Path, label: str) -> str:
     """Read import text while preserving caller-specific error context."""
     try:
@@ -2032,24 +2198,61 @@ def _capture_originals(
 ) -> tuple[_OriginalPath, ...]:
     """Snapshot touched destination paths before applying an import plan."""
     originals: list[_OriginalPath] = []
+    captured: set[Path] = set()
+    replaced_ancestors: list[Path] = []
     backup_root: Path | None = None
-    for idx, change in enumerate(changes):
-        path = _validated_target(destination=destination, relative_path=change.source)
-        if path.exists() or path.is_symlink():
-            if backup_root is None:
-                backup_root = Path(
-                    tempfile.mkdtemp(prefix="copybarista-import-backup-"),
-                )
-            backup = backup_root / str(idx)
-            if path.is_dir() and not path.is_symlink():
-                shutil.copytree(path, backup, symlinks=True)
+    try:
+        for idx, change in enumerate(changes):
+            target = _relative_target(
+                destination=destination,
+                relative_path=change.source,
+            )
+            if any(
+                target != ancestor and target.is_relative_to(ancestor)
+                for ancestor in replaced_ancestors
+            ):
+                continue
+            path = _validated_target(
+                destination=destination,
+                relative_path=change.source,
+            )
+            if path.exists() or path.is_symlink():
+                if backup_root is None:
+                    backup_root = Path(
+                        tempfile.mkdtemp(prefix="copybarista-import-backup-"),
+                    )
+                backup = backup_root / str(idx)
+                if path.is_dir() and not path.is_symlink():
+                    shutil.copytree(path, dst=backup, symlinks=True)
+                else:
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, dst=backup, follow_symlinks=False)
+                original = _OriginalPath(path=path, backup=backup)
             else:
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, backup, follow_symlinks=False)
-            originals.append(_OriginalPath(path=path, backup=backup))
-        else:
-            originals.append(_OriginalPath(path=path, backup=None))
+                original = _OriginalPath(
+                    path=_highest_absent_path(destination=destination, target=path),
+                    backup=None,
+                )
+            if original.path not in captured:
+                originals.append(original)
+                captured.add(original.path)
+            if change.action == "type_changed":
+                replaced_ancestors.append(path)
+    except Exception:
+        if backup_root is not None:
+            shutil.rmtree(backup_root, ignore_errors=True)
+        raise
     return tuple(originals)
+
+
+def _highest_absent_path(*, destination: Path, target: Path) -> Path:
+    """Return the first absent path from ``destination`` toward ``target``."""
+    candidate = destination
+    for part in target.relative_to(destination).parts:
+        candidate /= part
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    return target
 
 
 def _restore_originals(originals: tuple[_OriginalPath, ...]) -> None:
@@ -2060,9 +2263,9 @@ def _restore_originals(originals: tuple[_OriginalPath, ...]) -> None:
             continue
         original.path.parent.mkdir(parents=True, exist_ok=True)
         if original.backup.is_dir() and not original.backup.is_symlink():
-            shutil.copytree(original.backup, original.path, symlinks=True)
+            shutil.copytree(original.backup, dst=original.path, symlinks=True)
         else:
-            shutil.copy2(original.backup, original.path, follow_symlinks=False)
+            shutil.copy2(original.backup, dst=original.path, follow_symlinks=False)
 
 
 def _discard_backups(originals: tuple[_OriginalPath, ...]) -> None:
@@ -2075,6 +2278,12 @@ def _discard_backups(originals: tuple[_OriginalPath, ...]) -> None:
 
 # Imports mutate an existing checkout, so the root must already be a real directory and
 # must not be a symlink, filesystem root, home directory, or VCS metadata path.
+def _validate_snapshot_root(root: Path, *, label: str) -> None:
+    """Require an explicit, readable tree root before diff planning."""
+    if root.is_symlink() or not root.is_dir():
+        raise ImportRequestError(f"{label} root must be an existing directory: {root}")
+
+
 def _validate_import_destination(destination: Path) -> None:
     """Reject destination roots where import writes would be unsafe."""
     if destination.is_symlink():
@@ -2094,15 +2303,12 @@ def _validate_import_destination(destination: Path) -> None:
 # checkout.
 def _validated_target(*, destination: Path, relative_path: str) -> Path:
     """Return a destination target after escape and metadata checks."""
-    if _is_metadata_path(relative_path):
-        raise ImportRequestError(
-            f"Public path is excluded or unmapped: {relative_path}",
-        )
+    target = _relative_target(
+        destination=destination,
+        relative_path=relative_path,
+    )
     root = destination.resolve()
     relative = Path(relative_path)
-    target = destination / relative
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ImportRequestError(f"Import target escapes destination: {relative_path}")
     current = destination
     for part in relative.parts[:-1]:
         current = current / part
@@ -2124,3 +2330,69 @@ def _validated_target(*, destination: Path, relative_path: str) -> Path:
                 f"Import target cannot be resolved: {relative_path}",
             ) from err
     return target
+
+
+def _relative_target(*, destination: Path, relative_path: str) -> Path:
+    """Return a lexically safe target without resolving existing ancestors."""
+    if _is_metadata_path(relative_path):
+        raise ImportRequestError(
+            f"Public path is excluded or unmapped: {relative_path}",
+        )
+    relative = Path(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ImportRequestError(f"Import target escapes destination: {relative_path}")
+    return destination / relative
+
+
+def _raise_snapshot_error(error: OSError) -> None:
+    """Fail closed when a snapshot walk cannot inspect part of the tree."""
+    raise ImportRequestError(f"Cannot snapshot tree: {error}") from error
+
+
+def _entry_parent_paths(entries: dict[str, TreeEntry]) -> set[str]:
+    """Return directory paths implied by file-like snapshot entries."""
+    return {
+        PurePosixPath(*parts[:index]).as_posix()
+        for path in entries
+        for parts in (PurePosixPath(path).parts,)
+        for index in range(1, len(parts))
+    }
+
+
+def _has_parent(path: str, *, parents: set[str]) -> bool:
+    """Return whether one strict parent of ``path`` belongs to ``parents``."""
+    parts = PurePosixPath(path).parts
+    return any(
+        PurePosixPath(*parts[:index]).as_posix() in parents
+        for index in range(1, len(parts))
+    )
+
+
+def _validate_directory_replacement_owners(
+    *,
+    public_base: TreeSnapshot,
+    public_head: TreeSnapshot,
+    source_owners: dict[str, str],
+    mapper: PathMapper,
+) -> None:
+    """Reject directory replacements assembled from another source subtree."""
+    replaced_directories = _entry_parent_paths(public_base.entries).intersection(
+        public_head.entries,
+    )
+    for public_root in sorted(replaced_directories):
+        replacement_source = PurePosixPath(
+            mapper.source_path(public_root),
+        )
+        for public_path, owner in source_owners.items():
+            path = PurePosixPath(public_path)
+            if not path.is_relative_to(public_root) or path == PurePosixPath(
+                public_root,
+            ):
+                continue
+            source_path = PurePosixPath(owner)
+            if source_path.is_relative_to(replacement_source):
+                continue
+            raise ImportRequestError(
+                f"Cannot replace public directory '{public_root}': descendant "
+                f"'{public_path}' has split forward owners",
+            )

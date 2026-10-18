@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import json
@@ -21,15 +22,19 @@ from copybarista.config import (
     reverse_relocation,
 )
 from copybarista.errors import ConfigError, ImportRequestError
+from copybarista.export import export_folder
 from copybarista.import_request import (
     ChangeRequestImporter,
+    ImportChange,
     ImportRequest,
     PathMapper,
     TreeSnapshot,
     _anchor_source_only_regions,
+    _capture_originals,
     _recomment_block,
     _removed_regions,
     _reverse_else_blocks,
+    _reverse_replace,
     _ruff_format_matches,
     _splice_public_edits,
     _splice_source_only_regions,
@@ -41,7 +46,7 @@ from copybarista.workflow import MoveSequence, _relocate_path
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
 
 def test_import_public_edit_maps_to_source_root_and_reverses_replace(
@@ -220,12 +225,12 @@ def test_import_maps_extra_copy_file_destination_to_source(tmp_path: Path):
 
 
 def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
-    """A `[[files.copy]]` with `destination = "."` maps root files back.
+    """A `[[files.copy]]` with `destination = "."` maps its whole tree back.
 
     Verbatim-ship staging dirs (e.g. `<pkg>/.export`) copy to the public root
-    (`destination = "."`), so a public edit to a root file like
-    `pyproject.toml` or `CONTRIBUTING.md` must map back to `<source>/<file>`
-    instead of failing the whole import as unmapped.
+    (`destination = "."`), so public edits to both root files and nested
+    metadata must map back to `<source>/<path>` instead of falling through to
+    identity paths outside the package source.
     """
     config = tmp_path / "copy.barista.toml"
     config.write_text(
@@ -257,6 +262,50 @@ def test_import_maps_root_copy_destination_to_source(tmp_path: Path):
     assert (
         mapper.source_path("CONTRIBUTING.md") == "internal/demo/.export/CONTRIBUTING.md"
     )
+    assert mapper.source_path("LICENSES/README.md") == (
+        "internal/demo/.export/LICENSES/README.md"
+    )
+    assert mapper.source_path(".github/workflows/ci.yml") == (
+        "internal/demo/.export/.github/workflows/ci.yml"
+    )
+
+
+def test_import_root_copy_yields_to_narrower_copy(tmp_path: Path):
+    """A dedicated subtree copy owns its destination ahead of a root copy."""
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.copy]]
+        source = "internal/demo/.export"
+        destination = "."
+
+        [[files.copy]]
+        source = "shared/licenses"
+        destination = "LICENSES"
+
+        [[files.copy]]
+        source = "shared/workflows"
+        destination = ".github/workflows"
+        """,
+        encoding="utf-8",
+    )
+
+    mapper = PathMapper(config=load_config(config))
+
+    assert mapper.source_path("LICENSES/README.md") == "shared/licenses/README.md"
+    assert mapper.source_path(".github/workflows/ci.yml") == ("shared/workflows/ci.yml")
 
 
 def test_import_root_copy_yields_to_back_move(tmp_path: Path):
@@ -294,6 +343,10 @@ def test_import_root_copy_yields_to_back_move(tmp_path: Path):
         path = "demo/README.md"
         destination = "README.md"
 
+        [[files.moves]]
+        path = "demo/docs"
+        destination = "docs"
+
         [[files.copy]]
         source = "internal/demo/.export"
         destination = "."
@@ -309,6 +362,704 @@ def test_import_root_copy_yields_to_back_move(tmp_path: Path):
     assert (
         mapper.source_path("pyproject.toml") == "internal/demo/.export/pyproject.toml"
     )
+    # Nested back-moves also stay with the main source-root sweep.
+    assert mapper.source_path("docs/guide.md") == "internal/demo/docs/guide.md"
+
+
+def test_merge_import_nested_root_copy_survives_reexport(tmp_path: Path):
+    """Nested public metadata edits return to `.export` and ship again."""
+    source_base = tmp_path / "source-base"
+    package = source_base / "internal/demo"
+    (package / "pkg").mkdir(parents=True)
+    (package / "pkg/__init__.py").write_text("VALUE = 'source'\n", encoding="utf-8")
+    (package / ".export/LICENSES").mkdir(parents=True)
+    (package / ".export/LICENSES/README.md").write_text(
+        "base license notice\n",
+        encoding="utf-8",
+    )
+    (package / ".export/.github/workflows").mkdir(parents=True)
+    (package / ".export/.github/workflows/ci.yml").write_text(
+        "name: base\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+        exclude = [".export/**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.copy]]
+        source = "internal/demo/.export"
+        destination = "."
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "LICENSES/README.md").write_text(
+        "public license notice\n",
+        encoding="utf-8",
+    )
+    (public_head / ".github/workflows/ci.yml").write_text(
+        "name: public\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=config,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert {change.source for change in result.changes} == {
+        "internal/demo/.export/.github/workflows/ci.yml",
+        "internal/demo/.export/LICENSES/README.md",
+    }
+    reexported = tmp_path / "reexported"
+    export_folder(
+        config=config,
+        source_ref=destination,
+        destination=reexported,
+        force=True,
+    )
+    assert (reexported / "LICENSES/README.md").read_text(encoding="utf-8") == (
+        "public license notice\n"
+    )
+    assert (reexported / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8",
+    ) == "name: public\n"
+
+
+def test_import_filtered_copy_and_root_copy_survive_reexport(tmp_path: Path):
+    """A filtered subtree copy owns only the public paths it actually matches."""
+    source_base = tmp_path / "source-base"
+    package = source_base / "internal/demo"
+    (package / "pkg").mkdir(parents=True)
+    (package / "pkg/__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package / ".export/LICENSES").mkdir(parents=True)
+    (package / ".export/LICENSES/Bar").write_text("root bar\n", encoding="utf-8")
+    (source_base / "shared/licenses").mkdir(parents=True)
+    (source_base / "shared/licenses/Foo").write_text(
+        "dedicated foo\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+        exclude = [".export/**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.copy]]
+        source = "internal/demo/.export"
+        destination = "."
+
+        [[files.copy]]
+        source = "shared/licenses"
+        destination = "LICENSES"
+        include = ["Foo*"]
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "LICENSES/Bar").write_text("edited bar\n", encoding="utf-8")
+    (public_head / "LICENSES/Foo").write_text("edited foo\n", encoding="utf-8")
+    (public_head / "LICENSES/Baz").write_text("new root\n", encoding="utf-8")
+    (public_head / "LICENSES/FooNew").write_text(
+        "new dedicated\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=config,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    assert {change.public: change.source for change in result.changes} == {
+        "LICENSES/Bar": "internal/demo/.export/LICENSES/Bar",
+        "LICENSES/Baz": "internal/demo/.export/LICENSES/Baz",
+        "LICENSES/Foo": "shared/licenses/Foo",
+        "LICENSES/FooNew": "shared/licenses/FooNew",
+    }
+
+
+def test_import_uses_forward_owner_for_overlapping_rules(tmp_path: Path):
+    """Existing public files reverse to the exact producer recorded by export."""
+    source_base = tmp_path / "source-base"
+    package = source_base / "internal/demo"
+    (package / "pkg").mkdir(parents=True)
+    (package / "pkg/__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package / ".export-a/docs").mkdir(parents=True)
+    (package / ".export-a/docs/guide.md").write_text(
+        "root guide\n",
+        encoding="utf-8",
+    )
+    (package / ".export-a/typings").mkdir(parents=True)
+    (package / ".export-a/typings/.gitkeep").write_text("", encoding="utf-8")
+    (package / ".export-a/ONE.md").write_text("one\n", encoding="utf-8")
+    (package / ".export-a/LINK").symlink_to("ONE.md")
+    (package / ".export-b").mkdir()
+    (package / ".export-b/TWO.md").write_text("two\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+        exclude = [".export-a/**", ".export-b/**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/docs"
+        destination = "docs"
+
+        [[files.relocated]]
+        public = "typings"
+        source = "shared/stubs"
+
+        [[files.copy]]
+        source = "internal/demo/.export-a"
+        destination = "."
+
+        [[files.copy]]
+        source = "internal/demo/.export-b"
+        destination = "."
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "docs/guide.md").write_text("edited guide\n", encoding="utf-8")
+    (public_head / "LINK").unlink()
+    (public_head / "LINK").symlink_to("TWO.md")
+    (public_head / "TWO.md").write_text("edited two\n", encoding="utf-8")
+    (public_head / "typings/.gitkeep").unlink()
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=config,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    assert {change.public: change.source for change in result.changes} == {
+        "LINK": "internal/demo/.export-a/LINK",
+        "TWO.md": "internal/demo/.export-b/TWO.md",
+        "docs/guide.md": "internal/demo/.export-a/docs/guide.md",
+        "typings/.gitkeep": "internal/demo/.export-a/typings/.gitkeep",
+    }
+    assert not (destination / "internal/demo/.export-a/typings/.gitkeep").exists()
+    imported_link = destination / "internal/demo/.export-a/LINK"
+    assert imported_link.is_symlink()
+    assert imported_link.readlink() == Path("TWO.md")
+    assert not (imported_link.parent / imported_link.readlink()).exists()
+
+
+@pytest.mark.parametrize("head_kind", ["file", "symlink"])
+def test_import_rejects_directory_replacement_with_split_forward_owners(
+    tmp_path: Path,
+    *,
+    head_kind: str,
+) -> None:
+    """A directory replacement cannot strand descendants at another owner.
+
+    The public ``docs`` directory is assembled by a root copy, while a new
+    ``docs`` leaf maps through the package's back-move. Collapsing descendant
+    deletions before consulting the export manifest writes the new leaf to the
+    package and leaves the copied guide behind, so re-export collides.
+    """
+    source_base = tmp_path / "source-base"
+    package = source_base / "internal/demo"
+    (package / "pkg").mkdir(parents=True)
+    (package / "pkg/__init__.py").write_text("", encoding="utf-8")
+    (package / "docs").mkdir()
+    (package / "docs/local.md").write_text("local\n", encoding="utf-8")
+    (package / ".export-a/docs").mkdir(parents=True)
+    owner = package / ".export-a/docs/guide.md"
+    owner.write_text("guide\n", encoding="utf-8")
+    (package / "README.md").write_text("readme\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+        exclude = [".export-a/**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.moves]]
+        path = "demo/docs"
+        destination = "docs"
+
+        [[files.copy]]
+        source = "internal/demo/.export-a"
+        destination = "."
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    shutil.rmtree(public_head / "docs")
+    if head_kind == "file":
+        (public_head / "docs").write_text("replacement\n", encoding="utf-8")
+    else:
+        (public_head / "docs").symlink_to("README.md")
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+    before = TreeSnapshot.from_root(destination)
+
+    with pytest.raises(ImportRequestError, match="split forward owners"):
+        import_change_request(
+            ImportRequest(
+                config=config,
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+            ),
+        )
+
+    assert TreeSnapshot.from_root(destination) == before
+    assert owner.read_text(encoding="utf-8") == "guide\n"
+
+
+@pytest.mark.parametrize("merge_import", [False, True])
+@pytest.mark.parametrize("head_kind", ["file", "directory"])
+def test_import_file_directory_transition(
+    tmp_path: Path,
+    *,
+    merge_import: bool,
+    head_kind: str,
+) -> None:
+    """Replacing a file with a directory, or vice versa, is one type change."""
+    paths = _fixture(tmp_path)
+    source_node = paths.source_base / "internal/demo/pkg/node"
+    public_node = paths.public_base / "pkg/node"
+    if head_kind == "file":
+        (source_node / "child.txt").mkdir(parents=True)
+        (source_node / "child.txt/value").write_text("old\n", encoding="utf-8")
+        (public_node / "child.txt").mkdir(parents=True)
+        (public_node / "child.txt/value").write_text("old\n", encoding="utf-8")
+    else:
+        source_node.write_text("old\n", encoding="utf-8")
+        public_node.write_text("old\n", encoding="utf-8")
+
+    public_head = _copy_tree(
+        paths.public_base,
+        destination=tmp_path / "public-head",
+    )
+    head_node = public_head / "pkg/node"
+    if head_kind == "file":
+        shutil.rmtree(head_node)
+        head_node.write_text("new\n", encoding="utf-8")
+    else:
+        head_node.unlink()
+        head_node.mkdir()
+        (head_node / "child.txt").write_text("new\n", encoding="utf-8")
+    destination = _copy_tree(
+        paths.source_base,
+        destination=tmp_path / "destination",
+    )
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=merge_import,
+        ),
+    )
+
+    imported = destination / "internal/demo/pkg/node"
+    if head_kind == "file":
+        assert imported.read_text(encoding="utf-8") == "new\n"
+    else:
+        assert (imported / "child.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_import_directory_to_symlink_does_not_write_through_during_rollback(
+    tmp_path: Path,
+) -> None:
+    """A replaced directory's child deletion cannot traverse the new symlink."""
+    source_base = tmp_path / "source-base"
+    (source_base / "a").mkdir(parents=True)
+    (source_base / "a/b").write_text("old\n", encoding="utf-8")
+    (source_base / "target").mkdir()
+    (source_base / "target/b").write_text("keep\n", encoding="utf-8")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    shutil.rmtree(public_head / "a")
+    (public_head / "a").symlink_to("target")
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = ""
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config_path),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    imported = destination / "a"
+    assert imported.is_symlink()
+    assert imported.readlink() == Path("target")
+    assert (destination / "target/b").read_text(encoding="utf-8") == "keep\n"
+
+
+@pytest.mark.parametrize("merge_import", [False, True])
+def test_import_symlink_to_directory_validates_after_ancestor_replacement(
+    tmp_path: Path,
+    *,
+    merge_import: bool,
+) -> None:
+    """A planned directory replacement makes its new descendants safe.
+
+    The original ``a`` symlink makes ``a/b`` unsafe during rollback capture,
+    but the preceding type change replaces ``a`` with a real directory before
+    writing that child. Validation must retain the real symlink escape guard
+    while allowing this ordered transition.
+    """
+    source_base = tmp_path / "source-base"
+    (source_base / "target").mkdir(parents=True)
+    (source_base / "target/b").write_text("keep\n", encoding="utf-8")
+    (source_base / "a").symlink_to("target")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "a").unlink()
+    (public_head / "a").mkdir()
+    (public_head / "a/b").write_text("incoming\n", encoding="utf-8")
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = ""
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+
+    import_change_request(
+        ImportRequest(
+            config=load_config(config_path),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=merge_import,
+        ),
+    )
+
+    imported = destination / "a"
+    assert imported.is_dir()
+    assert not imported.is_symlink()
+    assert (imported / "b").read_text(encoding="utf-8") == "incoming\n"
+    assert (destination / "target/b").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_merge_import_applies_mode_only_public_change(tmp_path: Path) -> None:
+    """A byte-identical public chmod must reach the source checkout."""
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(
+        paths.public_base,
+        destination=tmp_path / "public-head",
+    )
+    (public_head / "pkg/module.py").chmod(0o755)
+    destination = _copy_tree(
+        paths.source_base,
+        destination=tmp_path / "destination",
+    )
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [change.outcome for change in result.changes] == ["applied"]
+    imported = destination / "internal/demo/pkg/module.py"
+    assert stat.S_IMODE(imported.stat().st_mode) & stat.S_IXUSR
+
+
+def test_merge_import_replaces_matching_symlink_with_regular_file(
+    tmp_path: Path,
+) -> None:
+    """Equal referent bytes cannot hide a public symlink-to-file change."""
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(
+        paths.public_base,
+        destination=tmp_path / "public-head",
+    )
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    source_pkg = paths.source_base / "internal/demo/pkg"
+    (source_pkg / "target.py").write_text(
+        "from internal.demo import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    (source_pkg / "module.py").unlink()
+    (source_pkg / "module.py").symlink_to("target.py")
+    destination = _copy_tree(
+        paths.source_base,
+        destination=tmp_path / "destination",
+    )
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    imported = destination / "internal/demo/pkg/module.py"
+    assert [change.outcome for change in result.changes] == ["applied"]
+    assert imported.is_file()
+    assert not imported.is_symlink()
+
+
+@pytest.mark.parametrize("merge_import", [False, True])
+def test_import_rejects_missing_public_head_without_mutation(
+    tmp_path: Path,
+    *,
+    merge_import: bool,
+) -> None:
+    """A missing public checkout is invalid, not an empty desired tree."""
+    paths = _fixture(tmp_path)
+    destination = _copy_tree(
+        paths.source_base,
+        destination=tmp_path / "destination",
+    )
+    before = TreeSnapshot.from_root(destination)
+
+    with pytest.raises(ImportRequestError, match="Public head root"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=tmp_path / "missing-public-head",
+                source_base=paths.source_base,
+                destination=destination,
+                merge_import=merge_import,
+            ),
+        )
+
+    assert TreeSnapshot.from_root(destination) == before
+
+
+def test_tree_snapshot_fails_closed_on_walk_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable subtree cannot masquerade as deleted public files."""
+    root = tmp_path / "public-head"
+    root.mkdir()
+
+    monkeypatch.setattr("copybarista.import_request.walk", _failed_walk)
+
+    with pytest.raises(ImportRequestError, match="Cannot snapshot tree"):
+        TreeSnapshot.from_root(root)
+
+
+def test_import_new_identity_path_ignores_unmatched_filtered_root_copy(
+    tmp_path: Path,
+) -> None:
+    """A filtered root copy cannot reserve unrelated public root paths."""
+    source_base = tmp_path / "source-base"
+    (source_base / "pkg").mkdir(parents=True)
+    (source_base / "pkg/module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source_base / "shared/docs").mkdir(parents=True)
+    (source_base / "shared/docs/README.md").write_text(
+        "copied readme\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = ""
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = "pkg"
+        destination = "renamed"
+
+        [[files.copy]]
+        source = "shared/docs"
+        destination = "."
+        include = ["README*"]
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "new.txt").write_text("new\n", encoding="utf-8")
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=config,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    assert [(change.public, change.source) for change in result.changes] == [
+        ("new.txt", "new.txt"),
+    ]
+    assert (destination / "new.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_capture_originals_discards_partial_backup_on_validation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed capture must remove backups created for earlier paths."""
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    (destination / "good.txt").write_text("good\n", encoding="utf-8")
+    (destination / "link").symlink_to(".")
+    backup_root = tmp_path / "backup"
+
+    def make_backup(*, prefix: str) -> str:
+        assert prefix == "copybarista-import-backup-"
+        backup_root.mkdir()
+        return str(backup_root)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", make_backup)
+    changes = (
+        ImportChange(public="good.txt", source="good.txt", action="modified"),
+        ImportChange(public="bad.txt", source="link/bad.txt", action="created"),
+    )
+
+    with pytest.raises(ImportRequestError, match="escapes destination"):
+        _capture_originals(destination=destination, changes=changes)
+
+    assert not backup_root.exists()
 
 
 def test_reverse_moves_is_pointwise_inverse_of_move_sequence():
@@ -566,6 +1317,46 @@ def test_import_rolls_back_when_final_verification_fails(
     assert (destination / "internal/demo/pkg/module.py").read_text(
         encoding="utf-8",
     ) == original
+
+
+def test_import_rollback_removes_shared_new_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback removes one shared parent created for multiple new files."""
+    paths = _fixture(tmp_path)
+    public_head = _copy_tree(
+        paths.public_base,
+        destination=tmp_path / "public-head",
+    )
+    created = public_head / "pkg/generated"
+    created.mkdir()
+    (created / "one.py").write_text("ONE = 1\n", encoding="utf-8")
+    (created / "two.py").write_text("TWO = 2\n", encoding="utf-8")
+    destination = _copy_tree(
+        paths.source_base,
+        destination=tmp_path / "destination",
+    )
+
+    def fail_check(self: ChangeRequestImporter) -> None:
+        del self
+        raise ImportRequestError("forced verification failure")
+
+    monkeypatch.setattr(ChangeRequestImporter, "_check_public_head", fail_check)
+
+    with pytest.raises(ImportRequestError, match="forced"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(paths.config),
+                public_base=paths.public_base,
+                public_head=public_head,
+                source_base=paths.source_base,
+                destination=destination,
+            ),
+        )
+
+    assert (destination / "internal/demo/pkg").is_dir()
+    assert not (destination / "internal/demo/pkg/generated").exists()
 
 
 def test_import_rejects_symlink_ancestor_in_destination(tmp_path: Path):
@@ -1746,10 +2537,13 @@ def test_splice_public_edits_keeps_a_one_line_hunk_in_a_file_of_blank_lines():
                 "# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\npub1\n"
             ),
         ),
-        # A block the public edit rewrote is left as the public text.
+        # A rewritten public branch keeps its source-only sibling and markers.
         (
             "a\nPUB1\nb\npub2\nc\n",
-            "a\nPUB1\nb\n# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\n",
+            (
+                "a\n# IF\nint1\n# ELSE\n# PUB1\n# ENDIF\nb\n"
+                "# IF\nint2\n# ELSE\n# pub2\n# ENDIF\nc\n"
+            ),
         ),
     ],
 )
@@ -1801,7 +2595,444 @@ def test_reverse_else_blocks_skips_a_block_with_an_empty_else_branch() -> None:
     )
 
 
-def test_recomment_block_rebuilds_an_inline_marker():
+def test_reverse_else_blocks_advances_past_identical_internal_lines() -> None:
+    """A later block cannot be restored inside an earlier internal branch."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    block = "# IF\npub\n# ELSE\n# pub\n# ENDIF\n"
+    source = f"{block}between\n{block}"
+
+    assert (
+        _reverse_else_blocks(
+            source_text=source,
+            public_text="pub\nbetween\npub\n",
+            transform=transform,
+        )
+        == source
+    )
+
+
+def test_reverse_else_blocks_continues_after_an_empty_else_branch() -> None:
+    """An empty block cannot prevent restoration of a later populated block."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    empty = "# IF\ninternal1\n# ELSE\n# ENDIF\n"
+    populated = "# IF\ninternal2\n# ELSE\n# public\n# ENDIF\n"
+
+    assert (
+        _reverse_else_blocks(
+            source_text=f"{empty}between\n{populated}",
+            public_text="between\npublic\n",
+            transform=transform,
+        )
+        == f"between\n{populated}"
+    )
+
+
+@pytest.mark.parametrize("transform_type", ["uncomment", "strip_block"])
+def test_reverse_transform_keeps_duplicate_edit_in_original_block(
+    tmp_path: Path,
+    *,
+    transform_type: str,
+) -> None:
+    """An edited duplicate stays at the marked block's original position.
+
+    Both reversals used the first equal emitted line in the whole document.
+    When an identical line preceded the marked block, they wrapped that first
+    line and left the public edit outside the markers. The source then encoded
+    a different edit location even when a re-export happened to match.
+    """
+    if transform_type == "uncomment":
+        transform = Transform(
+            id="external",
+            type="uncomment",
+            path="pkg/*.py",
+            start="# EXTERNAL START",
+            end="# EXTERNAL END",
+        )
+        source = (
+            "PUBLIC_ONLY = 1\n# EXTERNAL START\n# PUBLIC_ONLY = 1\n# EXTERNAL END\n"
+        )
+        exported, _count = uncomment_source_text(source, transform)
+        source_base = tmp_path / "source-base"
+        (source_base / "internal/demo/pkg").mkdir(parents=True)
+        (source_base / "internal/demo/pkg/m.py").write_text(source, encoding="utf-8")
+        paths = _fixture(tmp_path / "fixture")
+        importer = ChangeRequestImporter(
+            config=load_config(paths.config),
+            public_base=tmp_path / "public-base",
+            public_head=tmp_path / "public-head",
+            source_base=source_base,
+            destination=tmp_path / "destination",
+            verify=False,
+        )
+        reverse = importer._recomment_source_blocks(
+            public_path="pkg/m.py",
+            source_path="internal/demo/pkg/m.py",
+            transform=transform,
+            content=exported.replace(
+                "PUBLIC_ONLY = 1\nPUBLIC_ONLY = 1\n",
+                "PUBLIC_ONLY = 1\nPUBLIC_ONLY = 2\n",
+            ).encode(),
+        ).decode()
+        reexported = uncomment_source_text(reverse, transform)[0]
+        expected = source.replace("# PUBLIC_ONLY = 1", "# PUBLIC_ONLY = 2")
+    else:
+        transform = Transform(
+            id="internal",
+            type="strip_block",
+            path="pkg/*.py",
+            start="# IF INTERNAL",
+            else_marker="# ELSE",
+            end="# ENDIF",
+        )
+        source = (
+            "PUBLIC_ONLY = 1\n"
+            "# IF INTERNAL\n"
+            "INTERNAL_ONLY = 1\n"
+            "# ELSE\n"
+            "# PUBLIC_ONLY = 1\n"
+            "# ENDIF\n"
+        )
+        exported = strip_source_text(source, transform)
+        edited = exported.replace(
+            "PUBLIC_ONLY = 1\nPUBLIC_ONLY = 1\n",
+            "PUBLIC_ONLY = 1\nPUBLIC_ONLY = 2\n",
+        )
+        reverse = _reverse_else_blocks(
+            source_text=source,
+            public_text=edited,
+            transform=transform,
+        )
+        reexported = strip_source_text(reverse, transform)
+        expected = source.replace("# PUBLIC_ONLY = 1", "# PUBLIC_ONLY = 2")
+
+    assert reverse == expected
+    assert reexported == "PUBLIC_ONLY = 1\nPUBLIC_ONLY = 2\n"
+
+
+def test_reverse_else_blocks_edits_later_identical_internal_text() -> None:
+    """An edited later branch cannot replace matching earlier internal text."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    first = "# IF\nEDITED\n# ELSE\n# public1\n# ENDIF\n"
+    second = "# IF\ninternal2\n# ELSE\n# public2\n# ENDIF\n"
+
+    assert (
+        _reverse_else_blocks(
+            source_text=f"{first}between\n{second}",
+            public_text="public1\nbetween\nEDITED\n",
+            transform=transform,
+        )
+        == f"{first}between\n# IF\ninternal2\n# ELSE\n# EDITED\n# ENDIF\n"
+    )
+
+
+def test_reverse_else_blocks_edits_second_identical_branch_by_position() -> None:
+    """An edited repeated branch retains the second block's source sibling."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    first = "# IF\ninternal1\n# ELSE\n# public\n# ENDIF\n"
+    second = "# IF\ninternal2\n# ELSE\n# public\n# ENDIF\n"
+
+    assert (
+        _reverse_else_blocks(
+            source_text=f"{first}between\n{second}",
+            public_text="public\nbetween\nEDITED\n",
+            transform=transform,
+        )
+        == f"{first}between\n# IF\ninternal2\n# ELSE\n# EDITED\n# ENDIF\n"
+    )
+
+
+def test_reverse_else_blocks_keeps_adjacent_public_edit_outside_markers() -> None:
+    """An adjacent public edit cannot be absorbed into the transformed block.
+
+    The header and else body form one diff replacement when both change. Bounds
+    inferred only from surviving context wrap the header into the else branch,
+    silently removing its executable assignment while re-export still matches.
+    """
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "HEADER = 0\n# IF\nINTERNAL = 1\n# ELSE\n# PUBLIC = 1\n# ENDIF\nTAIL = 1\n"
+
+    reversed_text = _reverse_else_blocks(
+        source_text=source,
+        public_text="HEADER = 1\nPUBLIC = 2\nTAIL = 1\n",
+        transform=transform,
+    )
+
+    assert reversed_text == source.replace("HEADER = 0", "HEADER = 1").replace(
+        "# PUBLIC = 1",
+        "# PUBLIC = 2",
+    )
+    assert strip_source_text(reversed_text, transform) == (
+        "HEADER = 1\nPUBLIC = 2\nTAIL = 1\n"
+    )
+
+
+def test_reverse_uncomment_keeps_adjacent_public_edit_outside_markers(
+    tmp_path: Path,
+) -> None:
+    """An adjacent public edit stays outside an uncomment block's markers."""
+    transform = Transform(
+        id="x",
+        type="uncomment",
+        path="pkg/*.py",
+        start="# EXTERNAL START",
+        end="# EXTERNAL END",
+    )
+    source = "HEADER = 0\n# EXTERNAL START\n# PUBLIC = 1\n# EXTERNAL END\nTAIL = 1\n"
+    paths = _fixture(tmp_path)
+    source_path = paths.source_base / "internal/demo/pkg/module.py"
+    source_path.write_text(source, encoding="utf-8")
+    importer = ChangeRequestImporter(
+        config=load_config(paths.config),
+        public_base=paths.public_base,
+        public_head=tmp_path / "public-head",
+        source_base=paths.source_base,
+        destination=tmp_path / "destination",
+        verify=False,
+    )
+
+    reversed_text = importer._recomment_source_blocks(
+        public_path="pkg/module.py",
+        source_path="internal/demo/pkg/module.py",
+        transform=transform,
+        content=b"HEADER = 1\nPUBLIC = 2\nTAIL = 1\n",
+    ).decode()
+
+    assert reversed_text == source.replace("HEADER = 0", "HEADER = 1").replace(
+        "# PUBLIC = 1",
+        "# PUBLIC = 2",
+    )
+    assert uncomment_source_text(reversed_text, transform)[0] == (
+        "HEADER = 1\nPUBLIC = 2\nTAIL = 1\n"
+    )
+
+
+def test_reverse_uncomment_rejects_variable_adjacent_edit_bounds(
+    tmp_path: Path,
+) -> None:
+    """A resized uncomment block plus adjacent edit has no safe boundary."""
+    transform = Transform(
+        id="x",
+        type="uncomment",
+        path="pkg/*.py",
+        start="# EXTERNAL START",
+        end="# EXTERNAL END",
+    )
+    source = "HEADER = 0\n# EXTERNAL START\n# PUBLIC = 1\n# EXTERNAL END\nTAIL = 1\n"
+    paths = _fixture(tmp_path)
+    source_path = paths.source_base / "internal/demo/pkg/module.py"
+    source_path.write_text(source, encoding="utf-8")
+    importer = ChangeRequestImporter(
+        config=load_config(paths.config),
+        public_base=paths.public_base,
+        public_head=tmp_path / "public-head",
+        source_base=paths.source_base,
+        destination=tmp_path / "destination",
+        verify=False,
+    )
+
+    with pytest.raises(ImportRequestError, match="positional boundary"):
+        importer._recomment_source_blocks(
+            public_path="pkg/module.py",
+            source_path="internal/demo/pkg/module.py",
+            transform=transform,
+            content=b"HEADER = 1\nPUBLIC = 2\nEXTRA = 2\nTAIL = 1\n",
+        )
+
+
+def test_reverse_else_blocks_keeps_each_edited_public_line() -> None:
+    """A multiline public branch retains every edited line independently."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "# IF\nINTERNAL = 1\n# ELSE\n# FIRST = 1\n# SECOND = 1\n# ENDIF\n"
+
+    reversed_text = _reverse_else_blocks(
+        source_text=source,
+        public_text="FIRST = 2\nSECOND = 2\n",
+        transform=transform,
+    )
+
+    assert reversed_text == source.replace("# FIRST = 1", "# FIRST = 2").replace(
+        "# SECOND = 1",
+        "# SECOND = 2",
+    )
+    assert strip_source_text(reversed_text, transform) == "FIRST = 2\nSECOND = 2\n"
+
+
+def test_reverse_else_blocks_preserves_unedited_comment_bytes() -> None:
+    """An unchanged branch restores the source's exact comment spelling."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = "# IF\nINTERNAL = 1\n# ELSE\n#PUBLIC = 1\n# ENDIF\n"
+    exported = strip_source_text(source, transform)
+
+    assert (
+        _reverse_else_blocks(
+            source_text=source,
+            public_text=exported,
+            transform=transform,
+        )
+        == source
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_public_lines", "edited_public_lines"),
+    [
+        ("# PUBLIC = 1\n", "PUBLIC = 2\nEXTRA = 2\n"),
+        ("# PUBLIC = 1\n# EXTRA = 1\n", "PUBLIC = 2\n"),
+    ],
+)
+def test_reverse_else_blocks_rejects_variable_adjacent_edit_bounds(
+    source_public_lines: str,
+    edited_public_lines: str,
+) -> None:
+    """A resized block plus adjacent edit has no safe positional boundary."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    source = (
+        "HEADER = 0\n"
+        "# IF\n"
+        "INTERNAL = 1\n"
+        "# ELSE\n"
+        f"{source_public_lines}"
+        "# ENDIF\n"
+        "TAIL = 1\n"
+    )
+
+    with pytest.raises(ImportRequestError, match="positional boundary"):
+        _reverse_else_blocks(
+            source_text=source,
+            public_text=f"HEADER = 1\n{edited_public_lines}TAIL = 1\n",
+            transform=transform,
+        )
+
+
+def test_reverse_else_blocks_rejects_resized_adjacent_blocks() -> None:
+    """Two adjacent rewritten blocks cannot divide a resized replacement hunk."""
+    transform = Transform(
+        id="x",
+        type="strip_block",
+        path="m",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+    first = "# IF\nINTERNAL1 = 1\n# ELSE\n# PUBLIC1 = 1\n# ENDIF\n"
+    second = "# IF\nINTERNAL2 = 1\n# ELSE\n# PUBLIC2 = 1\n# ENDIF\n"
+
+    with pytest.raises(ImportRequestError, match="positional boundary"):
+        _reverse_else_blocks(
+            source_text=f"{first}{second}",
+            public_text="PUBLIC1 = 2\nEXTRA = 2\nPUBLIC2 = 2\n",
+            transform=transform,
+        )
+
+
+def test_reverse_replace_honors_regex_groups_and_module_mode() -> None:
+    """Reverse replacement uses each configured matching discipline."""
+    regex = Transform(
+        id="regex",
+        type="replace",
+        path="m",
+        before="internal.${s}",
+        after="public.${s}",
+        regex_groups=(("s", "[A-Za-z_]"),),
+    )
+    module = Transform(
+        id="module",
+        type="replace",
+        path="m",
+        before="internal.lib.userdirs",
+        after="public.lib.userdirs",
+        module=True,
+    )
+
+    assert (
+        _reverse_replace(
+            transform=regex,
+            text="public.x public.1",
+        )
+        == "internal.x public.1"
+    )
+    assert _reverse_replace(
+        transform=module,
+        text="from public.lib import userdirs\npublic.lib.userdirs.data_dir()\n",
+    ) == ("from internal.lib import userdirs\ninternal.lib.userdirs.data_dir()\n")
+
+
+@pytest.mark.parametrize(
+    ("edited_body", "expected"),
+    [
+        (
+            '    "RenamedCLI",\n',
+            '    # "RenamedCLI",  # copybarista:external\n',
+        ),
+        (
+            '    "FirstCLI",\n    "SecondCLI",\n',
+            (
+                '    # "FirstCLI",  # copybarista:external\n'
+                '    # "SecondCLI",  # copybarista:external\n'
+            ),
+        ),
+    ],
+)
+def test_recomment_block_rebuilds_an_inline_marker(
+    edited_body: str,
+    expected: str,
+) -> None:
     """An inline marker carries body and marker on ONE line; rebuild it.
 
     Treating it as a block prepended the pre-edit source line and appended the
@@ -1816,13 +3047,14 @@ def test_recomment_block_rebuilds_an_inline_marker():
     )
 
     out = _recomment_block(
-        '    "RenamedCLI",\n',
+        edited_body,
         '    # "PublicCLI",  # copybarista:external\n',
         transform,
     )
 
     assert "PublicCLI" not in out
-    assert out == '    # "RenamedCLI",  # copybarista:external\n'
+    assert out == expected
+    assert uncomment_source_text(out, transform)[0] == edited_body
 
 
 def test_recomment_keeps_markers_when_another_line_also_changed(tmp_path: Path):
@@ -1883,6 +3115,7 @@ def test_recomment_keeps_markers_when_another_line_also_changed(tmp_path: Path):
 
     reversed_text = importer._recomment_source_blocks(
         public_path="pkg/m.py",
+        source_path="internal/demo/pkg/m.py",
         transform=transform,
         content=edited.encode(),
     ).decode()
@@ -1946,6 +3179,7 @@ def test_uncomment_reverse_anchors_block_to_its_own_line(tmp_path: Path):
     )
     reversed_bytes = importer._recomment_source_blocks(
         public_path="pkg/m.py",
+        source_path="internal/demo/pkg/m.py",
         transform=transform,
         content=exported.encode(),
     )
@@ -4031,6 +5265,18 @@ def test_merge_import_applies_modify_of_unmapped_path_at_identity(tmp_path: Path
     assert (destination / "typings/brotli/__init__.pyi").read_text(
         encoding="utf-8",
     ) == "MODE_GENERIC: int\nMODE_TEXT: int\n"
+
+
+def _failed_walk(
+    walk_root: Path,
+    *,
+    onerror: Callable[[OSError], None] | None = None,
+) -> list[tuple[str, list[str], list[str]]]:
+    """Simulate an unreadable child while preserving the walk root."""
+    if onerror is None:
+        raise AssertionError("walk must receive an error handler")
+    onerror(PermissionError(walk_root / "blocked"))
+    return []
 
 
 if __name__ == "__main__":
