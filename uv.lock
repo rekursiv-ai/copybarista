@@ -659,7 +659,7 @@ wheels = [
 [[package]]
 name = "treekle"
 version = "0.1.1"
-source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#4941818312f3ed588a144ec9a8b11737f9ef3409" }
+source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#b8b32887144d343ca33c4e28210f832831c779fc" }
 
 [[package]]
 name = "ty"
