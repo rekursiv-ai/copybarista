@@ -2478,6 +2478,17 @@ def test_merge_import_keeps_source_only_lines_a_deletion_spans():
         ("a b SRC c d", "a b c d", "A b c D", "A b SRC c D"),
         # A deletion spanning a dropped line keeps it.
         ("a SRC b c", "a b c", "c", "SRC c"),
+        # An edit beside a reflowed line (W -> x1 x2) leaves its source lines alone.
+        ("a b x1 x2 c", "a b x1x2 c", "a B x1x2 c", "a B x1 x2 c"),
+        # An export line with no source lines at all is not a split reflow.
+        ("a b", "a W1 W2 b", "a W1 NEW b", "a NEW b"),
+        # An unaligned export line over an empty source gap is not a reflow gap.
+        ("a b c", "a b W c", "a B X C", "a B X C"),
+        # An edit that ends just before a gap holding loop-only lines leaves it.
+        ("a b DROP c", "a b W c", "a B W c", "a B DROP c"),
+        # An insertion at either edge of a reflowed line stays on its side of it.
+        ("s a x1 x2", "a x1x2", "N a x1x2", "N s a x1 x2"),
+        ("x1 x2 a", "x1x2 a", "x1x2 N a", "x1 x2 N a"),
     ],
 )
 def test_splice_public_edits_applies_each_hunk_at_its_source_position(
@@ -2496,6 +2507,104 @@ def test_splice_public_edits_applies_each_hunk_at_its_source_position(
     )
 
     assert spliced == "".join(lines(expected))
+
+
+@pytest.mark.parametrize(
+    ("ours", "edited", "expected"),
+    [
+        # Deleting, replacing or inserting beside the reflowed line.
+        ("a x1x2 b", "a b", "a b"),
+        ("a x1x2 b", "a NEW b", "a NEW b"),
+        ("a x1x2 b", "a NEW", "a NEW"),
+        ("a x1x2 b", "a x1x2 NEW b", "a x1 x2 NEW b"),
+        ("a x1x2 b", "a NEW x1x2 b", "a NEW x1 x2 b"),
+        # Replacing the reflowed line together with an aligned neighbour.
+        ("a x1x2 b", "A NEW b", "A NEW b"),
+        ("a x1x2 b", "a NEW B", "a NEW B"),
+    ],
+)
+def test_splice_public_edits_replaces_a_reflowed_line_with_its_edit(
+    ours: str,
+    edited: str,
+    expected: str,
+) -> None:
+    """One export line that is two source lines is rewritten, not dropped.
+
+    The formatter wraps ``x1x2`` into ``x1 x2`` in source; re-inserting those as
+    dropped lines kept the old text beside the edit and broke the syntax.
+    """
+
+    def lines(text: str) -> list[str]:
+        return [f"{word}\n" for word in text.split()]
+
+    spliced = _splice_public_edits(
+        reversed_ours_lines=lines(ours),
+        reversed_lines=lines(edited),
+        source_lines=lines("a x1 x2 b"),
+    )
+
+    assert spliced == "".join(lines(expected))
+
+
+def test_splice_public_edits_keeps_dropped_lines_beside_a_reflowed_line():
+    """A reflowed line's gap is replaced; a pure drop elsewhere still survives."""
+    source_lines = ["a\n", "SRC\n", "b\n", "x1\n", "x2\n", "c\n"]
+
+    spliced = _splice_public_edits(
+        reversed_ours_lines=["a\n", "b\n", "x1x2\n", "c\n"],
+        reversed_lines=["a\n", "B\n", "NEW\n", "c\n"],
+        source_lines=source_lines,
+    )
+
+    assert spliced == "a\nSRC\nB\nNEW\nc\n"
+
+
+@pytest.mark.parametrize(
+    ("ours", "edited", "source"),
+    [
+        ("a x1x2 b", "a NEW b", "a DROP1 DROP2 x1 x2 b"),
+        ("a x1x2 b", "a b", "a DROP1 DROP2 x1 x2 b"),
+        ("a x1x2 b", "a NEW b", "a DROP b"),
+    ],
+)
+def test_splice_public_edits_rejects_a_reflow_gap_holding_dropped_lines(
+    ours: str,
+    edited: str,
+    source: str,
+) -> None:
+    """Replacing the reflowed line must not delete loop-only lines in its gap."""
+
+    def lines(text: str) -> list[str]:
+        return [f"{word}\n" for word in text.split()]
+
+    with pytest.raises(
+        ImportRequestError,
+        match=(
+            r"^Public edit replaces a reflowed line beside lines the export "
+            r"dropped; cannot tell which source lines it owns$"
+        ),
+    ):
+        _splice_public_edits(
+            reversed_ours_lines=lines(ours),
+            reversed_lines=lines(edited),
+            source_lines=lines(source),
+        )
+
+
+def test_splice_public_edits_rejects_an_edit_inside_a_reflowed_run():
+    """An edit to part of a rewritten run cannot say which source lines it owns."""
+    with pytest.raises(ImportRequestError, match=r"^Public edit splits a line the"):
+        _splice_public_edits(
+            reversed_ours_lines=["a\n", "W1\n", "W2\n", "b\n"],
+            reversed_lines=["a\n", "W1\n", "NEW\n", "b\n"],
+            source_lines=["a\n", "x1\n", "x2\n", "x3\n", "b\n"],
+        )
+    with pytest.raises(ImportRequestError, match=r"^Public edit splits a line the"):
+        _splice_public_edits(
+            reversed_ours_lines=["W1\n", "W2\n", "b\n"],
+            reversed_lines=["W1\n", "NEW\n", "b\n"],
+            source_lines=["x1\n", "x2\n", "x3\n", "b\n"],
+        )
 
 
 def test_splice_public_edits_keeps_a_one_line_hunk_in_a_file_of_blank_lines():

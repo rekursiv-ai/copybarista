@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 import difflib
+import itertools
 import re
 import shutil
 import stat
@@ -1761,38 +1762,81 @@ def _splice_public_edits(
     )
     # pragma: no mutate end
     ours_to_source = _align_kept_to_public(reversed_ours_lines, source_lines)
-    # The alignment is monotone, so this is the source index of each aligned
-    # export line in order.
-    aligned = [index for index in ours_to_source if index is not None]
-    # Source lines the export dropped, identified POSITIONALLY: an index that no
-    # export line aligns to and that lies strictly between two aligned ones. A
-    # mis-reversed line also fails to align, but it sits at the boundary of its
-    # own hunk rather than between neighbours, so this keeps the two apart.
-    dropped = (
-        set(range(aligned[0] + 1, aligned[-1])) - set(aligned)
-        if aligned
-        else set[int]()
-    )
+    # Source lines the export dropped, identified POSITIONALLY: the gap between two
+    # export lines that are adjacent in the export yet apart in source. A gap that
+    # also holds unaligned export lines is NOT a drop: the export rewrote those
+    # lines (a reflow turns one export line into several source lines), so the
+    # source lines are the rewritten form of the export lines beside them.
+    anchored = [(i, s) for i, s in enumerate(ours_to_source) if s is not None]
+    dropped = {
+        index
+        for (i, s), (j, t) in itertools.pairwise(anchored)
+        if j == i + 1
+        for index in range(s + 1, t)
+    }
+    # Mixed gaps as (source start, source stop, rewrite-only), where the flag says the
+    # gap's source lines are exactly the export lines' tokens re-wrapped. A gap that
+    # also holds loop-only lines is not, and replacing it would delete them.
+    mixed = [
+        (
+            s + 1,
+            t,
+            _same_tokens(
+                reversed_ours_lines[i + 1 : j],
+                source=source_lines[s + 1 : t],
+            ),
+        )
+        for (i, s), (j, t) in itertools.pairwise(anchored)
+        if j > i + 1 and t > s + 1
+    ]
     result: list[str] = []
     previous_end = -1
     for tag, a_start, a_stop, b_start, b_stop in edit.get_opcodes():
         if tag == "equal":
             continue
-        span = [index for index in ours_to_source[a_start:a_stop] if index is not None]
-        if span:
-            anchor, end = span[0], span[-1]
+        before = [index for index in ours_to_source[:a_start] if index is not None]
+        after = [index for index in ours_to_source[a_stop:] if index is not None]
+        gap_start = before[-1] + 1 if before else 0
+        gap_stop = after[0] if after else len(source_lines)
+        hunk = ours_to_source[a_start:a_stop]
+        span = [index for index in hunk if index is not None]
+        # A hunk that starts or ends on an unaligned export line owns that line's
+        # whole source gap. One that cuts into the middle of an unaligned run
+        # cannot say which of the gap's source lines it replaces.
+        opens_gap = bool(hunk) and hunk[0] is None
+        closes_gap = bool(hunk) and hunk[-1] is None
+        if gap_start < gap_stop and (
+            (opens_gap and a_start > 0 and ours_to_source[a_start - 1] is None)
+            or (
+                closes_gap
+                and a_stop < len(ours_to_source)
+                and ours_to_source[a_stop] is None
+            )
+        ):
+            raise ImportRequestError(
+                "Public edit splits a line the export rewrote; cannot place it in source",
+            )
+        if a_start == a_stop:
+            # A true insertion has no source span to replace: place it after the
+            # preceding source text, or after the source gap of a preceding
+            # unaligned export line.
+            prior_unaligned = a_start > 0 and ours_to_source[a_start - 1] is None
+            anchor = gap_stop if prior_unaligned else gap_start
+            end = anchor - 1
         else:
-            # Nothing in this hunk's pre-image aligns to source. For a true
-            # insertion (``a_start == a_stop``) there is no source span to
-            # replace, so place it after the preceding source text. For a
-            # REPLACEMENT the span exists but was mis-reversed, so bound it by
+            # A REPLACEMENT with nothing aligned was mis-reversed, so bound it by
             # the surrounding aligned lines -- inserting instead would emit the
             # edit AND keep the line it replaces.
-            before = [index for index in ours_to_source[:a_start] if index is not None]
-            anchor = before[-1] + 1 if before else 0
-            after = [index for index in ours_to_source[a_stop:] if index is not None]
-            following = after[0] if after else len(source_lines)
-            end = anchor - 1 if a_start == a_stop else following - 1
+            anchor = span[0] if span and not opens_gap else gap_start
+            end = span[-1] if span and not closes_gap else gap_stop - 1
+        if any(
+            not rewrite_only and lo <= end and anchor < hi
+            for lo, hi, rewrite_only in mixed
+        ):
+            raise ImportRequestError(
+                "Public edit replaces a reflowed line beside lines the export "
+                "dropped; cannot tell which source lines it owns",
+            )
         result.extend(source_lines[previous_end + 1 : anchor])
         result.extend(reversed_lines[b_start:b_stop])
         result.extend(
@@ -1801,6 +1845,14 @@ def _splice_public_edits(
         previous_end = end
     result.extend(source_lines[previous_end + 1 :])
     return "".join(result)
+
+
+# A reflow only moves whitespace, commas and brackets (the formatter wraps a call and
+# adds a trailing comma), so the same tokens in the same order identify a rewrite.
+def _same_tokens(exported: list[str], *, source: list[str]) -> bool:
+    """Return whether two line runs differ only by whitespace and wrapping."""
+    drop = str.maketrans("", "", ",()[]{} \t\r\n")
+    return "".join(exported).translate(drop) == "".join(source).translate(drop)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
