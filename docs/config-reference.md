@@ -499,8 +499,15 @@ copybarista check-sync-config ROOT
 Render the source-repository export workflow from package sync metadata:
 
 ```bash
-copybarista write-export-workflow copybarista.sync.toml [--output PATH]
+copybarista write-export-workflow copybarista.sync.toml [--output PATH] \
+  [--source-ref ROOT]
 ```
+
+The workflow triggers on the source root, every `export_watch_paths` entry, and
+each file the export reads outside the source root: every `[[files.copy]]`
+source, every file the `[files.pyproject]` render reads, and the root `uv.lock`
+when `refresh_public_lockfile` is set. `--source-ref` (default `.`) is the
+source checkout root those paths are relative to.
 
 ## `copybarista.sync.toml`
 

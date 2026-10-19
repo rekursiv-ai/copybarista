@@ -23,6 +23,7 @@ from copybarista.sync_setup import (
     PG_MAJOR,
     SyncSettings,
     check_sync_config,
+    export_inputs,
     export_workflow,
     import_workflow,
     load_sync_settings,
@@ -956,6 +957,86 @@ def test_export_workflow_watches_source_and_sync_helpers():
     assert '"packages/configgle/**"' in workflow
     assert '"tools/copybarista/scripts/sync_export_pr.py"' in workflow
     assert '"tools/copybarista/scripts/sync_import_change.py"' in workflow
+
+
+def test_export_workflow_watches_every_export_input():
+    """A file outside the source root that the export reads starts the export."""
+    workflow = export_workflow(
+        _settings(),
+        inputs=("pyproject.toml", "shared/exports.delta.toml", "lib/util.py"),
+    )
+
+    assert '      - "pyproject.toml"' in workflow
+    assert '      - "shared/exports.delta.toml"' in workflow
+    assert '      - "lib/util.py"' in workflow
+    # The private negatives still close the list, so no input re-includes them.
+    assert workflow.index('"lib/util.py"') < workflow.index('"!**/*private*"')
+
+
+def test_export_inputs_name_every_file_the_export_reads(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "shared.delta.toml").write_text("", encoding="utf-8")
+    (tmp_path / "lib/files").mkdir(parents=True)
+    (tmp_path / "lib/util.py").write_text("", encoding="utf-8")
+    package = tmp_path / "packages/configgle"
+    package.mkdir(parents=True)
+    (package / "pyproject.delta.toml").write_text(
+        '[pyproject]\nbase = "pyproject.toml"\nextends = ["shared.delta.toml"]\n',
+        encoding="utf-8",
+    )
+    config = package / "copy.barista.toml"
+    config.write_text(
+        '[workflow]\nsource_root = "packages/configgle"\n\n[files]\n'
+        '\n[[files.copy]]\nsource = "lib/util.py"\ndestination = "util.py"\n'
+        '\n[[files.copy]]\nsource = "lib/files"\ndestination = "files"\n'
+        '\n[files.pyproject]\ndelta = "packages/configgle/pyproject.delta.toml"\n',
+        encoding="utf-8",
+    )
+
+    inputs = export_inputs(
+        _settings(refresh_public_lockfile=True),
+        config_path=config,
+        source_ref=tmp_path,
+    )
+
+    assert inputs == (
+        "lib/util.py",
+        "lib/files/**",
+        "packages/configgle/pyproject.delta.toml",
+        "pyproject.toml",
+        "shared.delta.toml",
+        "uv.lock",
+    )
+    assert "uv.lock" not in export_inputs(
+        _settings(),
+        config_path=config,
+        source_ref=tmp_path,
+    )
+
+
+def test_export_workflow_lists_an_input_once():
+    workflow = export_workflow(
+        _settings(export_watch_paths=(".codespell-ignore", "lib/files/**")),
+        inputs=(
+            ".codespell-ignore",
+            "lib/files/**",
+            "packages/configgle/pyproject.delta.toml",
+        ),
+    )
+
+    assert workflow.count('".codespell-ignore"') == 1
+    assert workflow.count('"lib/files/**"') == 1
+
+
+def test_export_workflow_skips_an_input_a_watch_glob_covers():
+    workflow = export_workflow(
+        _settings(export_watch_paths=("lib/testing/**",)),
+        inputs=("lib/testing/runner.py",),
+    )
+
+    assert "lib/testing/runner.py" not in workflow
+    # The source root's own ``packages/configgle/**`` already covers the delta.
+    assert "packages/configgle/pyproject.delta.toml" not in workflow
 
 
 def test_export_workflow_watches_additional_source_paths():
