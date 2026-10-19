@@ -622,14 +622,15 @@ def export_inputs(
     )
 
 
-def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...] = ()) -> str:
+# ``inputs`` has no default: a caller that forgot them rendered a workflow blind to
+# every file the export reads outside its source root.
+def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
     """Return the source-repository export workflow for one package.
 
     Args:
       settings: Sync settings used to render the export workflow.
       inputs: Source-checkout paths and globs the export reads (``export_inputs``);
-        each one outside the source root, and not already watched, becomes a
-        trigger path.
+        each one no watched path already covers becomes a trigger path.
 
     Returns:
       yaml_text: Rendered GitHub Actions workflow contents.
@@ -645,11 +646,7 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...] = ()) -> 
             *(path for path in settings.export_watch_paths if not path.startswith("#")),
         ),
     )
-    unwatched = [
-        path
-        for path in dict.fromkeys(inputs)
-        if path not in settings.export_watch_paths and not watched.matches(path)
-    ]
+    unwatched = [path for path in dict.fromkeys(inputs) if not watched.matches(path)]
     type_targets = _shell_lines(
         [
             part
@@ -1518,7 +1515,8 @@ def _packages_key(packages: tuple[str, ...]) -> str:
 def _render_template(name: str, values: dict[str, str]) -> str:
     """Render one package-data template with explicit token replacement."""
     template = resources.files(f"{__package__}.templates").joinpath(name)
-    # A UTF-8 locale reads "UTF-8" and the default encoding alike.
+    # A test cannot change the process locale, so it cannot tell "UTF-8" or the
+    # default encoding from "utf-8".
     text = template.read_text(encoding="utf-8")  # pragma: no mutate
     # Action pins are injected for every template rather than passed by each
     # caller: they are the same everywhere, and a caller that forgot one would

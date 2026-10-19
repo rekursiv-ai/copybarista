@@ -22,9 +22,7 @@ from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
     PG_MAJOR,
     SyncSettings,
-    _assert_installs_system_packages,
     _render_template,
-    _yaml_list,
     check_sync_config,
     export_inputs,
     export_workflow,
@@ -520,9 +518,14 @@ def test_package_validation_workflow_runs_configured_commands():
     assert "uv run pytest" in workflow
 
 
+def _export_workflow(settings: SyncSettings) -> str:
+    """Render the export workflow with no inputs outside its source root."""
+    return export_workflow(settings, inputs=())
+
+
 @pytest.mark.parametrize(
     "render",
-    [package_validation_workflow, import_workflow, export_workflow],
+    [package_validation_workflow, import_workflow, _export_workflow],
     ids=["package-validation", "import", "export"],
 )
 def test_apt_is_bounded_and_retried_in_every_workflow(
@@ -554,7 +557,7 @@ def test_apt_is_bounded_and_retried_in_every_workflow(
     ("render", "job", "guard"),
     [
         (package_validation_workflow, "validate", {}),
-        (export_workflow, "export-pr", {}),
+        (_export_workflow, "export-pr", {}),
         (
             import_workflow,
             "import-change",
@@ -652,7 +655,7 @@ def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
 
 
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
-    workflow = export_workflow(_settings())
+    workflow = export_workflow(_settings(), inputs=())
 
     assert 'name: "Loop to Configgle"' in workflow
     assert 'name: "Loop to Configgle and update public PR"' in workflow
@@ -680,6 +683,7 @@ def test_export_workflow_passes_pr_replay_flags():
             replay_bootstrap_base="main~10",
             publish_source_rev=True,
         ),
+        inputs=(),
     )
 
     assert "--require-pr-metadata" in workflow
@@ -695,7 +699,7 @@ def test_export_workflow_passes_pr_replay_flags():
 
 
 def test_export_workflow_can_refresh_public_lockfile():
-    workflow = export_workflow(_settings(refresh_public_lockfile=True))
+    workflow = export_workflow(_settings(refresh_public_lockfile=True), inputs=())
 
     assert "--refresh-public-lockfile" in workflow
 
@@ -703,7 +707,7 @@ def test_export_workflow_can_refresh_public_lockfile():
 def test_export_workflow_lets_the_export_read_sibling_export_runs():
     """The export waits on sibling runs with the workflow token, not the sync token."""
     workflow = from_plain(
-        yaml.safe_load(export_workflow(_settings())),
+        yaml.safe_load(export_workflow(_settings(), inputs=())),
         dict[object, object],
     )
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
@@ -714,11 +718,14 @@ def test_export_workflow_lets_the_export_read_sibling_export_runs():
 
 def test_export_workflow_installs_every_copybarista_dependency():
     """The export runs copybarista with ``--no-project``, so each import needs a ``--with``."""
-    assert "--with tomlkit" in export_workflow(_settings())
+    assert "--with tomlkit" in export_workflow(_settings(), inputs=())
 
 
 def test_export_workflow_can_run_release_check_script():
-    workflow = export_workflow(_settings(release_check_script="scripts/check.py"))
+    workflow = export_workflow(
+        _settings(release_check_script="scripts/check.py"),
+        inputs=(),
+    )
 
     assert "--release-check-script scripts/check.py" in workflow
 
@@ -731,7 +738,7 @@ def test_import_workflow_can_ignore_generated_public_lockfile():
 
 def test_export_workflow_can_guard_sync_token_login():
     sync_actor = "rekursiv-bot"
-    workflow = export_workflow(_settings(sync_token_login=sync_actor))
+    workflow = export_workflow(_settings(sync_token_login=sync_actor), inputs=())
 
     assert 'COPYBARISTA_SYNC_TOKEN_LOGIN: "rekursiv-bot"' in workflow
     assert "gh api user --jq .login" in workflow
@@ -739,7 +746,7 @@ def test_export_workflow_can_guard_sync_token_login():
 
 
 def test_export_workflow_skips_the_source_repos_uv_cache():
-    steps = _job_steps(export_workflow(_settings()), job="export-pr")
+    steps = _job_steps(export_workflow(_settings(), inputs=()), job="export-pr")
     setup_uv = steps[
         _step_index(
             steps,
@@ -751,7 +758,7 @@ def test_export_workflow_skips_the_source_repos_uv_cache():
 
 
 def test_generated_workflows_keep_readable_line_continuations():
-    workflow = export_workflow(_settings())
+    workflow = export_workflow(_settings(), inputs=())
 
     assert "run: |\n          uv --quiet" in workflow
     assert " \\\n            --source-dir source" in workflow
@@ -954,83 +961,103 @@ def test_import_workflow_quotes_sync_label():
     assert 'COPYBARISTA_SYNC_LABEL: "Configgle\'s Core"' in workflow
 
 
-def _install_steps(run: str) -> list[object]:
-    return [{"name": "Install system packages", "run": run}]
+def _scaffold_with_import_workflow(
+    tmp_path: Path,
+    *,
+    packages: tuple[str, ...],
+    edit: Callable[[str], str],
+) -> None:
+    """Scaffold a package, then rewrite its generated import workflow."""
+    write_sync_scaffold(root=tmp_path, settings=_settings(system_packages=packages))
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+    workflow.write_text(edit(workflow.read_text(encoding="utf-8")), encoding="utf-8")
 
 
-def test_installs_system_packages_accepts_no_packages_and_no_step():
-    _assert_installs_system_packages(steps=[], packages=(), workflow="w.yml")
-
-
-def test_installs_system_packages_accepts_postgresql_as_the_pinned_server():
-    _assert_installs_system_packages(
-        steps=_install_steps(f"apt-get install ripgrep postgresql-{PG_MAJOR}"),
+def test_check_sync_config_accepts_postgresql_as_the_pinned_server(tmp_path: Path):
+    _scaffold_with_import_workflow(
+        tmp_path,
         packages=("ripgrep", "postgresql"),
-        workflow="w.yml",
+        edit=lambda text: text,
     )
+
+    check_sync_config(root=tmp_path)
 
 
 @pytest.mark.parametrize(
-    ("run", "message"),
-    [
-        (
-            "apt-get install ripgrep postgresql",
-            "w.yml must install system package 'postgresql' (see system_packages).",
-        ),
-        (
-            f"apt-get install postgresql-{PG_MAJOR}",
-            "w.yml must install system package 'ripgrep' (see system_packages).",
-        ),
-    ],
+    ("dropped", "missing"),
+    [(f" postgresql-{PG_MAJOR} ", "postgresql"), (" ripgrep\n", "ripgrep")],
 )
-def test_installs_system_packages_names_the_missing_package(run: str, message: str):
+def test_check_sync_config_names_the_system_package_the_import_skips(
+    tmp_path: Path,
+    dropped: str,
+    missing: str,
+):
+    _scaffold_with_import_workflow(
+        tmp_path,
+        packages=("ripgrep", "postgresql"),
+        edit=lambda text: text.replace(dropped, dropped.replace(missing, "other"), 1),
+    )
+
     with pytest.raises(ConfigError) as error:
-        _assert_installs_system_packages(
-            steps=_install_steps(run),
-            packages=("ripgrep", "postgresql"),
-            workflow="w.yml",
-        )
-
-    assert str(error.value) == message
-
-
-def test_installs_system_packages_names_the_workflow_missing_the_step():
-    with pytest.raises(ConfigError) as error:
-        _assert_installs_system_packages(
-            steps=[],
-            packages=("ripgrep",),
-            workflow="package-validation.yml",
-        )
+        check_sync_config(root=tmp_path)
 
     assert str(error.value) == (
-        "package-validation.yml must define step Install system packages."
+        f"<repo>-to-loop.yml must install system package {missing!r} "
+        "(see system_packages)."
     )
 
 
-def test_yaml_list_names_the_field_that_is_not_a_list():
-    with pytest.raises(ConfigError) as error:
-        _yaml_list({}, "jobs.x.steps")
+def test_check_sync_config_names_the_missing_install_step(tmp_path: Path):
+    _scaffold_with_import_workflow(
+        tmp_path,
+        packages=("ripgrep",),
+        edit=lambda text: text.replace(
+            "name: Install system packages",
+            "name: Install other things",
+        ),
+    )
 
-    assert str(error.value) == "<repo>-to-loop.yml jobs.x.steps must be a YAML list."
+    with pytest.raises(ConfigError) as error:
+        check_sync_config(root=tmp_path)
+
+    assert str(error.value) == (
+        "<repo>-to-loop.yml must define step Install system packages."
+    )
+
+
+def test_check_sync_config_names_import_steps_that_are_not_a_list(tmp_path: Path):
+    _scaffold_with_import_workflow(
+        tmp_path,
+        packages=(),
+        edit=lambda text: text.replace("    steps:\n", "    steps: {}\n    old:\n", 1),
+    )
+
+    with pytest.raises(ConfigError) as error:
+        check_sync_config(root=tmp_path)
+
+    assert str(error.value) == (
+        "<repo>-to-loop.yml jobs.import-change.steps must be a YAML list."
+    )
 
 
 def test_render_template_names_the_template_with_an_unrendered_token():
+    """Every public template renders whole, so only a direct call reaches the check."""
     with pytest.raises(AssertionError) as error:
         _render_template("copybarista.sync.toml.tmpl", {})
 
-    assert (
-        str(error.value) == "Unrendered token in template copybarista.sync.toml.tmpl."
+    assert str(error.value) == (
+        "Unrendered token in template copybarista.sync.toml.tmpl."
     )
 
 
 def test_render_template_banner_names_its_template():
-    assert export_workflow(_settings()).startswith(
+    assert export_workflow(_settings(), inputs=()).startswith(
         "# DO NOT EDIT -- generated from internal-to-external.yml.tmpl and this\n",
     )
 
 
 def test_export_workflow_watches_source_and_sync_helpers():
-    workflow = export_workflow(_settings())
+    workflow = export_workflow(_settings(), inputs=())
 
     assert '"packages/configgle/**"' in workflow
     assert '"tools/copybarista/scripts/sync_export_pr.py"' in workflow
@@ -1120,6 +1147,7 @@ def test_export_workflow_skips_an_input_a_watch_glob_covers():
 def test_export_workflow_watches_additional_source_paths():
     workflow = export_workflow(
         _settings(export_watch_paths=(".codespell-ignore", "docs/POLICY.md")),
+        inputs=(),
     )
 
     assert '      - ".codespell-ignore"' in workflow

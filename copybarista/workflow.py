@@ -23,6 +23,7 @@ from copybarista.config import (
     FileWrite,
     WorkflowConfig,
 )
+from copybarista.delta_render import DeltaError
 from copybarista.errors import ExportError
 from copybarista.globs import GlobSet
 from copybarista.leak_check import enforce_leak_check
@@ -31,7 +32,7 @@ from copybarista.manifest import (
     TransformReport,
     file_entry,
 )
-from copybarista.pyproject import DeltaError, PyprojectSource
+from copybarista.pyproject import PyprojectSource
 from copybarista.transforms import apply_transforms
 
 
