@@ -25,6 +25,8 @@ on:
 
 permissions:
   contents: read
+  # The export waits for a sibling export of the same commit before locking.
+  actions: read
 
 concurrency:
   group: copybarista-export-${{ github.workflow }}-${{ github.ref }}
@@ -38,6 +40,7 @@ jobs:
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+      COPYBARISTA_ACTIONS_TOKEN: ${{ github.token }}
       TARGET_REPO: @@PUBLIC_REPO@@
       BASE_BRANCH: main
       EXPORT_BRANCH: @@EXPORT_BRANCH@@
