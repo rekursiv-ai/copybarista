@@ -2618,9 +2618,10 @@ def test_refresh_public_lockfile_upgrades_git_branch_dependencies(
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
 
-    _refresh_public_lockfile(public_dir=public_dir)
+    _refresh_public_lockfile(public_dir=public_dir, seed=tmp_path / "absent.lock")
 
     assert argv == [["uv", "lock", "--upgrade-package", "wesearch"]]
+    assert not (public_dir / "uv.lock").exists()
 
 
 def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
@@ -2640,10 +2641,14 @@ def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    seed = tmp_path / "source-uv.lock"
+    seed.write_text("source pins\n", encoding="utf-8")
 
-    _refresh_public_lockfile(public_dir=public_dir)
+    _refresh_public_lockfile(public_dir=public_dir, seed=seed)
 
     assert argv == [["uv", "lock"]]
+    # Seeded: ``uv lock`` keeps the source's pins for every shared package.
+    assert (public_dir / "uv.lock").read_text(encoding="utf-8") == "source pins\n"
 
 
 def test_run_export_sync_refreshes_public_lockfile_before_validation(
@@ -2680,7 +2685,8 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         del project, source_dir, manifest
         (export_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
-    def fake_refresh_public_lockfile(*, public_dir: Path) -> None:
+    def fake_refresh_public_lockfile(*, public_dir: Path, seed: Path) -> None:
+        assert seed == source_dir / "uv.lock"
         calls.append("lock")
         (public_dir / "uv.lock").write_text("public lock\n", encoding="utf-8")
 

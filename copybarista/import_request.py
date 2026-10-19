@@ -21,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 
+from treekle import ReadError
+
 from copybarista.commands import CommandRunner
 from copybarista.config import (
     WorkflowConfig,
@@ -30,6 +32,7 @@ from copybarista.config import (
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
+from copybarista.pyproject import DeltaError, PyprojectSource, same_render
 from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
@@ -269,66 +272,25 @@ class PathMapper:
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}",
             )
+        if self.config.files.pyproject and source_public_path == "pyproject.toml":
+            if action == "deleted":
+                raise ImportRequestError(
+                    "Public pyproject.toml is rendered from "
+                    f"{self.config.files.pyproject} and cannot be deleted",
+                )
+            return self.config.files.pyproject
         if exported_source:
             return exported_source
-        copied_source, dedicated = self._copied_source_path(
-            source_public_path,
-            root_destination=False,
-        )
-        if copied_source:
-            return copied_source
-        if dedicated:
-            copied_source, _ = self._copied_source_path(
-                source_public_path,
-                root_destination=True,
-            )
-            if copied_source:
-                return copied_source
+        source = self._unrendered_source_path(source_public_path, action=action)
+        # Export withholds the delta from every selection, so no public path is it.
+        if not source or (
+            self.config.files.pyproject
+            and PurePosixPath(source) == PurePosixPath(self.config.files.pyproject)
+        ):
             raise ImportRequestError(
                 f"Public path is excluded or unmapped: {public_path}",
             )
-        relocated = self.relocated_source_path(source_public_path)
-        if relocated:
-            return relocated
-        prefixed = self._moved_source_relative_path(source_public_path)
-        if prefixed is not None:
-            if not self.matcher.matches(prefixed):
-                raise ImportRequestError(
-                    f"Public path is excluded or unmapped: {public_path}",
-                )
-            if not self.config.source_root:
-                return prefixed
-            return f"{self.config.source_root}/{prefixed}"
-        copied_source, root_copy = self._copied_source_path(
-            source_public_path,
-            root_destination=True,
-        )
-        if copied_source:
-            return copied_source
-        if root_copy:
-            raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}",
-            )
-        # A path under no relocation rule keeps its identical path on both
-        # sides -- it lives at the same repo-root location in source and
-        # public. Mirrors Copybara's CopyOrMove: a path matching no move glob
-        # is left untouched. Such a path is never under source_root, so it is
-        # returned as-is without the source_root prefix. This is how a
-        # deletion of a path whose export mapping was dropped from config
-        # (the typings/brotli class) imports as a no-op instead of wedging.
-        #
-        # A path the config explicitly EXCLUDES is never exported, so an
-        # add/modify of one in the public tree cannot come from a faithful
-        # export -- reject it rather than silently write it at its identity
-        # path. A DELETION of an excluded path carries no content and targets
-        # a path the source never held, so it must import as an identity no-op
-        # (mirrors the typings/brotli class): rejecting it would re-wedge the
-        # whole import exactly as the original CI regression did.
-        if action != "deleted" and self.matcher.excludes(source_public_path):
-            raise ImportRequestError(
-                f"Public path is excluded or unmapped: {public_path}",
-            )
-        return source_public_path
+        return source
 
     # First match wins, so a narrower entry listed earlier (trackinizer's own
     # ``typings/transformers`` override) takes precedence over the shared tree.
@@ -360,6 +322,62 @@ class PathMapper:
                     PurePosixPath(relocation.source) / path.relative_to(root)
                 ).as_posix()
         return ""
+
+    def _unrendered_source_path(
+        self,
+        source_public_path: str,
+        *,
+        action: ChangeAction,
+    ) -> str:
+        """Return the source path the selection or a copy maps, else ``""``."""
+        copied_source, dedicated = self._copied_source_path(
+            source_public_path,
+            root_destination=False,
+        )
+        if copied_source:
+            return copied_source
+        if dedicated:
+            copied_source, _ = self._copied_source_path(
+                source_public_path,
+                root_destination=True,
+            )
+            return copied_source
+        relocated = self.relocated_source_path(source_public_path)
+        if relocated:
+            return relocated
+        prefixed = self._moved_source_relative_path(source_public_path)
+        if prefixed is not None:
+            if not self.matcher.matches(prefixed):
+                return ""
+            if not self.config.source_root:
+                return prefixed
+            return f"{self.config.source_root}/{prefixed}"
+        copied_source, root_copy = self._copied_source_path(
+            source_public_path,
+            root_destination=True,
+        )
+        if copied_source:
+            return copied_source
+        if root_copy:
+            return ""
+        # A path under no relocation rule keeps its identical path on both
+        # sides -- it lives at the same repo-root location in source and
+        # public. Mirrors Copybara's CopyOrMove: a path matching no move glob
+        # is left untouched. Such a path is never under source_root, so it is
+        # returned as-is without the source_root prefix. This is how a
+        # deletion of a path whose export mapping was dropped from config
+        # (the typings/brotli class) imports as a no-op instead of wedging.
+        #
+        # A path the config explicitly EXCLUDES is never exported, so an
+        # add/modify of one in the public tree cannot come from a faithful
+        # export -- reject it rather than silently write it at its identity
+        # path. A DELETION of an excluded path carries no content and targets
+        # a path the source never held, so it must import as an identity no-op
+        # (mirrors the typings/brotli class): rejecting it would re-wedge the
+        # whole import exactly as the original CI regression did.
+        if action != "deleted" and self.matcher.excludes(source_public_path):
+            return ""
+        return source_public_path
 
     def _is_generated_path(self, public_path: str) -> bool:
         """Return whether `public_path` was generated by `[[files.write]]`."""
@@ -609,6 +627,9 @@ class ChangeRequestImporter:
             target.mkdir(parents=True)
             shutil.copymode(public_path, dst=target)
             return change
+        if self._is_pyproject(change):
+            target.write_bytes(self._fold_pyproject(public_path.read_bytes()))
+            return change
         head_data = self._reverse_changed_lines(
             public_path=change.public,
             source_path=change.source,
@@ -739,6 +760,56 @@ class ChangeRequestImporter:
             return _tree_file(base_path)
         return None
 
+    def _is_pyproject(self, change: ImportChange) -> bool:
+        """Return whether ``change`` edits the root ``pyproject.toml`` rendered from a delta."""
+        return bool(self.config.files.pyproject) and change.source == (
+            self.config.files.pyproject
+        )
+
+    def _fold_pyproject(self, public: bytes) -> bytes:
+        """Return the delta that renders ``public`` from the destination's base."""
+        try:
+            source = PyprojectSource.load(
+                self.destination / self.config.files.pyproject,
+                source_ref=self.destination,
+            )
+            return source.fold(public.decode()).encode()
+        except (OSError, UnicodeDecodeError, DeltaError, ReadError) as err:
+            raise ImportRequestError(
+                f"Cannot fold public pyproject.toml into {self.config.files.pyproject}: {err}",
+            ) from err
+
+    # A delta has no public form to three-way merge, so the merge runs on the rendered
+    # file: the current source's render, the public base, and the public head. The
+    # result folds back into the delta against the current base, so drift on either
+    # side survives.
+    def _merge_pyproject(
+        self,
+        *,
+        change: ImportChange,
+        target: Path,
+        ours: bytes,
+        head: bytes,
+    ) -> tuple[ImportChange, bool]:
+        """Reconcile a public ``pyproject.toml`` edit with the delta it renders from."""
+        # Bytes, not content: a comment-only edit is content of the delta.
+        if ours == head:
+            return _with_outcome(change, "skipped"), False
+        base = self._public_base_bytes(change.public)
+        # A public base spelled differently from the render (a hand-formatted
+        # contribution not yet re-exported) is not drift; byte-merging the two
+        # spellings would conflict on every line beside the edit.
+        clean = _same_render(ours, base)
+        merged, conflicted = (
+            (head, False)
+            if clean
+            else _three_way_merge(current=ours, base=base, incoming=head)
+        )
+        if conflicted:
+            return _with_outcome(change, "merged"), True
+        target.write_bytes(self._fold_pyproject(merged))
+        return _with_outcome(change, "applied" if clean else "merged"), False
+
     def _public_base_bytes(self, public_path: str) -> bytes:
         """Return the public base's regular-file bytes, or empty when absent."""
         entry = self._public_base_entry(public_path)
@@ -832,6 +903,13 @@ class ChangeRequestImporter:
             change=change,
             source_export=source_export,
         )
+        if self._is_pyproject(change):
+            return self._merge_pyproject(
+                change=change,
+                target=target,
+                ours=ours_entry.data if ours_entry is not None else b"",
+                head=head_entry.data,
+            )
         if ours_entry == head_entry:
             return _with_outcome(change, "skipped"), False
         base_entry = self._public_base_entry(change.public)
@@ -1262,8 +1340,10 @@ class ChangeRequestImporter:
             if (
                 self.verify
                 and not self.merge_import
-                and TreeSnapshot.from_root(exported)
-                != TreeSnapshot.from_root(self.public_base)
+                and not self._reproduces(
+                    TreeSnapshot.from_root(exported),
+                    TreeSnapshot.from_root(self.public_base),
+                )
             ):
                 raise ImportRequestError(
                     "Configured source base does not reproduce public base",
@@ -1283,12 +1363,30 @@ class ChangeRequestImporter:
                 destination=exported,
                 force=True,
             )
-            if TreeSnapshot.from_root(exported) != TreeSnapshot.from_root(
-                self.public_head,
+            if not self._reproduces(
+                TreeSnapshot.from_root(exported),
+                TreeSnapshot.from_root(self.public_head),
             ):
                 raise ImportRequestError(
                     "Imported source tree does not reproduce public head",
                 )
+
+    # A rendered ``pyproject.toml`` is compared by content: folding a public edit
+    # into the delta re-renders it in the renderer's own spelling, so a hand-
+    # formatted contribution never reproduces byte for byte. Both checks, the public
+    # base before the import and the public head after it, share this one rule.
+    def _reproduces(self, exported: TreeSnapshot, public: TreeSnapshot) -> bool:
+        """Return whether ``exported`` matches ``public``, the render up to spelling."""
+        if not self.config.files.pyproject:
+            return exported == public
+        ours = exported.entries.get("pyproject.toml")
+        theirs = public.entries.get("pyproject.toml")
+        rest = {k: v for k, v in exported.entries.items() if k != "pyproject.toml"} == {
+            k: v for k, v in public.entries.items() if k != "pyproject.toml"
+        }
+        if ours is None or theirs is None:
+            return rest and ours == theirs
+        return rest and _same_render(ours.data, theirs.data)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -2135,6 +2233,17 @@ def _source_only_line_mask(
 def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
     """Return a copy of a change annotated with a merge outcome."""
     return replace(change, outcome=outcome)
+
+
+# Spelling (spaces, quoting, blank lines) is the renderer's, so it never counts;
+# content and each comment's place do. ``same_render`` asks ``derive``, which is
+# what a fold stores, so the two can never disagree.
+def _same_render(left: bytes, right: bytes) -> bool:
+    """Return whether two ``pyproject.toml`` files differ at most in spelling."""
+    try:
+        return same_render(left.decode(), right.decode())
+    except (UnicodeDecodeError, DeltaError):
+        return left == right
 
 
 # Shells to ``git merge-file``, the diff3 engine Copybara's ``MergeImportTool`` uses.

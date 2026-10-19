@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +16,7 @@ from copybarista.config import (
     GitDestination,
     Transform,
     WorkflowConfig,
+    parse_config,
 )
 from copybarista.errors import ExportError
 from copybarista.workflow import WorkflowRunner
@@ -272,6 +275,109 @@ def test_workflow_runner_writes_generated_file(tmp_path: Path):
     assert [(entry.source, entry.destination) for entry in staged.files] == [
         ("<generated:project/lib/web/__init__.py>", "project/lib/web/__init__.py"),
     ]
+
+
+def test_workflow_runner_reports_a_malformed_delta(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "pyproject.toml").write_text("a = 1\n", encoding="utf-8")
+    (source_ref / "project/pyproject.delta.toml").write_text(
+        'b = [\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+    config = replace(
+        _config(),
+        files=replace(_config().files, pyproject="project/pyproject.delta.toml"),
+    )
+
+    with pytest.raises(ExportError, match=r"Cannot render pyproject\.toml"):
+        WorkflowRunner(config=config, source_ref=source_ref).stage(tmp_path / "stage")
+
+
+def test_workflow_runner_renders_pyproject_from_its_delta(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "pyproject.toml").write_text('a = ["x"]\nb = 1\n', encoding="utf-8")
+    (source_ref / "project/pyproject.delta.toml").write_text(
+        '"+a" = ["y"]\nb = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+
+    staged = WorkflowRunner(
+        config=replace(
+            _config(),
+            files=replace(
+                _config().files,
+                exclude=("pyproject.delta.toml",),
+                pyproject="project/pyproject.delta.toml",
+            ),
+        ),
+        source_ref=source_ref,
+    ).stage(tmp_path / "stage")
+
+    assert (staged.root / "pyproject.toml").read_text(encoding="utf-8") == (
+        'a = ["x", "y"]\nb = 2\n'
+    )
+    assert ("project/pyproject.delta.toml", "pyproject.toml") in (
+        (entry.source, entry.destination) for entry in staged.files
+    )
+
+
+@pytest.mark.parametrize("copy_source", ["project/.export", "./project/.export"])
+@pytest.mark.parametrize("exclude", [(), (".export/**",)])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "project/.export/pyproject.delta.toml",
+        "./project/.export/pyproject.delta.toml",
+        "project//.export/pyproject.delta.toml",
+        "project/./.export/pyproject.delta.toml",
+    ],
+)
+def test_workflow_runner_never_ships_the_delta(
+    tmp_path: Path,
+    exclude: tuple[str, ...],
+    spelling: str,
+    copy_source: str,
+):
+    """The delta is an input to the render: no selection or copy may ship it."""
+    source_ref = tmp_path / "repo"
+    (source_ref / "project/.export").mkdir(parents=True)
+    (source_ref / "pyproject.toml").write_text("a = 1\n", encoding="utf-8")
+    (source_ref / "project/.export/pyproject.delta.toml").write_text(
+        'a = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+    (source_ref / "project/.export/SECURITY.md").write_text("s\n", encoding="utf-8")
+    config = _config(
+        copies=(FileCopy(source="project/.export", destination="."),),
+    )
+    config = replace(
+        config,
+        files=replace(
+            config.files,
+            exclude=exclude,
+        ),
+    )
+    raw: dict[str, object] = {
+        "workflow": {"source_root": "project"},
+        "files": {
+            "include": ["**"],
+            "exclude": list(exclude),
+            "copy": [{"source": copy_source, "destination": "."}],
+            "pyproject": {"delta": spelling},
+        },
+    }
+    config = replace(config, files=parse_config(raw).files)
+
+    staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
+        tmp_path / "stage",
+    )
+
+    shipped = {PurePosixPath(entry.destination).as_posix() for entry in staged.files}
+    assert {"pyproject.toml", "SECURITY.md"} <= shipped
+    assert not any(path.endswith("pyproject.delta.toml") for path in shipped)
+    assert not list(staged.root.rglob("pyproject.delta.toml"))
 
 
 def test_workflow_runner_rejects_extra_copy_collision(tmp_path: Path):

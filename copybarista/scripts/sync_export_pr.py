@@ -779,7 +779,10 @@ def _run_export_sync(request: ExportRequest) -> None:
     _replace_tree(source=export_dir, destination=request.public_dir)
     if request.refresh_public_lockfile:
         _log("Refreshing public lockfile.")
-        _refresh_public_lockfile(public_dir=request.public_dir)
+        _refresh_public_lockfile(
+            public_dir=request.public_dir,
+            seed=request.source_dir / "uv.lock",
+        )
     _log("Validating public checkout.")
     validation_dir = Path(tempfile.mkdtemp(prefix="copybarista-validate-"))
     try:
@@ -1200,8 +1203,14 @@ def _is_git_checkout(path: Path) -> bool:
     )
 
 
-def _refresh_public_lockfile(*, public_dir: Path) -> None:
+# Seeded from the source checkout's own lock: ``uv lock`` keeps every version a lock
+# already pins, so each package the export shares with the source resolves to the
+# source's version. Unseeded, every export re-resolved its own newest versions and
+# drifted from the source (pandas 3.x against the source's 2.x, cuda 13 against 12).
+def _refresh_public_lockfile(*, public_dir: Path, seed: Path) -> None:
     """Generate a lockfile from the exported public package metadata."""
+    if seed.is_file():
+        shutil.copy2(seed, public_dir / "uv.lock")
     _run(
         ["uv", "lock", *_git_branch_upgrades(public_dir / "pyproject.toml")],
         cwd=public_dir,

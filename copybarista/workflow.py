@@ -9,12 +9,14 @@ without re-reading the source checkout.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 import shutil
 import stat
 import time
+
+from treekle import ReadError
 
 from copybarista.config import (
     FileMove,
@@ -29,6 +31,7 @@ from copybarista.manifest import (
     TransformReport,
     file_entry,
 )
+from copybarista.pyproject import DeltaError, PyprojectSource
 from copybarista.transforms import apply_transforms
 
 
@@ -104,6 +107,7 @@ class WorkflowRunner:
                 ),
                 prefixer=MoveSequence(moves=self.config.files.moves),
                 source_prefix=self.config.source_root,
+                withheld=self.config.files.pyproject,
                 record_phase=record_phase,
             ),
         ]
@@ -119,6 +123,7 @@ class WorkflowRunner:
                         exclude=file_copy.effective_exclude(),
                         globstar=self.config.globstar,
                     ),
+                    withheld=self.config.files.pyproject,
                     record_phase=record_phase,
                 ),
             )
@@ -126,6 +131,14 @@ class WorkflowRunner:
             _write_generated(staging=staging, file_write=file_write)
             for file_write in self.config.files.write
         )
+        if self.config.files.pyproject:
+            entries.append(
+                _render_pyproject(
+                    source_ref=source_ref,
+                    staging=staging,
+                    delta=self.config.files.pyproject,
+                ),
+            )
         entries_tuple = tuple(entries)
         transform_started = time.perf_counter()
         reports = apply_transforms(
@@ -224,16 +237,19 @@ def _copy_selected(
     matcher: GlobSet,
     prefixer: MoveSequence,
     source_prefix: str,
+    withheld: str,
     record_phase: PhaseRecorder | None = None,
     phase_prefix: str = "",
 ) -> tuple[_StagedFile, ...]:
-    """Copy matching source files into staging and build initial entries."""
+    """Copy matching source files, except ``withheld``, into staging."""
     started = time.perf_counter()
     copy_sec = 0.0
     entries: list[_StagedFile] = []
     for path in sorted(source_root.rglob("*")):
         rel = path.relative_to(source_root).as_posix()
         if not matcher.matches(rel):
+            continue
+        if _source_path(source_prefix=source_prefix, rel=rel) == withheld:
             continue
         if path.is_symlink():
             _validate_symlink(path=path, source_root=source_root)
@@ -273,16 +289,19 @@ def _copy_additional(
     source: str,
     destination: str,
     matcher: GlobSet,
+    withheld: str,
     record_phase: PhaseRecorder | None = None,
 ) -> tuple[_StagedFile, ...]:
-    """Copy one additional repo-relative source into the staged tree."""
+    """Copy one additional repo-relative source, except ``withheld``, into staging."""
     source_path = (source_ref / source).resolve()
     if not source_path.is_relative_to(source_ref):
         raise ExportError(f"Copied source escapes source checkout: {source}")
     if not source_path.exists():
         raise ExportError(f"Copied source does not exist: {source}")
     if source_path.is_file() or source_path.is_symlink():
-        if matcher.matches(source_path.name):
+        if matcher.matches(source_path.name) and PurePosixPath(source) != PurePosixPath(
+            withheld,
+        ):
             _validate_symlink(path=source_path, source_root=source_path.parent)
             return (
                 _copy_file(
@@ -299,16 +318,17 @@ def _copy_additional(
         matcher=matcher,
         prefixer=MoveSequence(moves=(FileMove(path="", destination=destination),)),
         source_prefix=source,
+        withheld=withheld,
         record_phase=record_phase,
         phase_prefix=f"copy:{destination}.",
     )
 
 
 def _source_path(*, source_prefix: str, rel: str) -> str:
-    """Return the source path recorded in manifests."""
+    """Return the source path recorded in manifests, in one spelling per file."""
     if not source_prefix:
         return rel
-    return f"{source_prefix}/{rel}"
+    return PurePosixPath(source_prefix, rel).as_posix()
 
 
 def _copy_file(
@@ -344,6 +364,21 @@ def _write_generated(staging: Path, file_write: FileWrite) -> _StagedFile:
         source=f"<generated:{file_write.path}>",
         destination=file_write.path,
     )
+
+
+def _render_pyproject(*, source_ref: Path, staging: Path, delta: str) -> _StagedFile:
+    """Render the export's root ``pyproject.toml`` from its delta."""
+    dest = staging / "pyproject.toml"
+    if dest.exists() or dest.is_symlink():
+        raise ExportError(
+            f"Export destination already exists: pyproject.toml from {delta}",
+        )
+    try:
+        text = PyprojectSource.load(source_ref / delta, source_ref=source_ref).render()
+    except (OSError, DeltaError, ReadError) as err:
+        raise ExportError(f"Cannot render pyproject.toml from {delta}: {err}") from err
+    dest.write_bytes(text.encode())
+    return _StagedFile(source=delta, destination="pyproject.toml")
 
 
 def _copy_to_staging(source: Path, destination: Path) -> None:

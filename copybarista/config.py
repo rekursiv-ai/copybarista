@@ -194,6 +194,11 @@ class FileSelection:
 
     use_default_python_excludes: bool = False
 
+    # Repo-relative ``pyproject.delta.toml``; the export's root ``pyproject.toml`` is
+    # rendered from it (``copybarista.pyproject``), and import folds a public
+    # edit of that file back into it. Empty ships no rendered ``pyproject.toml``.
+    pyproject: str = ""
+
     def effective_exclude(self) -> tuple[str, ...]:
         """Return exclude patterns with default Python artifacts prepended.
 
@@ -485,6 +490,7 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             "write",
             "relocated",
             "use_default_python_excludes",
+            "pyproject",
         },
         "files",
     )
@@ -521,6 +527,9 @@ def parse_config(raw: dict[str, object]) -> WorkflowConfig:
             _parse_file_relocation(idx=idx, raw_relocation=entry)
             for idx, entry in enumerate(_list(files, "relocated"), start=1)
         ),
+        pyproject=_parse_pyproject(_table(files, "pyproject"))
+        if "pyproject" in files
+        else "",
     )
 
     transforms = tuple(
@@ -609,6 +618,9 @@ def workflow_to_toml(config: WorkflowConfig) -> str:
         lines.extend(["", "[[files.write]]"])
         lines.append(f"path = {_toml_string(file_write.path)}")
         lines.append(f"content = {_toml_string(file_write.content)}")
+    if config.files.pyproject:
+        lines.extend(["", "[files.pyproject]"])
+        lines.append(f"delta = {_toml_string(config.files.pyproject)}")
     for relocation in config.files.relocated:
         lines.extend(["", "[[files.relocated]]"])
         lines.append(f"public = {_toml_string(relocation.public)}")
@@ -807,6 +819,17 @@ def _parse_file_copy(idx: int, raw_copy: object) -> FileCopy:
             default=False,
         ),
     )
+
+
+def _parse_pyproject(raw: dict[str, object]) -> str:
+    """Parse ``[files.pyproject]`` into its repo-relative delta path."""
+    _check_keys(raw, {"delta"}, "files.pyproject")
+    delta = _relative_path(_string(raw, "delta", default=""), "files.pyproject.delta")
+    if not delta:
+        raise ConfigError("files.pyproject needs a non-empty delta")
+    # Staging and import withhold the delta by comparing paths as strings, so one
+    # spelling (``./x``, ``a//x`` and ``a/./x`` are all ``a/x``) must reach them.
+    return PurePosixPath(delta).as_posix()
 
 
 def _parse_file_relocation(idx: int, raw_relocation: object) -> FileRelocation:

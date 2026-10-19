@@ -1037,8 +1037,8 @@ def test_export_public_tree_relocks_branch_dependencies_before_git_add(
 ) -> None:
     """The validated tree must track sibling branches, like the export does.
 
-    The committed ``.export/uv.lock`` pins a sibling (configgle) at whatever
-    SHA was current when it was last locked. Validating with ``uv sync
+    A seed lock pins a sibling (configgle) at whatever SHA was current when it
+    was last locked. Validating with ``uv sync
     --frozen`` against that pin tested a stale sibling, so an import failed on
     a bug the sibling had already fixed on its branch.
     """

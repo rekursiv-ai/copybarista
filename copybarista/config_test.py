@@ -338,6 +338,62 @@ def test_loads_file_write_config(tmp_path: Path):
     assert 'content = "\\"\\"\\"Web helpers.\\"\\"\\"\\n"' in serialized
 
 
+def test_loads_pyproject_config(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [files.pyproject]
+        delta = "project/pyproject.delta.toml"
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.files.pyproject == "project/pyproject.delta.toml"
+    assert workflow_to_toml(config).count("[files.pyproject]") == 1
+    assert load_config(config_path).files.pyproject == config.files.pyproject
+
+
+def test_rejects_pyproject_without_delta(tmp_path: Path):
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files.pyproject]
+        path = "x"
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"files\.pyproject"):
+        load_config(config_path)
+
+
+def test_rejects_an_empty_pyproject_table(tmp_path: Path):
+    """An empty table would silently ship no ``pyproject.toml``."""
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        '[workflow]\nsource_root = "project"\n\n[files.pyproject]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"files\.pyproject"):
+        load_config(config_path)
+
+
 def test_default_python_excludes_off_by_default(tmp_path: Path):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
