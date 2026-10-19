@@ -8,7 +8,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from copybarista.cli import _exit_code, main
+from copybarista.cli import _exit_code, _parser, main
 from copybarista.errors import (
     ConfigError,
     ExportError,
@@ -17,6 +17,7 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
+from copybarista.sync_setup import DEFAULT_SYNC_USER_EMAIL, DEFAULT_SYNC_USER_NAME
 
 
 if TYPE_CHECKING:
@@ -235,6 +236,190 @@ def test_cli_rejects_unknown_commands():
         main(["nope"])
 
     assert exc.value.code == 2
+
+
+_IMPORT_CHANGE_REQUIRED = (
+    "--public-base",
+    "pb",
+    "--public-head",
+    "ph",
+    "--source-base",
+    "sb",
+    "--destination",
+    "d",
+)
+_INIT_SYNC_REQUIRED = (
+    "--package-name",
+    "pkg",
+    "--source-root",
+    "sr",
+    "--public-repo",
+    "pr",
+    "--source-repo",
+    "so",
+    "--copybarista-project-path",
+    "cp",
+    "--smoke-import",
+    "si",
+)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["validate", "c"], {"config": "c", "workflow": "export"}),
+        (
+            ["translate", "c"],
+            {"config": "c", "workflow": "export", "output": ""},
+        ),
+        (
+            ["export", "c", "s"],
+            {
+                "config": "c",
+                "source_ref": "s",
+                "folder_dir": "",
+                "workflow": "export",
+                "force": False,
+                "json": False,
+            },
+        ),
+        (
+            ["publish-git", "c", "s"],
+            {"config": "c", "source_ref": "s", "workflow": "export_git", "json": False},
+        ),
+        (
+            ["check-leaks", "c", "r"],
+            {"config": "c", "root": "r", "workflow": "export"},
+        ),
+        (
+            ["import-change", "c", *_IMPORT_CHANGE_REQUIRED],
+            {
+                "config": "c",
+                "public_base": "pb",
+                "public_head": "ph",
+                "source_base": "sb",
+                "destination": "d",
+                "workflow": "export",
+                "no_verify": False,
+                "merge_import": False,
+                "json": False,
+            },
+        ),
+        (
+            ["init-sync", "r", *_INIT_SYNC_REQUIRED],
+            {
+                "root": "r",
+                "package_name": "pkg",
+                "sync_label": "",
+                "source_root": "sr",
+                "public_repo": "pr",
+                "source_repo": "so",
+                "copybarista_project_path": "cp",
+                "smoke_import": "si",
+                "release_check_script": "",
+                "type_check_target": [],
+                "forbidden_pr_text": [],
+                "validation_python_version": [],
+                "validation_command": [],
+                "refresh_public_lockfile": False,
+                "sync_user_name": DEFAULT_SYNC_USER_NAME,
+                "sync_user_email": DEFAULT_SYNC_USER_EMAIL,
+                "overwrite": False,
+            },
+        ),
+        (["check-sync-config", "r"], {"root": "r"}),
+        (
+            ["write-export-workflow", "s"],
+            {"sync_config": "s", "output": "", "source_ref": "."},
+        ),
+        (["write-public-workflows", "s"], {"sync_config": "s"}),
+    ],
+)
+def test_cli_parses_each_command_with_its_defaults(
+    argv: list[str],
+    expected: dict[str, object],
+):
+    assert vars(_parser().parse_args(argv)) == {"command": argv[0], **expected}
+
+
+def test_cli_sets_every_flag_by_its_documented_name():
+    parsed = vars(
+        _parser().parse_args(
+            [
+                "init-sync",
+                "r",
+                *_INIT_SYNC_REQUIRED,
+                *("--type-check-target", "a", "--type-check-target", "b"),
+                *("--forbidden-pr-text", "c", "--forbidden-pr-text", "d"),
+                *("--validation-python-version", "3.12"),
+                *("--validation-python-version", "3.13"),
+                *("--validation-command", "e", "--validation-command", "f"),
+            ],
+        ),
+    )
+
+    assert parsed["type_check_target"] == ["a", "b"]
+    assert parsed["forbidden_pr_text"] == ["c", "d"]
+    assert parsed["validation_python_version"] == ["3.12", "3.13"]
+    assert parsed["validation_command"] == ["e", "f"]
+    assert vars(
+        _parser().parse_args(
+            [
+                "import-change",
+                "c",
+                *_IMPORT_CHANGE_REQUIRED,
+                *("--no-verify", "--merge-import", "--json"),
+            ],
+        ),
+    ) == {
+        "command": "import-change",
+        "config": "c",
+        "public_base": "pb",
+        "public_head": "ph",
+        "source_base": "sb",
+        "destination": "d",
+        "workflow": "export",
+        "no_verify": True,
+        "merge_import": True,
+        "json": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "required"),
+    [
+        ("import-change", _IMPORT_CHANGE_REQUIRED),
+        ("init-sync", _INIT_SYNC_REQUIRED),
+    ],
+)
+def test_cli_rejects_a_command_missing_a_required_flag(
+    command: str,
+    required: tuple[str, ...],
+):
+    for index in range(0, len(required), 2):
+        argv = [command, "x", *required[:index], *required[index + 2 :]]
+        with pytest.raises(SystemExit) as exc:
+            _parser().parse_args(argv)
+        assert exc.value.code == 2, required[index]
+
+
+def test_cli_requires_a_command():
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args([])
+
+    assert exc.value.code == 2
+
+
+def test_cli_help_names_the_program_and_each_command():
+    text = _parser().format_help()
+
+    assert text.startswith("usage: copybarista ")
+    for line in (
+        "Validate a Copybarista config",
+        "Export to a local folder",
+        "Write package sync scaffolding",
+    ):
+        assert line in text
 
 
 def test_cli_uses_publish_git_command_name(

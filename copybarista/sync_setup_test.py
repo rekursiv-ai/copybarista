@@ -22,6 +22,9 @@ from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
     PG_MAJOR,
     SyncSettings,
+    _assert_installs_system_packages,
+    _render_template,
+    _yaml_list,
     check_sync_config,
     export_inputs,
     export_workflow,
@@ -949,6 +952,81 @@ def test_import_workflow_quotes_sync_label():
     workflow = import_workflow(_settings(sync_label="Configgle's Core"))
 
     assert 'COPYBARISTA_SYNC_LABEL: "Configgle\'s Core"' in workflow
+
+
+def _install_steps(run: str) -> list[object]:
+    return [{"name": "Install system packages", "run": run}]
+
+
+def test_installs_system_packages_accepts_no_packages_and_no_step():
+    _assert_installs_system_packages(steps=[], packages=(), workflow="w.yml")
+
+
+def test_installs_system_packages_accepts_postgresql_as_the_pinned_server():
+    _assert_installs_system_packages(
+        steps=_install_steps(f"apt-get install ripgrep postgresql-{PG_MAJOR}"),
+        packages=("ripgrep", "postgresql"),
+        workflow="w.yml",
+    )
+
+
+@pytest.mark.parametrize(
+    ("run", "message"),
+    [
+        (
+            "apt-get install ripgrep postgresql",
+            "w.yml must install system package 'postgresql' (see system_packages).",
+        ),
+        (
+            f"apt-get install postgresql-{PG_MAJOR}",
+            "w.yml must install system package 'ripgrep' (see system_packages).",
+        ),
+    ],
+)
+def test_installs_system_packages_names_the_missing_package(run: str, message: str):
+    with pytest.raises(ConfigError) as error:
+        _assert_installs_system_packages(
+            steps=_install_steps(run),
+            packages=("ripgrep", "postgresql"),
+            workflow="w.yml",
+        )
+
+    assert str(error.value) == message
+
+
+def test_installs_system_packages_names_the_workflow_missing_the_step():
+    with pytest.raises(ConfigError) as error:
+        _assert_installs_system_packages(
+            steps=[],
+            packages=("ripgrep",),
+            workflow="package-validation.yml",
+        )
+
+    assert str(error.value) == (
+        "package-validation.yml must define step Install system packages."
+    )
+
+
+def test_yaml_list_names_the_field_that_is_not_a_list():
+    with pytest.raises(ConfigError) as error:
+        _yaml_list({}, "jobs.x.steps")
+
+    assert str(error.value) == "<repo>-to-loop.yml jobs.x.steps must be a YAML list."
+
+
+def test_render_template_names_the_template_with_an_unrendered_token():
+    with pytest.raises(AssertionError) as error:
+        _render_template("copybarista.sync.toml.tmpl", {})
+
+    assert (
+        str(error.value) == "Unrendered token in template copybarista.sync.toml.tmpl."
+    )
+
+
+def test_render_template_banner_names_its_template():
+    assert export_workflow(_settings()).startswith(
+        "# DO NOT EDIT -- generated from internal-to-external.yml.tmpl and this\n",
+    )
 
 
 def test_export_workflow_watches_source_and_sync_helpers():
