@@ -696,6 +696,11 @@ def test_export_workflow_can_refresh_public_lockfile():
     assert "--refresh-public-lockfile" in workflow
 
 
+def test_export_workflow_installs_every_copybarista_dependency():
+    """The export runs copybarista with ``--no-project``, so each import needs a ``--with``."""
+    assert "--with tomlkit" in export_workflow(_settings())
+
+
 def test_export_workflow_can_run_release_check_script():
     workflow = export_workflow(_settings(release_check_script="scripts/check.py"))
 

@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import tomllib
 
 import pytest
 
@@ -18,6 +19,7 @@ from copybarista.config import (
     FileMove,
     Transform,
     load_config,
+    parse_config,
     reverse_file_moves,
     reverse_relocation,
 )
@@ -41,6 +43,7 @@ from copybarista.import_request import (
     _three_way_merge,
     import_change_request,
 )
+from copybarista.pyproject import PyprojectSource
 from copybarista.transforms import strip_source_text, uncomment_source_text
 from copybarista.workflow import MoveSequence, _relocate_path
 
@@ -1200,6 +1203,371 @@ def test_import_rejects_generated_file_destination(tmp_path: Path):
 
     with pytest.raises(ImportRequestError, match="unmapped"):
         mapper.source_path("demo/lib/web/__init__.py")
+
+
+@pytest.mark.parametrize("merge_import", [False, True])
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        ('\n[pyproject]\nbase = "other.toml"\n', r"\[pyproject\]"),
+        ("\nbroken = [\n", "Cannot parse"),
+    ],
+)
+def test_import_rejects_a_public_pyproject_it_cannot_fold(
+    tmp_path: Path,
+    merge_import: bool,
+    edit: str,
+    message: str,
+):
+    source_base, config, public_base = _pyproject_import_fixture(tmp_path)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    pyproject = public_head / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text(encoding="utf-8") + edit, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    with pytest.raises(ImportRequestError, match=message):
+        import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=merge_import,
+            ),
+        )
+
+
+def _pyproject_import_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Return a source checkout, its config, and its export, rendering a pyproject."""
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/module.py").write_text(
+        "V = 1\n",
+        encoding="utf-8",
+    )
+    (source_base / "pyproject.toml").write_text("b = 1\n", encoding="utf-8")
+    (source_base / "internal/demo/pyproject.delta.toml").write_text(
+        'b = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        '[workflow]\nname = "demo"\nmode = "squash"\nsource_root = "internal/demo"\n'
+        '\n[files]\ninclude = ["**"]\n'
+        '\n[files.pyproject]\ndelta = "internal/demo/pyproject.delta.toml"\n',
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=load_config(config),
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    return source_base, config, public_base
+
+
+def test_merge_import_folds_an_edit_onto_a_hand_formatted_public_base(tmp_path: Path):
+    """A public base that differs from the render only in spelling is not drift.
+
+    A hand-formatted contribution keeps its spelling on public ``main`` until the
+    next export re-renders it, so the next edit beside it must still fold.
+    """
+    source_base, config, rendered = _pyproject_import_fixture(tmp_path)
+    public_base = _copy_tree(rendered, tmp_path / "public-base-spelled")
+    (public_base / "pyproject.toml").write_text("b   =   2\n", encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text("b   =   3\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [c.outcome for c in result.changes] == ["applied"]
+    delta = (destination / "internal/demo/pyproject.delta.toml").read_text()
+    assert tomllib.loads(delta)["b"] == 3
+
+
+def test_merge_import_keeps_a_comment_the_source_moved(tmp_path: Path):
+    """Source drift that only moves a comment between keys is still drift.
+
+    The same comment text on another key compares equal as content and as a list
+    of comments, so the public head used to overwrite the move.
+    """
+    source_base, config, _ = _pyproject_import_fixture(tmp_path)
+    (source_base / "pyproject.toml").write_text(
+        "# Note.\na = 1\nc = 1\nd = 1\nb = 1\n",
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base-noted"
+    export_folder(
+        config=load_config(config),
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    (source_base / "pyproject.toml").write_text(
+        "a = 1\n# Note.\nc = 1\nd = 1\nb = 1\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    rendered = (public_base / "pyproject.toml").read_text(encoding="utf-8")
+    (public_head / "pyproject.toml").write_text(
+        rendered.replace("b = 2", "b = 3"),
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    _ = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    source = PyprojectSource.load(
+        destination / "internal/demo/pyproject.delta.toml",
+        source_ref=destination,
+    )
+    assert source.render() == "a = 1\n# Note.\nc = 1\nd = 1\nb = 3\n"
+
+
+def test_import_verify_rejects_a_fold_that_drops_a_comment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verification is the last line: a lost comment must fail it, not ship."""
+    source_base, config, public_base = _pyproject_import_fixture(tmp_path)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text("b = 2\n# Why b.\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+    fold = PyprojectSource.fold
+
+    def lossy_fold(self: PyprojectSource, public: str) -> str:
+        return fold(self, public.replace("# Why b.\n", ""))
+
+    monkeypatch.setattr(PyprojectSource, "fold", lossy_fold)
+
+    with pytest.raises(ImportRequestError, match="does not reproduce public head"):
+        _ = import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+            ),
+        )
+
+
+def test_strict_import_accepts_a_hand_formatted_public_base(tmp_path: Path):
+    """The public base check compares the render as the head check does: by content."""
+    source_base, config, rendered = _pyproject_import_fixture(tmp_path)
+    public_base = _copy_tree(rendered, tmp_path / "public-base-spelled")
+    (public_base / "pyproject.toml").write_text("b   =   2\n", encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text("b   =   3\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    assert [c.outcome for c in result.changes] == ["applied"]
+    delta = (destination / "internal/demo/pyproject.delta.toml").read_text()
+    assert tomllib.loads(delta)["b"] == 3
+
+
+def test_merge_import_folds_a_comment_only_public_edit(tmp_path: Path):
+    """Comments are content of a delta: an edit that adds only one still lands."""
+    source_base, config, public_base = _pyproject_import_fixture(tmp_path)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text("# Why b.\nb = 2\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [c.outcome for c in result.changes] == ["applied"]
+    delta = (destination / "internal/demo/pyproject.delta.toml").read_text()
+    assert "# Why b." in delta
+
+
+@pytest.mark.parametrize("source", ["internal/demo/.export", "./internal/demo/.export"])
+def test_path_mapper_never_maps_a_public_path_onto_the_delta(source: str):
+    """However a copy spells its source, a public file never lands on the delta."""
+    # The selection moves everything under ``pkg/``, so only the root copy can claim
+    # a public file at the root.
+    raw: dict[str, object] = {
+        "workflow": {"source_root": "internal/demo"},
+        "files": {
+            "include": ["**"],
+            "exclude": [".export/**"],
+            "moves": [{"path": "", "destination": "pkg"}],
+            "copy": [{"source": source, "destination": "."}],
+            "pyproject": {"delta": "internal/demo/.export/pyproject.delta.toml"},
+        },
+    }
+    mapper = PathMapper(config=parse_config(raw))
+
+    with pytest.raises(ImportRequestError, match="excluded or unmapped"):
+        _ = mapper.source_path("pyproject.delta.toml", action="created")
+
+
+@pytest.mark.parametrize("action", ["edit", "add"])
+def test_import_rejects_a_public_write_to_the_delta(tmp_path: Path, action: str):
+    """The delta never ships, so a public file the selection maps onto it is forged."""
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/module.py").write_text("V = 1\n")
+    (source_base / "pyproject.toml").write_text("b = 1\n")
+    (source_base / "internal/demo/pyproject.delta.toml").write_text(
+        'b = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        '[workflow]\nname = "demo"\nmode = "squash"\nsource_root = "internal/demo"\n'
+        '\n[files]\ninclude = ["**"]\n'
+        '\n[files.pyproject]\ndelta = "internal/demo/pyproject.delta.toml"\n',
+    )
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=load_config(config),
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.delta.toml").write_text("b = 9\n")
+    if action == "edit":
+        (public_base / "pyproject.delta.toml").write_text("")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    with pytest.raises(ImportRequestError, match=r"pyproject\.delta\.toml"):
+        import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=True,
+            ),
+        )
+    assert "b = 2" in (destination / "internal/demo/pyproject.delta.toml").read_text()
+
+
+@pytest.mark.parametrize("merge_import", [False, True])
+def test_import_folds_a_public_pyproject_edit_into_its_delta(
+    tmp_path: Path,
+    merge_import: bool,
+):
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/module.py").write_text(
+        "V = 1\n",
+        encoding="utf-8",
+    )
+    (source_base / "pyproject.toml").write_text(
+        'deps = [\n    "x",\n]\nb = 1\n',
+        encoding="utf-8",
+    )
+    delta = source_base / "internal/demo/pyproject.delta.toml"
+    delta.write_text(
+        'b = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [files.pyproject]
+        delta = "internal/demo/pyproject.delta.toml"
+        """,
+        encoding="utf-8",
+    )
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=load_config(config),
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    assert (public_base / "pyproject.toml").read_text(encoding="utf-8") == (
+        'deps = [\n    "x",\n]\nb = 2\n'
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    # Hand-formatted: a fold renders its own spelling, so strict verification
+    # must compare this file by content, not bytes.
+    (public_head / "pyproject.toml").write_text(
+        'deps = [ "x",\n    "y",  # Why y.\n]\nb   =   3\n',
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=merge_import,
+        ),
+    )
+
+    assert [(c.public, c.source) for c in result.changes] == [
+        ("pyproject.toml", "internal/demo/pyproject.delta.toml"),
+    ]
+    assert (destination / "pyproject.toml").read_text(encoding="utf-8") == (
+        'deps = [\n    "x",\n]\nb = 1\n'
+    )
+    assert not (destination / "internal/demo/pyproject.toml").exists()
+    reexport = tmp_path / "reexport"
+    export_folder(
+        config=load_config(config),
+        source_ref=destination,
+        destination=reexport,
+        force=True,
+    )
+    assert tomllib.loads((reexport / "pyproject.toml").read_text()) == tomllib.loads(
+        (public_head / "pyproject.toml").read_text(),
+    )
+    assert "# Why y." in (reexport / "pyproject.toml").read_text()
 
 
 def test_import_public_edit_maps_moved_path_to_original_source(tmp_path: Path):

@@ -177,7 +177,7 @@ def _entry_segments(entry: tuple[str, bool]) -> list[str]:
 
 
 # Excludes are source-root-relative, so only a path a ``files.moves`` entry placed is in
-# their space. An unmoved path is a ``[[files.copy]]`` destination (``.export/uv.lock``
+# their space. An unmoved path is a ``[[files.copy]]`` destination (``.export/SECURITY.md``
 # at the root, ``typings/<pkg>``), and judging it would forbid the copy itself. With no
 # moves the export root IS the source root, so every path is judged.
 def _excluded_path_violations(

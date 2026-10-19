@@ -47,12 +47,11 @@ from vendored code.
 
 The monorepo hides the dependency: both sides resolve from the worktree. The
 export does not. For a consumer using git-backed sibling dependencies and
-PyPI releases, check FOUR coupled locations (paths below are examples):
+PyPI releases, check THREE coupled locations (paths below are examples):
 
 | File | Edit |
 |---|---|
-| `.export/pyproject.toml` | floor in `project.dependencies` + git source in `[tool.uv.sources]` |
-| `.export/uv.lock` | `uv lock --upgrade-package <sibling>` |
+| `.export/pyproject.delta.toml` | floor in `project.dependencies` + git source in `[tool.uv.sources]` |
 | `copybarista.sync.toml` | wheel smoke gets `--with "<sibling> @ git+https://github.com/example-org/<sibling>"` |
 | `.export/.github/workflows/publish-pypi.yml` | a step resolving the wheel against PyPI ALONE |
 
@@ -73,7 +72,7 @@ Traps:
 
 - **`validation_commands` feeds generated workflows.** After editing it, run
   `write-public-workflows <sync.toml>` AND
-  `write-export-workflow <sync.toml> --output .github/workflows/export-<pkg>.yml`.
+  `write-export-workflow <sync.toml> --output .github/workflows/loop-to-<pkg>.yml`.
   Inspect the sync config for output paths and run the repository's workflow
   parity checks after regenerating both.
 - **`uv lock` will not advance an already-locked branch source.** It DOES adopt
@@ -108,7 +107,8 @@ tree, never the source checkout:
 1. `files.include` / `files.exclude` select from `source_root`
 2. `files.moves` relocate within the tree
 3. `files.copy` pull in paths from OUTSIDE `source_root` (repo-relative)
-4. `files.write` emit generated files
+4. `files.write` emit generated files; `files.pyproject` renders the root
+   `pyproject.toml` from its delta
 5. `transforms` apply **in config order** (`transforms.py:63-71`)
 6. `leak_check` runs LAST, on the transformed tree (`workflow.py:140`)
 
@@ -149,8 +149,11 @@ Inspect these four settings; they are not inferable from a rule you copy:
 
 ## The `.export/` staging convention
 
-A package can keep public repo metadata (`pyproject.toml`, `uv.lock`,
-`.github/workflows/`, `SECURITY.md`) in `<source_root>/.export/`.
+A package can keep public repo metadata (`.github/workflows/`, `SECURITY.md`)
+in `<source_root>/.export/`. Its `pyproject.toml` is not stored: `[files.pyproject]`
+renders it from `.export/pyproject.delta.toml` plus the root `pyproject.toml`,
+and import folds a public edit of it back into the delta. No `uv.lock` is
+stored either; the export relocks from the source checkout's root lock.
 Inspect the config to confirm that transforms leave it verbatim.
 Two coupled entries stage it at the export root:
 
@@ -167,7 +170,8 @@ Drop the exclude and the sweep ALSO stages it under the package prefix, so the
 tree double-ships. Check for a `leak_check.forbidden_path` on
 `"**/.export/**"`; without it, the duplication can pass silently.
 When this convention is used, sibling-dependency edits target
-`.export/pyproject.toml`, not a transform.
+`.export/pyproject.delta.toml`, not a transform. The export withholds the delta
+from every selection and copy on its own, so no exclude names it.
 
 ## Transform types
 

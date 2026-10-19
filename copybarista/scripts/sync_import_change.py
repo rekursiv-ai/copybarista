@@ -897,9 +897,11 @@ def _export_public_tree(
     # has one. Mirrors ``sync_export_pr._init_validation_repo``, which this
     # stdlib-only copy cannot import. The tree is discarded after.
     if request.refresh_public_lockfile:
-        # The committed lock pins branch-tracking siblings at a stale SHA; the
-        # export relocks them before validating, so validating the pin here
-        # failed imports on sibling bugs already fixed on their branch.
+        # Seeded from the source lock, as the export's relock is
+        # (``sync_export_pr._refresh_public_lockfile``), so both validate the same pins.
+        seed = request.target_dir / "uv.lock"
+        if seed.is_file():
+            shutil.copy2(seed, tree / "uv.lock")
         _run(["uv", "lock", *_git_branch_upgrades(tree / "pyproject.toml")], cwd=tree)
     _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=tree)
     _run(["git", "add", "--all"], cwd=tree)
