@@ -40,6 +40,7 @@ from copybarista.scripts.sync_import_change import (
 )
 from copybarista.sync_setup import (
     SyncSettings,
+    export_workflow_filename,
     load_sync_settings,
 )
 from copybarista.template import replace_template
@@ -57,6 +58,8 @@ PR_MARKER_PREFIX: Final = "<!-- copybarista:pr-state "
 PR_ENTRY_PREFIX: Final = "<!-- copybarista:pr-entry "
 GITHUB_RETRY_ATTEMPTS: Final = 3
 GITHUB_RETRY_DELAY_SEC: Final = 2
+UPSTREAM_EXPORT_POLL_SEC: Final = 20.0
+UPSTREAM_EXPORT_WAIT_SEC: Final = 900.0
 PR_TEMPLATE_PATHS = (
     Path(".github/PULL_REQUEST_TEMPLATE.md"),
     Path(".github/pull_request_template.md"),
@@ -649,6 +652,7 @@ def _run(
     stdout: TextIO | int | None = None,
     check: bool = True,
     capture: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess while streaming commands for Action logs."""
     _log("+ " + shlex.join(argv))
@@ -660,7 +664,7 @@ def _run(
         stdout=subprocess.PIPE if capture else stdout,
         stderr=subprocess.PIPE if capture else None,
         text=True,
-        env=_child_env(),
+        env=_child_env() if env is None else env,
     )
     if check and result.returncode != 0:
         _write_process_output(result)
@@ -677,10 +681,11 @@ def _run_gh(
     cwd: Path,
     capture: bool = False,
     check: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a GitHub CLI command with retries for transient API failures."""
     for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
-        result = _run(argv, cwd=cwd, check=False, capture=True)
+        result = _run(argv, cwd=cwd, check=False, capture=True, env=env)
         if result.returncode == 0:
             if not capture:
                 _write_process_output(result)
@@ -778,6 +783,16 @@ def _run_export_sync(request: ExportRequest) -> None:
     _log("Replacing public checkout contents.")
     _replace_tree(source=export_dir, destination=request.public_dir)
     if request.refresh_public_lockfile:
+        if request.source_repo:
+            _await_upstream_exports(
+                workflows=_upstream_export_workflows(
+                    pyproject=request.public_dir / "pyproject.toml",
+                    source_dir=request.source_dir,
+                ),
+                source_repo=request.source_repo,
+                source_sha=request.source_sha,
+                cwd=request.source_dir,
+            )
         _log("Refreshing public lockfile.")
         _refresh_public_lockfile(
             public_dir=request.public_dir,
@@ -1234,6 +1249,88 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
         if isinstance(source, dict) and "branch" in source
         for flag in ("--upgrade-package", name)
     ]
+
+
+# A sibling public repo's export from the same source commit publishes what this lock
+# tracks. Locking first pins the sibling's previous HEAD: a stub and its consumer pushed
+# together then failed the consumer's validation (Loop to Sagent, 2026-10-19).
+def _upstream_export_workflows(*, pyproject: Path, source_dir: Path) -> tuple[str, ...]:
+    """Return the source's export workflows for this lock's git-branch sources."""
+    table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    for key in ("tool", "uv", "sources"):
+        table = from_plain(table, dict[str, object]).get(key, {})
+    # A source is a table, or a list of per-marker tables; only a table tracks a branch.
+    sources = from_plain(table, dict[str, dict[str, object] | list[object]])
+    repos = {
+        str(source["git"]).removeprefix("https://github.com/").removesuffix(".git")
+        for source in sources.values()
+        if isinstance(source, dict) and "branch" in source and "git" in source
+    }
+    return tuple(
+        sorted(
+            export_workflow_filename(settings)
+            # One or two levels under the root package; deeper hits are doc fixtures.
+            for pattern in ("*/*/copybarista.sync.toml", "*/*/*/copybarista.sync.toml")
+            for sync in source_dir.glob(pattern)
+            if (settings := load_sync_settings(sync)).public_repo in repos
+        ),
+    )
+
+
+def _await_upstream_exports(
+    *,
+    workflows: tuple[str, ...],
+    source_repo: str,
+    source_sha: str,
+    cwd: Path,
+) -> None:
+    """Wait, up to a deadline, for each workflow's run on ``source_sha`` to finish."""
+    if source_sha == "manual":
+        return
+    # The sync token is scoped to the public repos; the workflow's own token reads
+    # this repository's Actions runs.
+    env = _child_env()
+    env["GH_TOKEN"] = os.environ.get("COPYBARISTA_ACTIONS_TOKEN") or env.get(
+        "GH_TOKEN",
+        "",
+    )
+    waited = 0.0
+    for workflow in workflows:
+        while waited < UPSTREAM_EXPORT_WAIT_SEC:
+            result = _run_gh(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--repo",
+                    source_repo,
+                    "--workflow",
+                    workflow,
+                    "--commit",
+                    source_sha,
+                    "--json",
+                    "status",
+                ],
+                cwd=cwd,
+                capture=True,
+                check=False,
+                env=env,
+            )
+            # The wait only orders the lock; a token without actions read access
+            # locks as before rather than failing the export.
+            if result.returncode != 0:
+                _write_process_output(result)
+                _log(f"Cannot list {workflow} runs; locking without waiting.")
+                return
+            runs = from_plain(
+                _json_from_gh(result.stdout, context=f"{workflow} runs"),
+                list[dict[str, object]],
+            )
+            if all(run.get("status") == "completed" for run in runs):
+                break
+            _log(f"Waiting for {workflow} on {source_sha[:12]} to publish.")
+            time.sleep(UPSTREAM_EXPORT_POLL_SEC)
+            waited += UPSTREAM_EXPORT_POLL_SEC
 
 
 # ``validation_commands`` is the single source of truth (``copybarista.sync.toml``

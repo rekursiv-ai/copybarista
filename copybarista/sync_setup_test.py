@@ -696,6 +696,18 @@ def test_export_workflow_can_refresh_public_lockfile():
     assert "--refresh-public-lockfile" in workflow
 
 
+def test_export_workflow_lets_the_export_read_sibling_export_runs():
+    """The export waits on sibling runs with the workflow token, not the sync token."""
+    workflow = from_plain(
+        yaml.safe_load(export_workflow(_settings())),
+        dict[object, object],
+    )
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    jobs = from_plain(workflow["jobs"], dict[str, dict[str, object]])
+    env = from_plain(jobs["export-pr"]["env"], dict[str, str])
+    assert env["COPYBARISTA_ACTIONS_TOKEN"] == "${{ github.token }}"  # noqa: S105 -- An Actions expression, not a secret.
+
+
 def test_export_workflow_installs_every_copybarista_dependency():
     """The export runs copybarista with ``--no-project``, so each import needs a ``--with``."""
     assert "--with tomlkit" in export_workflow(_settings())

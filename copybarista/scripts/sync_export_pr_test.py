@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Final
 
 import shutil
 import subprocess
 import sys
+import time
+
+from treekle import from_plain
 
 import pytest
 
@@ -20,6 +24,7 @@ from copybarista.scripts.sync_export_pr import (
     PrReplayState,
     SourceAuthor,
     _applied_marker_from_pr_body,
+    _await_upstream_exports,
     _base_pr_state,
     _commit_author,
     _export_commit_message,
@@ -39,11 +44,16 @@ from copybarista.scripts.sync_export_pr import (
     _replace_tree,
     _source_rev_digest,
     _state_from_pr_body,
+    _upstream_export_workflows,
     _validate_public,
     export_branch_name,
     export_pr_text,
     replay_pr_metadata,
 )
+from copybarista.sync_setup import SyncSettings, write_sync_scaffold
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def _metadata_log(
@@ -1478,8 +1488,7 @@ def test_marked_existing_branch_replays_after_applied_source(
         marker: str,
         marker_source: str,
     ) -> str:
-        assert source_dir == tmp_path
-        calls.append(f"{marker_source}:{marker}")
+        calls.append(f"{source_dir}|{marker_source}:{marker}")
         return "applied-source"
 
     monkeypatch.setattr(
@@ -1501,7 +1510,159 @@ def test_marked_existing_branch_replays_after_applied_source(
         )
         == "applied-source"
     )
-    assert calls == ["generated branch source marker:sha256:applied-digest"]
+    assert calls == [f"{tmp_path}|generated branch source marker:sha256:applied-digest"]
+
+
+def test_branch_without_source_marker_replays_after_its_replay_base(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[Path, str, str]] = []
+
+    def resolve(*, source_dir: Path, marker: str, marker_source: str) -> str:
+        calls.append((source_dir, marker, marker_source))
+        return "migration-base"
+
+    monkeypatch.setattr(sync_export_pr, "_resolve_source_marker", resolve)
+
+    assert (
+        sync_export_pr._replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="base-digest",
+                exists=True,
+            ),
+        )
+        == "migration-base"
+    )
+    assert calls == [
+        (tmp_path, "sha256:base-digest", "generated branch replay-base marker"),
+    ]
+
+
+def test_resolved_replay_base_resolves_a_branch_replay_base_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The branch's replay-base digest resolves in the source, named as that marker."""
+    calls: list[tuple[Path, str, str]] = []
+
+    def resolve(*, source_dir: Path, marker: str, marker_source: str) -> str:
+        calls.append((source_dir, marker, marker_source))
+        return "migration-base"
+
+    monkeypatch.setattr(sync_export_pr, "_resolve_source_marker", resolve)
+
+    assert (
+        sync_export_pr._resolved_replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="base-digest",
+                exists=True,
+            ),
+        )
+        == "migration-base"
+    )
+    assert calls == [
+        (tmp_path, "sha256:base-digest", "generated branch replay-base marker"),
+    ]
+
+
+def test_resolved_replay_base_names_the_migration_for_an_unmarked_pr(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=(
+            r"^Existing generated PR has no Copybarista replay marker\. Branch: "
+            r"copybarista/export/main\. Configure replay_bootstrap_base or rerun "
+            r"with manual PR text once to migrate the PR\.$"
+        ),
+    ):
+        sync_export_pr._resolved_replay_base(
+            request=_export_request(tmp_path),
+            current_source_rev="source-head",
+            current_pr=sync_export_pr.CurrentPr(
+                title="Old title",
+                body="Old body.",
+                number=7,
+                url="https://example.test/pr/7",
+            ),
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("bootstrap_base", "expected"),
+    [("bootstrap-base", "bootstrap-base"), ("", "parent-of-source-head")],
+)
+def test_unmarked_branch_replays_after_bootstrap_else_the_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    bootstrap_base: str,
+    expected: str,
+) -> None:
+    def parent(*, source_dir: Path, rev: str) -> str:
+        assert source_dir == tmp_path
+        return f"parent-of-{rev}"
+
+    monkeypatch.setattr(sync_export_pr, "_source_parent", parent)
+    request = _export_request(tmp_path)
+    request = replace(
+        request,
+        replay_settings=replace(request.replay_settings, bootstrap_base=bootstrap_base),
+    )
+
+    assert (
+        sync_export_pr._resolved_replay_base(
+            request=request,
+            current_source_rev="source-head",
+            current_pr=None,
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+        == expected
+    )
+
+
+def test_unmarked_pr_replays_after_bootstrap(tmp_path: Path) -> None:
+    request = _export_request(tmp_path)
+    request = replace(
+        request,
+        replay_settings=replace(request.replay_settings, bootstrap_base="boot"),
+    )
+
+    assert (
+        sync_export_pr._resolved_replay_base(
+            request=request,
+            current_source_rev="source-head",
+            current_pr=sync_export_pr.CurrentPr(
+                title="Old title",
+                body="Old body.",
+                number=7,
+                url="https://example.test/pr/7",
+            ),
+            branch_markers=sync_export_pr.BranchMarkers(
+                source_digest="digest",
+                replay_base_digest="",
+                exists=True,
+            ),
+        )
+        == "boot"
+    )
 
 
 def test_replay_base_floors_resolved_base_to_bootstrap(
@@ -1565,7 +1726,11 @@ def test_replay_base_floors_resolved_base_to_bootstrap(
 def test_unmarked_existing_pr_still_requires_bootstrap(tmp_path: Path) -> None:
     with pytest.raises(
         sync_export_pr.PrReplayError,
-        match=r"^Existing generated PR has no Copybarista replay marker\. Branch:",
+        match=(
+            r"^Existing generated PR has no Copybarista replay marker\. Branch: "
+            r"copybarista/export/main\. Configure replay_bootstrap_base or rerun "
+            r"with manual PR text once to migrate the PR\.$"
+        ),
     ):
         sync_export_pr._replay_base(
             request=_export_request(tmp_path),
@@ -2649,6 +2814,164 @@ def test_refresh_public_lockfile_without_git_sources_runs_plain_lock(
     assert argv == [["uv", "lock"]]
     # Seeded: ``uv lock`` keeps the source's pins for every shared package.
     assert (public_dir / "uv.lock").read_text(encoding="utf-8") == "source pins\n"
+
+
+def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
+    tmp_path: Path,
+) -> None:
+    """A branch-tracking source on a sibling's public repo names its export."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.uv.sources]\n"
+        'treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }\n'
+        'stubs = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }\n'
+        'pinned = { git = "https://github.com/rekursiv-ai/wesearch", rev = "abc" }\n'
+        'other = { git = "https://example.invalid/other", branch = "main" }\n',
+        encoding="utf-8",
+    )
+
+    # The public copy of this test has no monorepo, so it builds the source tree.
+    source_dir = tmp_path / "source"
+    for root, repo in (
+        ("src/treekle", "treekle"),
+        ("src/typings", "typings"),
+        ("src/labs/sagent", "sagent"),
+        # Deeper than a package sits: a doc fixture, not a sibling export.
+        ("src/tool/examples/demo", "treekle"),
+    ):
+        name = root.rsplit("/", 1)[-1]
+        write_sync_scaffold(
+            root=source_dir / root,
+            settings=SyncSettings(
+                package_name=name,
+                sync_label=name.title(),
+                source_root=root,
+                public_repo=f"rekursiv-ai/{repo}",
+                source_repo="example/source",
+                copybarista_project_path="src/tool",
+                smoke_import=name,
+                type_check_targets=(".",),
+                forbidden_pr_text=("private",),
+            ),
+        )
+
+    workflows = _upstream_export_workflows(pyproject=pyproject, source_dir=source_dir)
+
+    assert workflows == ("loop-to-treekle.yml", "loop-to-typings.yml")
+
+
+def test_await_upstream_exports_waits_until_each_run_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lock waits for a sibling export of the same commit to publish."""
+    statuses = iter(['[{"status": "in_progress"}]', '[{"status": "completed"}]'])
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=next(statuses))
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    _await_upstream_exports(
+        workflows=("loop-to-typings.yml",),
+        source_repo="example/source",
+        source_sha="8b466d40b6",
+        cwd=Path("/src"),
+    )
+
+    assert len(calls) == 2
+    assert calls[0][:3] == ["gh", "run", "list"]
+    assert {"loop-to-typings.yml", "8b466d40b6", "example/source"} <= set(calls[0])
+    assert len(sleeps) == 1
+
+
+def test_await_upstream_exports_lists_runs_with_the_workflow_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync token may not read source Actions; the workflow's own token can."""
+    tokens: list[str] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        tokens.append(from_plain(kwargs["env"], dict[str, str])["GH_TOKEN"])
+        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "completed"}]')
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setenv("GH_TOKEN", "sync-token")
+    monkeypatch.setenv("COPYBARISTA_ACTIONS_TOKEN", "actions-token")
+
+    _await_upstream_exports(
+        workflows=("loop-to-typings.yml",),
+        source_repo="example/source",
+        source_sha="8b466d40b6",
+        cwd=Path("/src"),
+    )
+
+    assert tokens == ["actions-token"]
+
+
+def test_await_upstream_exports_locks_anyway_when_runs_are_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="HTTP 403")
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    _await_upstream_exports(
+        workflows=("loop-to-treekle.yml", "loop-to-typings.yml"),
+        source_repo="example/source",
+        source_sha="8b466d40b6",
+        cwd=Path("/src"),
+    )
+
+    assert len(calls) == 1
+    # The reason is logged: a silent skip hid the token gap for a whole push.
+    assert "HTTP 403" in capsys.readouterr().err
+
+
+def test_await_upstream_exports_skips_a_manual_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    _await_upstream_exports(
+        workflows=("loop-to-typings.yml",),
+        source_repo="example/source",
+        source_sha="manual",
+        cwd=Path("/src"),
+    )
+
+
+def test_await_upstream_exports_gives_up_after_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck sibling delays the lock, never blocks it past the deadline."""
+    sleeps: list[float] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "queued"}]')
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    _await_upstream_exports(
+        workflows=("loop-to-typings.yml",),
+        source_repo="example/source",
+        source_sha="8b466d40b6",
+        cwd=Path("/src"),
+    )
+
+    assert sum(sleeps) >= sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC
 
 
 def test_run_export_sync_refreshes_public_lockfile_before_validation(
