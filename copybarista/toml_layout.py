@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import itertools
 import tomllib
 
 from treekle import from_plain
@@ -62,6 +63,54 @@ def layout(text: str) -> tuple[Event, ...]:
     return tuple(scanner.events)
 
 
+def uncommented(text: str) -> str:
+    """Return ``text`` with every comment and blank line removed.
+
+    A line that held only a comment goes with it; a multi-line string is kept
+    whole, ``#`` and blank lines included. Indentation is kept, so a list keeps
+    its layout.
+
+    Args:
+      text: A TOML document.
+
+    Returns:
+      text: The same TOML content with no comment and no blank line.
+
+    Raises:
+      LayoutError: ``text`` is not TOML.
+
+    """
+    layout(text)
+    scanner = _Scanner(text=text)
+    scanner.document()
+    kept: list[str] = []
+    pos = 0
+    for start, end in scanner.comments:
+        kept.append(text[pos:start].rstrip(" \t"))
+        pos = end
+    kept.append(text[pos:])
+    # A line a string spans is the string's, blank or not; every other blank line,
+    # what a comment-only line left behind included, goes.
+    lines = "".join(kept).splitlines(keepends=True)
+    offsets = itertools.accumulate((len(line) for line in lines), initial=0)
+    return "".join(
+        line
+        for line, at in zip(lines, offsets, strict=False)
+        if line.strip() or _inside(at, spans=_string_spans("".join(kept)))
+    )
+
+
+def _inside(at: int, *, spans: list[tuple[int, int]]) -> bool:
+    return any(start < at < end for start, end in spans)
+
+
+def _string_spans(text: str) -> list[tuple[int, int]]:
+    """Return the ``[start, end)`` of each multi-line string in ``text``."""
+    scanner = _Scanner(text=text)
+    scanner.document()
+    return scanner.strings
+
+
 _BARE: frozenset[str] = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-",
 )
@@ -79,6 +128,9 @@ class _Scanner:
     table: KeyPath = ()
     events: list[Event] = field(default_factory=list[Event])
     counts: dict[KeyPath, int] = field(default_factory=dict[KeyPath, int])
+    # Where each comment and each multi-line string sits, as ``[start, end)``.
+    comments: list[tuple[int, int]] = field(default_factory=list[tuple[int, int]])
+    strings: list[tuple[int, int]] = field(default_factory=list[tuple[int, int]])
 
     def document(self) -> None:
         self.line_start()
@@ -106,6 +158,7 @@ class _Scanner:
                 end = len(self.text) if end < 0 else end
                 comment = self.text[self.pos : end].rstrip("\r")
                 self.events.append(("remark" if self.busy else "comment", comment))
+                self.comments.append((self.pos, self.pos + len(comment)))
                 self.pos = end
             else:
                 return
@@ -195,6 +248,7 @@ class _Scanner:
     def string(self) -> None:
         quote = self.text[self.pos]
         if self.text.startswith(quote * 3, self.pos):
+            start = self.pos
             self.pos += 3
             while not self.text.startswith(quote * 3, self.pos):
                 self.pos += 2 if quote == '"' and self.text[self.pos] == "\\" else 1
@@ -203,6 +257,7 @@ class _Scanner:
             while run < 5 and self.text.startswith(quote, self.pos + run):
                 run += 1
             self.pos += run
+            self.strings.append((start, self.pos))
             return
         self.pos += 1
         while self.text[self.pos] != quote:

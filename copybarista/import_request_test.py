@@ -1397,27 +1397,24 @@ def test_strict_import_accepts_a_hand_formatted_public_base(tmp_path: Path):
     assert tomllib.loads(delta)["b"] == 3
 
 
-def test_merge_import_folds_a_comment_only_public_edit(tmp_path: Path):
-    """Comments are content of a delta: an edit that adds only one still lands."""
+def test_merge_import_rejects_a_comment_only_public_edit(tmp_path: Path):
+    """Comments are the source repository's: an edit to one fails the import."""
     source_base, config, public_base = _pyproject_import_fixture(tmp_path)
     public_head = _copy_tree(public_base, tmp_path / "public-head")
     (public_head / "pyproject.toml").write_text("# Why b.\nb = 2\n", encoding="utf-8")
     destination = _copy_tree(source_base, tmp_path / "destination")
 
-    result = import_change_request(
-        ImportRequest(
-            config=load_config(config),
-            public_base=public_base,
-            public_head=public_head,
-            source_base=source_base,
-            destination=destination,
-            merge_import=True,
-        ),
-    )
-
-    assert [c.outcome for c in result.changes] == ["applied"]
-    delta = (destination / "internal/demo/pyproject.delta.toml").read_text()
-    assert "# Why b." in delta
+    with pytest.raises(ImportRequestError, match="comments are maintained"):
+        _ = import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=True,
+            ),
+        )
 
 
 @pytest.mark.parametrize("source", ["internal/demo/.export", "./internal/demo/.export"])
@@ -1534,7 +1531,7 @@ def test_import_folds_a_public_pyproject_edit_into_its_delta(
     # Hand-formatted: a fold renders its own spelling, so strict verification
     # must compare this file by content, not bytes.
     (public_head / "pyproject.toml").write_text(
-        'deps = [ "x",\n    "y",  # Why y.\n]\nb   =   3\n',
+        'deps = [\n    "x",\n    "y",\n]\nb   =   3\n',
         encoding="utf-8",
     )
     destination = _copy_tree(source_base, tmp_path / "destination")
@@ -1567,7 +1564,6 @@ def test_import_folds_a_public_pyproject_edit_into_its_delta(
     assert tomllib.loads((reexport / "pyproject.toml").read_text()) == tomllib.loads(
         (public_head / "pyproject.toml").read_text(),
     )
-    assert "# Why y." in (reexport / "pyproject.toml").read_text()
 
 
 def test_import_public_edit_maps_moved_path_to_original_source(tmp_path: Path):
