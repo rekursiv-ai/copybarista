@@ -29,10 +29,11 @@ from copybarista.config import (
     reverse_file_moves,
     reverse_move_transforms,
 )
+from copybarista.delta_render import DeltaError
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
-from copybarista.pyproject import DeltaError, PyprojectSource, same_render
+from copybarista.pyproject import PyprojectSource, same_render
 from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
@@ -2235,9 +2236,8 @@ def _with_outcome(change: ImportChange, outcome: ChangeOutcome) -> ImportChange:
     return replace(change, outcome=outcome)
 
 
-# Spelling (spaces, quoting, blank lines) is the renderer's, so it never counts;
-# content and each comment's place do. ``same_render`` asks ``derive``, which is
-# what a fold stores, so the two can never disagree.
+# The rule ``fold`` checks its own output by, so a pyproject this accepts is one a
+# fold can have produced.
 def _same_render(left: bytes, right: bytes) -> bool:
     """Return whether two ``pyproject.toml`` files differ at most in spelling."""
     try:

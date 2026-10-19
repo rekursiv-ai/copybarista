@@ -386,21 +386,37 @@ def test_cli_sets_every_flag_by_its_documented_name():
 
 
 @pytest.mark.parametrize(
-    ("command", "required"),
+    ("command", "required", "index"),
     [
-        ("import-change", _IMPORT_CHANGE_REQUIRED),
-        ("init-sync", _INIT_SYNC_REQUIRED),
+        (command, required, index)
+        for command, required in (
+            ("import-change", _IMPORT_CHANGE_REQUIRED),
+            ("init-sync", _INIT_SYNC_REQUIRED),
+        )
+        for index in range(0, len(required), 2)
+    ],
+    ids=[
+        f"{command}{required[index]}"
+        for command, required in (
+            ("import-change", _IMPORT_CHANGE_REQUIRED),
+            ("init-sync", _INIT_SYNC_REQUIRED),
+        )
+        for index in range(0, len(required), 2)
     ],
 )
 def test_cli_rejects_a_command_missing_a_required_flag(
     command: str,
     required: tuple[str, ...],
+    index: int,
+    capsys: pytest.CaptureFixture[str],
 ):
-    for index in range(0, len(required), 2):
-        argv = [command, "x", *required[:index], *required[index + 2 :]]
-        with pytest.raises(SystemExit) as exc:
-            _parser().parse_args(argv)
-        assert exc.value.code == 2, required[index]
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args(
+            [command, "x", *required[:index], *required[index + 2 :]],
+        )
+
+    assert exc.value.code == 2
+    assert required[index] in capsys.readouterr().err
 
 
 def test_cli_requires_a_command():
