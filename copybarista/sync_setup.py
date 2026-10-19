@@ -1517,11 +1517,9 @@ def _packages_key(packages: tuple[str, ...]) -> str:
 # next new template would silently omit it.
 def _render_template(name: str, values: dict[str, str]) -> str:
     """Render one package-data template with explicit token replacement."""
-    text = (
-        resources.files(f"{__package__}.templates")
-        .joinpath(name)
-        .read_text(encoding="utf-8")
-    )
+    template = resources.files(f"{__package__}.templates").joinpath(name)
+    # A UTF-8 locale reads "UTF-8" and the default encoding alike.
+    text = template.read_text(encoding="utf-8")  # pragma: no mutate
     # Action pins are injected for every template rather than passed by each
     # caller: they are the same everywhere, and a caller that forgot one would
     # trip the unrendered-token check below instead of silently shipping a
