@@ -52,9 +52,12 @@ therefore written in the renamed spelling). Paths are relative to the source
 checkout root.
 
 Export renders the file (``PyprojectSource.render``); import folds a public edit
-back into the delta (``PyprojectSource.fold``), so only the delta is stored. A
-fold is checked by rendering it: one that does not reproduce the public file,
-comments and blank lines included, is rejected rather than stored.
+back into the delta (``PyprojectSource.fold``), so only the delta is stored.
+
+Comments are maintained in the source repository alone. A public edit may change
+values; one that edits, adds, or removes a comment or blank line is rejected, so
+its author proposes it in the source repository. A fold is checked by rendering
+it: one that does not reproduce the public file is rejected rather than stored.
 """
 
 from __future__ import annotations
@@ -131,9 +134,8 @@ class PyprojectSource:
           delta: The new ``pyproject.delta.toml`` text.
 
         Raises:
-          DeltaError: ``public`` is not TOML, carries the settings table, or holds
-            an edit the delta cannot express, so the delta's render would differ
-            from ``public`` by more than spacing within a line.
+          DeltaError: ``public`` is not TOML, carries the settings table, edits a
+            comment or blank line, or holds a value edit the delta cannot express.
 
         """
         edited = _parsed(public, source="the public pyproject.toml")
@@ -142,6 +144,16 @@ class PyprojectSource:
         if any(block.path[:1] == (SETTINGS,) for block in edited.blocks):
             raise DeltaError(
                 f"The public pyproject.toml may not carry a [{SETTINGS}] table",
+            )
+        # Comments come from the monorepo alone. Folding a public comment edit would
+        # need comment operations the delta lacks; dropping it would ship a merged
+        # edit that the next export silently reverts. Rejecting it sends the
+        # contributor to the monorepo instead.
+        if not _same_comments(public, shipped=self.render()):
+            raise DeltaError(
+                "The public pyproject.toml edits a comment or blank line; comments "
+                "are maintained in the source repository, so propose that change "
+                "there.",
             )
         text = _with_settings(derive(self.shared, public), settings=self.delta)
         rendered = _one_newline(render(self.shared, text))
@@ -253,6 +265,21 @@ def _with_settings(delta: str, *, settings: str) -> str:
     body = "".join((*folded.preamble, *(b.text() for b in folded.blocks)))
     joiner = "\n" if body.strip() else ""
     return _one_newline(f"{body}{joiner}{tables}{''.join(folded.footer)}")
+
+
+# Compared as a sequence, apart from the keys: adding or deleting a key changes none
+# of it, while editing, adding, deleting, or moving a comment or blank line does. A
+# key deleted along with the comment above it changes it, so that delete is refused.
+def _same_comments(public: str, *, shipped: str) -> bool:
+    """Return whether both files hold the same comments, blank lines, and indents."""
+    return _comment_lines(public) == _comment_lines(shipped)
+
+
+# Both texts were parsed by ``fold`` already, so neither raises here.
+def _comment_lines(text: str) -> list[tuple[str, object]]:
+    """Return ``text``'s comment, remark, blank, and indent events, in order."""
+    kinds = {"comment", "remark", "blank", "indent"}
+    return [(kind, what) for kind, what in layout(text) if kind in kinds]
 
 
 def _one_newline(text: str) -> str:

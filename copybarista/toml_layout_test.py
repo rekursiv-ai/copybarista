@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from copybarista.toml_layout import LayoutError, layout
+from copybarista.toml_layout import LayoutError, layout, uncommented
 
 
 def test_layout_lists_keys_headers_and_comments_in_order():
@@ -128,6 +128,23 @@ def test_layout_unquotes_keys():
 
 def test_layout_ignores_spacing_within_a_line_and_line_breaks_within_a_value():
     assert layout("a=1\nb   =   [1,2]\n") == layout("a = 1\nb = [\n  1,\n  2,\n]\n")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("# Top.\n\n[t]  # Why.\n# About a.\na = 1  # Trail.\n", "[t]\na = 1\n"),
+        ('a = "x#y"  # Real.\n', 'a = "x#y"\n'),
+        (
+            "a = [\n    1,  # One.\n    # Lead.\n    2,\n]  # End.\n",
+            "a = [\n    1,\n    2,\n]\n",
+        ),
+        ("[t]\n\n\na = 1\n\n# End.\n", "[t]\na = 1\n"),
+        ('a = """\n# not\n\n"""\n', 'a = """\n# not\n\n"""\n'),
+    ],
+)
+def test_uncommented_drops_comments_and_blank_lines(text: str, expected: str):
+    assert uncommented(text) == expected
 
 
 @pytest.mark.parametrize("text", ["a = [1\n", 'a = "x\n', "[t\n", "= 1\n"])

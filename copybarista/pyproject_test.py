@@ -974,9 +974,9 @@ def test_source_renders_utf8_with_one_trailing_newline(tmp_path: Path):
     "edit",
     [
         ("b = 1", "b = 2"),
-        ('    "x",\n', '    "x",\n    "z",  # Why z.\n'),
-        ("# About b.", "# Edited."),
-        ("b = 1\n", ""),
+        ('    "x",\n', '    "x",\n    "z",\n'),
+        ("k = 9", "k = 8"),
+        ('    "x",\n', ""),
     ],
 )
 def test_fold_reproduces_an_edited_render(tmp_path: Path, edit: tuple[str, str]):
@@ -998,9 +998,8 @@ def test_fold_reproduces_an_edited_render(tmp_path: Path, edit: tuple[str, str])
 @pytest.mark.parametrize(
     ("base", "public"),
     [
-        ("[t]\na = 1\n# About b.\nb = 2\n", "[t]\na = 1\n# About b.\n"),
         ('[t]\n"a.b" = 1\n', '[t]\n"a.b" = 2\n'),
-        ("[[i]]\nn = 1\n", "[[i]]\nn = 1\n\n# About 2.\n[[i]]\nn = 2\n"),
+        ("[t]\na = 1\n", "[t]\na = 1\nb = 2\n"),
     ],
 )
 def test_fold_reproduces_the_public_file_byte_for_byte(
@@ -1014,21 +1013,62 @@ def test_fold_reproduces_the_public_file_byte_for_byte(
     assert PyprojectSource.load(delta, source_ref=tmp_path).render() == public
 
 
-def test_fold_rejects_a_delta_whose_render_loses_a_comment(
+def test_fold_rejects_a_delta_whose_render_loses_a_value(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The delta is all that is stored, so a fold must never ship a loss."""
+    """The delta is all that is stored, so a fold must never ship a lost value."""
     (tmp_path / "pyproject.toml").write_text("[t]\na = 1\n")
     source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
     exact = render
 
     def lossy(base: str, delta: str) -> str:
-        return exact(base, delta).replace("# Why b.\n", "")
+        return exact(base, delta).replace("b = 2\n", "")
 
     monkeypatch.setattr(pyproject, "render", lossy)  # Fold's own render call.
-    with pytest.raises(DeltaError, match=r"line 3: public '# Why b\.', render 'b = 2'"):
-        source.fold("[t]\na = 1\n# Why b.\nb = 2\n")
+    with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render ''"):
+        source.fold("[t]\na = 1\nb = 2\n")
+
+
+@pytest.mark.parametrize(
+    "public",
+    [
+        "# New top.\n\n[t]\n# About a.\na = 2\nb = 1\n",
+        "[t]\n# Edited.\na = 2\nb = 1\n",
+        "[t]\n# About a.\na = 2  # Why.\nb = 1\n",
+        "[t]  # Why.\n# About a.\na = 2\nb = 1\n",
+        "[t]\na = 2\nb = 1\n",
+        "[t]\n\n# About a.\na = 2\nb = 1\n",
+        "[t]\nb = 1\n",
+    ],
+)
+def test_fold_rejects_a_public_comment_edit(tmp_path: Path, public: str):
+    """Comments come from the monorepo; a public edit to one is sent back there."""
+    (tmp_path / "pyproject.toml").write_text("[t]\n# About a.\na = 1\nb = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    with pytest.raises(DeltaError, match="comment or blank line"):
+        source.fold(public)
+
+
+@pytest.mark.parametrize(
+    "public",
+    [
+        "[t]\n# About a.\na = 2\nb = 1\n",
+        "[t]\n# About a.\na = 1\nb = 1\nc = 3\n",
+        "[t]\n# About a.\na   =   1\nb = 1\n",
+    ],
+)
+def test_fold_accepts_a_value_edit_beside_the_base_comments(
+    tmp_path: Path,
+    public: str,
+):
+    (tmp_path / "pyproject.toml").write_text("[t]\n# About a.\na = 1\nb = 1\n")
+    delta = _delta(tmp_path, body="")
+    delta.write_text(PyprojectSource.load(delta, source_ref=tmp_path).fold(public))
+    assert same_render(
+        PyprojectSource.load(delta, source_ref=tmp_path).render(),
+        public,
+    )
 
 
 def test_fold_of_an_unchanged_render_keeps_only_the_delta(tmp_path: Path):
@@ -1145,6 +1185,11 @@ def test_same_render_ignores_spelling_but_not_comments(
     same: bool,
 ):
     assert same_render(left, right) is same
+
+
+def test_same_render_reports_malformed_toml_as_a_delta_error():
+    with pytest.raises(DeltaError, match="Cannot parse"):
+        same_render("a = [\n", "a = 1\n")
 
 
 def _doc(text: str) -> str:
