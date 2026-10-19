@@ -21,6 +21,8 @@ import yaml
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
+from copybarista.globs import GlobSet
+from copybarista.pyproject import pyproject_inputs
 
 
 if TYPE_CHECKING:
@@ -588,11 +590,46 @@ def package_validation_workflow(settings: SyncSettings) -> str:
     )
 
 
-def export_workflow(settings: SyncSettings) -> str:
+def export_inputs(
+    settings: SyncSettings,
+    *,
+    config_path: Path,
+    source_ref: Path,
+) -> tuple[str, ...]:
+    """Return every source-checkout path a package's export reads.
+
+    Args:
+      settings: The package's sync settings.
+      config_path: The package's ``copy.barista.toml``.
+      source_ref: Source checkout root.
+
+    Returns:
+      paths: Each ``[[files.copy]]`` source (a directory as ``<dir>/**``), every
+        file the shipped ``pyproject.toml`` renders from, and the lock a refresh
+        seeds from.
+
+    """
+    return (
+        *(
+            f"{file_copy.source}/**"
+            if (source_ref / file_copy.source).is_dir()
+            else file_copy.source
+            for file_copy in load_config(config_path).files.copy
+        ),
+        *pyproject_inputs(config_path, source_ref=source_ref),
+        # ``sync_export_pr._refresh_public_lockfile`` seeds the public lock from it.
+        *(("uv.lock",) if settings.refresh_public_lockfile else ()),
+    )
+
+
+def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...] = ()) -> str:
     """Return the source-repository export workflow for one package.
 
     Args:
       settings: Sync settings used to render the export workflow.
+      inputs: Source-checkout paths and globs the export reads (``export_inputs``);
+        each one outside the source root, and not already watched, becomes a
+        trigger path.
 
     Returns:
       yaml_text: Rendered GitHub Actions workflow contents.
@@ -602,6 +639,17 @@ def export_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
+    watched = GlobSet(
+        include=(
+            f"{settings.source_root}/**",
+            *(path for path in settings.export_watch_paths if not path.startswith("#")),
+        ),
+    )
+    unwatched = [
+        path
+        for path in dict.fromkeys(inputs)
+        if path not in settings.export_watch_paths and not watched.matches(path)
+    ]
     type_targets = _shell_lines(
         [
             part
@@ -638,7 +686,7 @@ def export_workflow(settings: SyncSettings) -> str:
     # living as a hand edit in the generated workflow.
     export_watch_paths = "".join(
         f"      {path}\n" if path.startswith("#") else f"      - {_yaml_str(path)}\n"
-        for path in settings.export_watch_paths
+        for path in (*settings.export_watch_paths, *unwatched)
     )
     replay_bootstrap_base_default = (
         f" || {_github_expr_str(settings.replay_bootstrap_base)}"

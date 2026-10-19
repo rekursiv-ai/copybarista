@@ -36,6 +36,7 @@ from copybarista.sync_setup import (
     DEFAULT_VALIDATION_PYTHON_VERSIONS,
     SyncSettings,
     check_sync_config,
+    export_inputs,
     export_workflow,
     import_workflow,
     import_workflow_filename,
@@ -209,6 +210,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     export_sync.add_argument("sync_config")
     export_sync.add_argument("--output", default="")
+    # The trigger paths name files the export reads, relative to the checkout root.
+    export_sync.add_argument("--source-ref", default=".")
 
     public_sync = sub.add_parser(
         "write-public-workflows",
@@ -325,8 +328,16 @@ def _run_check_sync_config(flags: _Flags) -> None:
 
 def _run_write_export_workflow(flags: _Flags) -> None:
     """Write the source-repository export workflow."""
-    settings = load_sync_settings(Path(flags.sync_config))
-    text = export_workflow(settings)
+    config = Path(flags.sync_config)
+    settings = load_sync_settings(config)
+    text = export_workflow(
+        settings,
+        inputs=export_inputs(
+            settings,
+            config_path=config.parent / "copy.barista.toml",
+            source_ref=Path(flags.source_ref),
+        ),
+    )
     if flags.output:
         Path(flags.output).write_text(text, encoding="utf-8")
     else:
