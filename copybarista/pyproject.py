@@ -70,8 +70,9 @@ import tomllib
 
 from treekle import from_plain
 
+from copybarista import delta_render
 from copybarista.config import load_config
-from copybarista.delta_derive import derive
+from copybarista.delta_derive import derive, derive_values
 from copybarista.delta_render import SETTINGS, DeltaError, render
 from copybarista.toml_layout import LayoutError, layout
 from copybarista.toml_lines import Document, LinesError, parse
@@ -145,15 +146,18 @@ class PyprojectSource:
             raise DeltaError(
                 f"The public pyproject.toml may not carry a [{SETTINGS}] table",
             )
-        # Comments come from the monorepo alone. Folding a public comment edit would
-        # need comment operations the delta lacks; dropping it would ship a merged
-        # edit that the next export silently reverts. Rejecting it sends the
-        # contributor to the monorepo instead.
-        if not _same_comments(public, shipped=self.render()):
+        # Comments come from the monorepo alone. A value edit moves only the lines
+        # it owns, so any other comment or blank-line change is sent back there:
+        # folded, the next export would carry it; dropped, it would silently revert.
+        shipped = self.render()
+        explained = _one_newline(
+            delta_render.render(shipped, derive_values(shipped, public)),
+        )
+        if layout(explained) != layout(public):
             raise DeltaError(
-                "The public pyproject.toml edits a comment or blank line; comments "
-                "are maintained in the source repository, so propose that change "
-                "there.",
+                "The public pyproject.toml edits a comment or blank line that no "
+                "value edit explains; comments are maintained in the source "
+                "repository, so propose that change there.",
             )
         text = _with_settings(derive(self.shared, public), settings=self.delta)
         rendered = _one_newline(render(self.shared, text))
@@ -267,21 +271,6 @@ def _with_settings(delta: str, *, settings: str) -> str:
     return _one_newline(f"{body}{joiner}{tables}{''.join(folded.footer)}")
 
 
-# Compared as a sequence, apart from the keys: adding or deleting a key changes none
-# of it, while editing, adding, deleting, or moving a comment or blank line does. A
-# key deleted along with the comment above it changes it, so that delete is refused.
-def _same_comments(public: str, *, shipped: str) -> bool:
-    """Return whether both files hold the same comments, blank lines, and indents."""
-    return _comment_lines(public) == _comment_lines(shipped)
-
-
-# Both texts were parsed by ``fold`` already, so neither raises here.
-def _comment_lines(text: str) -> list[tuple[str, object]]:
-    """Return ``text``'s comment, remark, blank, and indent events, in order."""
-    kinds = {"comment", "remark", "blank", "indent"}
-    return [(kind, what) for kind, what in layout(text) if kind in kinds]
-
-
 def _one_newline(text: str) -> str:
     """End ``text`` with exactly one newline, as the end-of-file fixer requires."""
     return text.rstrip("\n") + "\n"
@@ -300,16 +289,23 @@ def _content(text: str) -> dict[str, object]:
     )
 
 
-# Spacing within a line never fails the check, so it never names the line either.
+# Spacing within a line never fails the check, so it never names the line either; the
+# indent opening a line does.
 def _first_difference(rendered: str, public: str) -> str:
     """Return ``line N: public '...', render '...'`` for the first line that differs."""
     pairs = itertools.zip_longest(public.splitlines(), rendered.splitlines())
     number, (want, got) = next(
         (n, pair)
         for n, pair in enumerate(pairs, start=1)
-        if "".join((pair[0] or "").split()) != "".join((pair[1] or "").split())
+        if _spelled(pair[0] or "") != _spelled(pair[1] or "")
     )
     return f"line {number}: public {want or ''!r}, render {got or ''!r}"
+
+
+def _spelled(line: str) -> str:
+    """Return ``line``'s indent, then the rest with its spaces removed."""
+    body = line.lstrip(" \t")
+    return line[: len(line) - len(body)] + "".join(body.split())
 
 
 def _parsed(text: str, *, source: str) -> Document:
