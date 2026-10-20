@@ -15,6 +15,7 @@ from copybarista.config import load_config
 from copybarista.delta_derive import derive
 from copybarista.delta_render import DeltaError, render
 from copybarista.pyproject import (
+    DeltaConflictError,
     PyprojectSource,
     pyproject_inputs,
     rendered_pyproject,
@@ -1051,6 +1052,13 @@ def test_fold_rejects_a_delta_whose_render_loses_a_value(
             "d = [\n    # D.\n    1,\n    2,\n]\n",
             "d = [\n    1,\n    # D.\n    2,\n]\n",
         ),
+        # Left behind by a delete, the comment now explains the next key.
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\nb = 1\n"),
+        # A value edit that drops or rewrites the comment beside the value.
+        ("[t]\na = 1  # Why.\n", "[t]\na = 2\n"),
+        ("[t]\na = 1  # Why.\n", "[t]\na = 2  # Else.\n"),
+        ('d = [\n    # T.\n    "t>=1",\n]\n', 'd = [\n    "t>=2",\n]\n'),
+        ("[t]\na = 1\n", "[t]\na = 1\nb = 2  # Why.\n"),
         # Layout alone: a blank line or an indent no value edit needs.
         ("[t]\na = 1\nb = 1\n", "[t]\na = 1\n\nb = 1\n"),
         ("[t]\na = 1\n\n[u]\nb = 1\n", "[t]\na = 1\n[u]\nb = 1\n"),
@@ -1074,6 +1082,16 @@ def test_fold_rejects_a_public_comment_or_layout_edit(
     [
         ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\na = 2\nb = 1\n"),
         ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\na = 1\nb = 1\nc = 3\n"),
+        # The comment beside a value stays with it.
+        ("[t]\na = 1  # Why.\nb = 1\n", "[t]\na = 2  # Why.\nb = 1\n"),
+        (
+            'd = [\n    # T.\n    "t>=1",\n    "x",\n]\n',
+            'd = [\n    # T.\n    "t>=2",\n    "x",\n]\n',
+        ),
+        (
+            'd = [\n    "a",\n    # C.\n    "c",\n]\n',
+            'd = [\n    "a",\n    # C.\n    "c",\n    "b",\n]\n',
+        ),
         # A deleted key takes the comment lines it owns.
         ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\nb = 1\n"),
         ("[t]\na = 1  # Why.\nb = 1\n", "[t]\nb = 1\n"),
@@ -1086,6 +1104,25 @@ def test_fold_rejects_a_public_comment_or_layout_edit(
         ("[t]\na = 1\n", "[t]\na = 1\n\n[u]\nb = 1\n"),
         ("[t]\na = 1\n\n# About u.\n[u]\nb = 1\n", "[t]\na = 1\n"),
         ("[t]\na = 1\n\n[u]\nb = 1\n\n[v]\nc = 1\n", "[t]\na = 1\n\n[v]\nc = 1\n"),
+        # The list's other comments stay where an entry comes or goes.
+        (
+            'd = [\n    "a",\n    # B.\n    "b",\n    "c",\n    # End.\n]\n',
+            'd = [\n    "a",\n    # B.\n    "b",\n    # End.\n]\n',
+        ),
+        (
+            'd = [\n    # A.\n    "a",\n    # End.\n]\n',
+            'd = [\n    # A.\n    "a",\n    # End.\n    "z",\n]\n',
+        ),
+        (
+            'd = [\n    "a",  # Why.\n    # End.\n]\n',
+            "d = [\n    # End.\n]\n",
+        ),
+        # An emptied table keeps its header and the lines above it.
+        (
+            "[t]\na = 1\n\n[u]\nb = 1\n\n[v]\nc = 1\n",
+            "[t]\na = 1\n\n[u]\n\n[v]\nc = 1\n",
+        ),
+        ("[t]\na = 1\n\n# U.\n[u]\nb = 1\n", "[t]\na = 1\n\n# U.\n[u]\n"),
     ],
 )
 def test_fold_accepts_a_value_edit_beside_the_base_comments(
@@ -1097,6 +1134,15 @@ def test_fold_accepts_a_value_edit_beside_the_base_comments(
     delta = _delta(tmp_path, body="")
     delta.write_text(PyprojectSource.load(delta, source_ref=tmp_path).fold(public))
     assert PyprojectSource.load(delta, source_ref=tmp_path).render() == public
+
+
+def test_fold_accepts_a_value_edit_beside_the_delta_comments(tmp_path: Path):
+    """The shipped file's comments include the delta's own, and those stay too."""
+    (tmp_path / "pyproject.toml").write_text("[t]\na = 1\nb = 1\n")
+    delta = _delta(tmp_path, body="[t]\n# Why 2.\na = 2\n")
+    source = PyprojectSource.load(delta, source_ref=tmp_path)
+    public = source.render().replace("b = 1", "b = 3")
+    assert replace(source, delta=source.fold(public)).render() == public
 
 
 def test_fold_accepts_a_value_edit_spelled_by_hand(tmp_path: Path):
@@ -1122,6 +1168,84 @@ def test_fold_names_a_line_that_differs_only_in_indentation(
     monkeypatch.setattr(pyproject, "render", indented)
     with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render '  b = 2'"):
         source.fold("[t]\na = 1\nb = 2\n")
+
+
+@pytest.mark.parametrize(
+    ("current", "head", "expected"),
+    [
+        ("# New.\nb = 1\nc = 1\n", "b = 3\nc = 1\n", "# New.\nb = 3\nc = 1\n"),
+        ("b = 1\nn = 0\nc = 1\n", "b = 3\nc = 1\n", "b = 3\nn = 0\nc = 1\n"),
+        ("b = 1\nc = 2\n", "b = 3\nc = 1\n", "b = 3\nc = 2\n"),
+        ("b = 3\nc = 1\n", "b = 3\nc = 1\n", "b = 3\nc = 1\n"),
+        (
+            "b = 1\nc = 1\n",
+            "b = 1\nc = 1\n\n[t]\nk = 1\n",
+            "b = 1\nc = 1\n\n[t]\nk = 1\n",
+        ),
+    ],
+)
+def test_merge_replays_the_public_edit_past_source_drift(
+    tmp_path: Path,
+    current: str,
+    head: str,
+    expected: str,
+):
+    (tmp_path / "pyproject.toml").write_text(current)
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    delta = source.merge(base="b = 1\nc = 1\n", head=head)
+    assert replace(source, delta=delta).render() == expected
+
+
+@pytest.mark.parametrize(
+    ("current", "head", "match"),
+    [
+        (
+            "b = 4\nc = 1\n",
+            "b = 3\nc = 1\n",
+            (
+                r"^The source changed 'b' since the public base, and the public edit "
+                r"changes it too$"
+            ),
+        ),
+        ("c = 1\n", "b = 3\nc = 1\n", r"changed 'b'"),
+        ("[t]\nk = 2\n", "[t]\nk = 3\n", r"changed 't\.k'"),
+        ("b = 1\nc = 1\nd = 1\n", "b = 1\nc = 1\nd = 2\n", r"changed 'd'"),
+        ("b = 1\nc = 2\n", "b = 1\n", r"changed 'c'"),
+    ],
+)
+def test_merge_reports_a_value_both_sides_changed(
+    tmp_path: Path,
+    current: str,
+    head: str,
+    match: str,
+):
+    (tmp_path / "pyproject.toml").write_text(current)
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    base = "[t]\nk = 1\n" if current.startswith("[t]") else "b = 1\nc = 1\n"
+    with pytest.raises(DeltaConflictError, match=match):
+        source.merge(base=base, head=head)
+
+
+def test_merge_of_an_edit_the_source_already_made_keeps_the_delta(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("c = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    assert source.merge(base="b = 1\nc = 1\n", head="c = 1\n") == source.delta
+
+
+def test_merge_reports_an_edit_that_no_longer_applies(tmp_path: Path):
+    """A key both sides deleted agrees in value, but the delete has nothing to take."""
+    (tmp_path / "pyproject.toml").write_text("c = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    with pytest.raises(DeltaConflictError, match="no longer applies"):
+        source.merge(base="b = 1\nc = 1\n", head="c = 2\n")
+
+
+def test_merge_refuses_a_comment_edit_whatever_the_drift(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("# New.\nb = 1\nc = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    with pytest.raises(DeltaError, match="comments are maintained") as err:
+        source.merge(base="b = 1\nc = 1\n", head="b = 1\n# Mine.\nc = 1\n")
+    assert not isinstance(err.value, DeltaConflictError)
 
 
 def test_fold_of_an_unchanged_render_keeps_only_the_delta(tmp_path: Path):

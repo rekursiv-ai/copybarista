@@ -1397,6 +1397,104 @@ def test_strict_import_accepts_a_hand_formatted_public_base(tmp_path: Path):
     assert tomllib.loads(delta)["b"] == 3
 
 
+@pytest.mark.parametrize(
+    ("source", "public", "expected"),
+    [
+        # The source's comment beside the edited key: lines merge would conflict.
+        ("# New.\nb = 1\nc = 1\n", "b = 3\nc = 1\n", "# New.\nb = 3\nc = 1\n"),
+        # The source's new key beside the edited one.
+        ("b = 1\nn = 0\nc = 1\n", "b = 3\nc = 1\n", "b = 3\nn = 0\nc = 1\n"),
+    ],
+)
+def test_merge_import_applies_a_value_edit_past_source_drift(
+    tmp_path: Path,
+    source: str,
+    public: str,
+    expected: str,
+):
+    """The public edit is merged by key, so source drift beside it never conflicts."""
+    source_base, config, public_base = _pyproject_drift_fixture(tmp_path, drift=source)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text(public, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [c.outcome for c in result.changes] == ["merged"]
+    rendered = PyprojectSource.load(
+        destination / "internal/demo/pyproject.delta.toml",
+        source_ref=destination,
+    )
+    assert rendered.render() == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "public", "match"),
+    [
+        # Both sides changed one value.
+        ("b = 4\nc = 1\n", "b = 3\nc = 1\n", "conflicts"),
+        # The public edit touches a key the source deleted.
+        ("c = 1\n", "b = 3\nc = 1\n", "conflicts"),
+        # A comment edit is the contributor's own, drift or not.
+        (
+            "# New.\nb = 1\nc = 1\n",
+            "b = 1\n# Mine.\nc = 1\n",
+            "comments are maintained",
+        ),
+    ],
+)
+def test_merge_import_refuses_an_edit_the_source_drift_overlaps(
+    tmp_path: Path,
+    source: str,
+    public: str,
+    match: str,
+):
+    source_base, config, public_base = _pyproject_drift_fixture(tmp_path, drift=source)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text(public, encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    with pytest.raises(ImportRequestError, match=match):
+        _ = import_change_request(
+            ImportRequest(
+                config=load_config(config),
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=True,
+            ),
+        )
+
+
+def _pyproject_drift_fixture(tmp_path: Path, *, drift: str) -> tuple[Path, Path, Path]:
+    r"""Return a source exported as ``b = 1\\nc = 1``, then drifted to ``drift``."""
+    source_base, config, _ = _pyproject_import_fixture(tmp_path)
+    (source_base / "internal/demo/pyproject.delta.toml").write_text(
+        '[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+    (source_base / "pyproject.toml").write_text("b = 1\nc = 1\n", encoding="utf-8")
+    public_base = tmp_path / "public-base-drift"
+    export_folder(
+        config=load_config(config),
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    (source_base / "pyproject.toml").write_text(drift, encoding="utf-8")
+    return source_base, config, public_base
+
+
 def test_merge_import_rejects_a_comment_only_public_edit(tmp_path: Path):
     """Comments are the source repository's: an edit to one fails the import."""
     source_base, config, public_base = _pyproject_import_fixture(tmp_path)
