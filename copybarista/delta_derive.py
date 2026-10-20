@@ -23,6 +23,7 @@ import tomllib
 from treekle import from_plain
 
 from copybarista.delta_render import DeltaError, render
+from copybarista.toml_layout import uncommented
 from copybarista.toml_lines import (
     Block,
     Document,
@@ -70,6 +71,27 @@ def derive(base: str, target: str) -> str:
         if _renders(base, delta, target=target):
             return delta
     return _derived(old, new, restated=restated, listed=set(), exact=True)
+
+
+def derive_values(base: str, target: str) -> str:
+    """Return the operations turning ``base``'s content into ``target``'s, comments aside.
+
+    The operations carry no comment or blank line, so rendering them onto
+    ``base`` shows where its own comments and blank lines land once only the
+    values change: a deleted key takes the lines it owns, a new table gets the
+    blank line render gives one.
+
+    Args:
+      base: The document the operations apply to.
+      target: The document whose content they reproduce.
+
+    Returns:
+      delta: The value operations as delta text; empty when the contents agree.
+
+    """
+    old, new = parse(uncommented(base)), parse(uncommented(target))
+    restated = _restated_arrays(old.blocks, new.blocks)
+    return _derived(old, new, restated=restated, listed=set(), exact=False)
 
 
 def _renders(base: str, delta: str, *, target: str) -> bool:

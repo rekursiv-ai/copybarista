@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import textwrap
@@ -1031,44 +1032,96 @@ def test_fold_rejects_a_delta_whose_render_loses_a_value(
 
 
 @pytest.mark.parametrize(
-    "public",
+    ("base", "public"),
     [
-        "# New top.\n\n[t]\n# About a.\na = 2\nb = 1\n",
-        "[t]\n# Edited.\na = 2\nb = 1\n",
-        "[t]\n# About a.\na = 2  # Why.\nb = 1\n",
-        "[t]  # Why.\n# About a.\na = 2\nb = 1\n",
-        "[t]\na = 2\nb = 1\n",
-        "[t]\n\n# About a.\na = 2\nb = 1\n",
-        "[t]\nb = 1\n",
+        (
+            "[t]\n# About a.\na = 1\nb = 1\n",
+            "# New top.\n\n[t]\n# About a.\na = 2\nb = 1\n",
+        ),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# Edited.\na = 2\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\na = 2  # Why.\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]  # Why.\n# About a.\na = 2\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\na = 2\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n\n# About a.\na = 2\nb = 1\n"),
+        # Moved: the comment now explains another key.
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\na = 1\n# About a.\nb = 1\n"),
+        ("[t]\n# A.\na = 1\n# B.\nb = 1\n", "[t]\n# B.\na = 1\n# A.\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\nn = 0\na = 1\nb = 1\n"),
+        (
+            "d = [\n    # D.\n    1,\n    2,\n]\n",
+            "d = [\n    1,\n    # D.\n    2,\n]\n",
+        ),
+        # Layout alone: a blank line or an indent no value edit needs.
+        ("[t]\na = 1\nb = 1\n", "[t]\na = 1\n\nb = 1\n"),
+        ("[t]\na = 1\n\n[u]\nb = 1\n", "[t]\na = 1\n[u]\nb = 1\n"),
+        ("[t]\na = 1\nb = 1\n", "[t]\n  a = 1\nb = 1\n"),
     ],
 )
-def test_fold_rejects_a_public_comment_edit(tmp_path: Path, public: str):
+def test_fold_rejects_a_public_comment_or_layout_edit(
+    tmp_path: Path,
+    base: str,
+    public: str,
+):
     """Comments come from the monorepo; a public edit to one is sent back there."""
-    (tmp_path / "pyproject.toml").write_text("[t]\n# About a.\na = 1\nb = 1\n")
+    (tmp_path / "pyproject.toml").write_text(base)
     source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
-    with pytest.raises(DeltaError, match="comment or blank line"):
+    with pytest.raises(DeltaError, match="no value edit explains"):
         source.fold(public)
 
 
 @pytest.mark.parametrize(
-    "public",
+    ("base", "public"),
     [
-        "[t]\n# About a.\na = 2\nb = 1\n",
-        "[t]\n# About a.\na = 1\nb = 1\nc = 3\n",
-        "[t]\n# About a.\na   =   1\nb = 1\n",
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\na = 2\nb = 1\n"),
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\n# About a.\na = 1\nb = 1\nc = 3\n"),
+        # A deleted key takes the comment lines it owns.
+        ("[t]\n# About a.\na = 1\nb = 1\n", "[t]\nb = 1\n"),
+        ("[t]\na = 1  # Why.\nb = 1\n", "[t]\nb = 1\n"),
+        ("[t]\nx = 0\n\n# About a.\na = 1\nb = 1\n", "[t]\nx = 0\n\nb = 1\n"),
+        (
+            'd = [\n    # D.\n    "x",\n    # E.\n    "y",\n]\n',
+            'd = [\n    # E.\n    "y",\n]\n',
+        ),
+        # A table comes and goes with the blank line that sets it apart.
+        ("[t]\na = 1\n", "[t]\na = 1\n\n[u]\nb = 1\n"),
+        ("[t]\na = 1\n\n# About u.\n[u]\nb = 1\n", "[t]\na = 1\n"),
+        ("[t]\na = 1\n\n[u]\nb = 1\n\n[v]\nc = 1\n", "[t]\na = 1\n\n[v]\nc = 1\n"),
     ],
 )
 def test_fold_accepts_a_value_edit_beside_the_base_comments(
     tmp_path: Path,
+    base: str,
     public: str,
 ):
-    (tmp_path / "pyproject.toml").write_text("[t]\n# About a.\na = 1\nb = 1\n")
+    (tmp_path / "pyproject.toml").write_text(base)
     delta = _delta(tmp_path, body="")
     delta.write_text(PyprojectSource.load(delta, source_ref=tmp_path).fold(public))
-    assert same_render(
-        PyprojectSource.load(delta, source_ref=tmp_path).render(),
-        public,
-    )
+    assert PyprojectSource.load(delta, source_ref=tmp_path).render() == public
+
+
+def test_fold_accepts_a_value_edit_spelled_by_hand(tmp_path: Path):
+    """Spacing within a line is spelling: the fold keeps the value, not the spaces."""
+    (tmp_path / "pyproject.toml").write_text("[t]\n# About a.\na = 1\nb = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    public = "[t]\n# About a.\na   =   2\nb = 1\n"
+    assert same_render(replace(source, delta=source.fold(public)).render(), public)
+
+
+def test_fold_names_a_line_that_differs_only_in_indentation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "pyproject.toml").write_text("[t]\na = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    exact = render
+
+    def indented(base: str, delta: str) -> str:
+        return exact(base, delta).replace("b = 2\n", "  b = 2\n")
+
+    monkeypatch.setattr(pyproject, "derive", _derive_b)
+    monkeypatch.setattr(pyproject, "render", indented)
+    with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render '  b = 2'"):
+        source.fold("[t]\na = 1\nb = 2\n")
 
 
 def test_fold_of_an_unchanged_render_keeps_only_the_delta(tmp_path: Path):
@@ -1190,6 +1243,11 @@ def test_same_render_ignores_spelling_but_not_comments(
 def test_same_render_reports_malformed_toml_as_a_delta_error():
     with pytest.raises(DeltaError, match="Cannot parse"):
         same_render("a = [\n", "a = 1\n")
+
+
+def _derive_b(shared: str, public: str) -> str:
+    del shared, public
+    return "[t]\nb = 2\n"
 
 
 def _doc(text: str) -> str:
