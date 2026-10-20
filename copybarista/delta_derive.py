@@ -23,7 +23,7 @@ import tomllib
 from treekle import from_plain
 
 from copybarista.delta_render import DeltaError, render
-from copybarista.toml_layout import uncommented
+from copybarista.toml_layout import layout, uncommented
 from copybarista.toml_lines import (
     Block,
     Document,
@@ -89,9 +89,94 @@ def derive_values(base: str, target: str) -> str:
       delta: The value operations as delta text; empty when the contents agree.
 
     """
-    old, new = parse(uncommented(base)), parse(uncommented(target))
+    old = parse(uncommented(base))
+    new = _with_base_comments(parse(base), parse(uncommented(target)))
     restated = _restated_arrays(old.blocks, new.blocks)
     return _derived(old, new, restated=restated, listed=set(), exact=False)
+
+
+# A table emptied of every key is stated whole, so it takes the lines above its header
+# and the remark ending it from the base; any other table keeps its own in place. A
+# replaced value keeps what sat beside it: the remark ending its line, and in a list
+# replaced entry for entry, the comment lines inside it.
+def _with_base_comments(base: Document, target: Document) -> Document:
+    """Return ``target`` with each kept key's, and each emptied table's, base comments."""
+    tables = {
+        block.path: block
+        for block in base.blocks
+        if not block.array and block.path and block.entries
+    }
+    entries = {
+        (block.path, entry.key): entry
+        for block in base.blocks
+        if not block.array
+        for entry in block.entries
+    }
+    blocks = tuple(
+        block
+        if block.array
+        else replace(
+            block,
+            lead=block.lead if emptied is None else emptied.lead,
+            header=block.header if emptied is None else emptied.header,
+            entries=tuple(
+                _commented(entries.get((block.path, entry.key)), entry)
+                for entry in block.entries
+            ),
+        )
+        for block in target.blocks
+        for emptied in (None if block.entries else tables.get(block.path),)
+    )
+    return replace(target, blocks=blocks)
+
+
+def _with_remark(base: Entry, entry: Entry) -> Entry:
+    """Return one-line ``entry`` ending in ``base``'s remark, when ``base`` has one."""
+    base_rest, value = split_entry(base.text)[1], split_entry(entry.text)[1]
+    if "\n" in base_rest.rstrip("\n") or "\n" in value.rstrip("\n"):
+        return entry
+    notes = [str(what) for kind, what in layout(base.text) if kind == "remark"]
+    if not notes:
+        return entry
+    key = split_entry(entry.text)[0]
+    return replace(entry, text=f"{key}= {value.strip()}  {notes[-1]}\n")
+
+
+def _commented(base: Entry | None, entry: Entry) -> Entry:
+    """Return ``entry``'s new value written into ``base``'s comments, where it fits."""
+    if base is None:
+        return entry
+    try:
+        before, after = ListValue.parse(base.text), ListValue.parse(entry.text)
+    except ListError:
+        return _with_remark(base, entry)
+    if before.lines is None:
+        return entry
+    if len(before.values()) != len(after.values()):
+        return _with_list_comments(before, after, entry=entry)
+    lines = list(before.lines)
+    values = iter(after.values())
+    for index, line in enumerate(lines):
+        if line.value:
+            lines[index] = replace(line, value=next(values))
+    return replace(entry, text=replace(before, lines=tuple(lines)).text())
+
+
+# Entries removed or appended, the rest kept in order, edit the base list as ``-key``
+# and ``+key`` do: a removed entry takes the comments only it used; the others stay.
+def _with_list_comments(before: ListValue, after: ListValue, *, entry: Entry) -> Entry:
+    """Return ``entry`` as ``before`` with the removed and appended entries applied."""
+    old = [_content(v) for v in before.values()]
+    new = [_content(v) for v in after.values()]
+    kept = [v for v in old if v in new]
+    if _repeats(old) or _repeats(new) or new[: len(kept)] != kept:
+        return entry
+    removed = [t for t, v in zip(before.values(), old, strict=True) if v not in new]
+    added = [t for t, v in zip(after.values(), new, strict=True) if v not in old]
+    edited = before.without(removed)
+    if added:
+        edited = edited.appended(ListValue.parse(f"v = [{', '.join(added)}]\n"))
+    return replace(entry, text=edited.text())
 
 
 def _renders(base: str, delta: str, *, target: str) -> bool:

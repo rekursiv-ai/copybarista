@@ -20,13 +20,17 @@ Each event is ``(kind, what)``:
 
 A path names a key from the document root; an ``[[array]]`` element is its
 index, so ``[i.s]`` under the second ``[[i]]`` is ``("i", 1, "s")``.
+
+``code_lines`` reads the same file line by line instead: each line holding code,
+with the comment and blank lines directly above it, the comment ending it, and its
+indent. Two files compare there line against line, so a comment that moves to
+another line differs even where the keys around it do not.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import itertools
 import tomllib
 
 from treekle import from_plain
@@ -54,13 +58,87 @@ def layout(text: str) -> tuple[Event, ...]:
       LayoutError: ``text`` is not TOML.
 
     """
-    try:
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as err:
-        raise LayoutError(str(err)) from err
-    scanner = _Scanner(text=text)
-    scanner.document()
-    return tuple(scanner.events)
+    return tuple(_scanned(text).events)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodeLine:
+    """One line holding code, and the comment and blank lines that sit beside it.
+
+    Attributes:
+      line: The line's 1-based number; one past the last for the closing run.
+      lead: The comment and blank lines directly above it, stripped; ``""`` is a
+        blank line.
+      code: The line without its comment and without any space; ``""`` for the
+        comment and blank lines closing the file.
+      remark: The comment ending the line, or ``""``.
+      indent: The spaces opening the line; ``""`` where a multi-line string
+        spans them, as those are the string's.
+
+    """
+
+    line: int
+    lead: tuple[str, ...]
+    code: str
+    remark: str
+    indent: str
+
+
+def code_lines(text: str) -> tuple[CodeLine, ...]:
+    """Return each line of ``text`` that holds code, in file order.
+
+    A line inside a multi-line string holds code, blank or not; a ``#`` there is
+    the string's.
+
+    Args:
+      text: A TOML document.
+
+    Returns:
+      lines: One per line holding code, and one closing the file when comment or
+        blank lines follow the last.
+
+    Raises:
+      LayoutError: ``text`` is not TOML.
+
+    """
+    scanner = _scanned(text)
+    comments = iter(scanner.comments)
+    strings = iter(scanner.strings)
+    comment, string = next(comments, None), next(strings, None)
+    found: list[CodeLine] = []
+    lead: list[str] = []
+    lines = text.split("\n")
+    at = 0
+    for number, line in enumerate(lines[:-1] if text.endswith("\n") else lines, 1):
+        while string is not None and string[1] <= at:
+            string = next(strings, None)
+        inside = string is not None and string[0] < at
+        cut = len(line)
+        remark = ""
+        if comment is not None and comment[0] < at + len(line):
+            cut, remark = comment[0] - at, text[comment[0] : comment[1]]
+            comment = next(comments, None)
+        code = line[:cut]
+        at += len(line) + 1
+        if not code.strip() and not inside:
+            lead.append(remark)
+            continue
+        found.append(
+            CodeLine(
+                line=number,
+                lead=tuple(lead),
+                code="".join(code.split()),
+                remark=remark,
+                indent="" if inside else code[: len(code) - len(code.lstrip(" \t"))],
+            ),
+        )
+        lead = []
+    if lead:
+        end = len(lines) + (not text.endswith("\n"))
+        found.append(
+            CodeLine(line=end, lead=tuple(lead), code="", remark="", indent=""),
+        )
+    return tuple(found)
 
 
 def uncommented(text: str) -> str:
@@ -80,35 +158,27 @@ def uncommented(text: str) -> str:
       LayoutError: ``text`` is not TOML.
 
     """
-    layout(text)
-    scanner = _Scanner(text=text)
-    scanner.document()
+    lines = text.splitlines(keepends=True)
     kept: list[str] = []
-    pos = 0
-    for start, end in scanner.comments:
-        kept.append(text[pos:start].rstrip(" \t"))
-        pos = end
-    kept.append(text[pos:])
-    # A line a string spans is the string's, blank or not; every other blank line,
-    # what a comment-only line left behind included, goes.
-    lines = "".join(kept).splitlines(keepends=True)
-    offsets = itertools.accumulate((len(line) for line in lines), initial=0)
-    return "".join(
-        line
-        for line, at in zip(lines, offsets, strict=False)
-        if line.strip() or _inside(at, spans=_string_spans("".join(kept)))
-    )
+    # The run closing the file is comment and blank lines alone, so it goes whole.
+    for code in (c for c in code_lines(text) if c.code or not c.lead):
+        line = lines[code.line - 1]
+        body = line.rstrip("\r\n")
+        if code.remark:
+            body = body[: len(body) - len(code.remark)].rstrip(" \t")
+        kept.append(body + line[len(line.rstrip("\r\n")) :])
+    return "".join(kept)
 
 
-def _inside(at: int, *, spans: list[tuple[int, int]]) -> bool:
-    return any(start < at < end for start, end in spans)
-
-
-def _string_spans(text: str) -> list[tuple[int, int]]:
-    """Return the ``[start, end)`` of each multi-line string in ``text``."""
+def _scanned(text: str) -> _Scanner:
+    """Return the scanner that has read ``text``."""
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise LayoutError(str(err)) from err
     scanner = _Scanner(text=text)
     scanner.document()
-    return scanner.strings
+    return scanner
 
 
 _BARE: frozenset[str] = frozenset(
@@ -128,7 +198,8 @@ class _Scanner:
     table: KeyPath = ()
     events: list[Event] = field(default_factory=list[Event])
     counts: dict[KeyPath, int] = field(default_factory=dict[KeyPath, int])
-    # Where each comment and each multi-line string sits, as ``[start, end)``.
+    # Where each comment and each multi-line string sits, as ``[start, end)``, in
+    # file order.
     comments: list[tuple[int, int]] = field(default_factory=list[tuple[int, int]])
     strings: list[tuple[int, int]] = field(default_factory=list[tuple[int, int]])
 

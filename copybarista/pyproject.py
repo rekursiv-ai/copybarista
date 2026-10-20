@@ -52,18 +52,24 @@ therefore written in the renamed spelling). Paths are relative to the source
 checkout root.
 
 Export renders the file (``PyprojectSource.render``); import folds a public edit
-back into the delta (``PyprojectSource.fold``), so only the delta is stored.
+back into the delta (``PyprojectSource.fold``), so only the delta is stored. When
+the source changed since the export the edit started from, the edit is replayed
+key by key onto the current render (``PyprojectSource.merge``); only a value both
+sides changed conflicts.
 
-Comments are maintained in the source repository alone. A public edit may change
-values; one that edits, adds, or removes a comment or blank line is rejected, so
-its author proposes it in the source repository. A fold is checked by rendering
-it: one that does not reproduce the public file is rejected rather than stored.
+Comments are maintained in the source repository alone. A public edit may change,
+add, and delete keys, tables, and list entries: a deleted one takes the comment
+lines it owns, a changed value keeps the comment beside it, and a new table comes
+with the blank line that sets it apart. Any other comment, blank-line, or indent
+edit is rejected, so its author proposes it in the source repository. A fold is
+checked by rendering it: one that does not reproduce the public file is rejected
+rather than stored.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import itertools
 import tomllib
@@ -136,29 +142,11 @@ class PyprojectSource:
 
         Raises:
           DeltaError: ``public`` is not TOML, carries the settings table, edits a
-            comment or blank line, or holds a value edit the delta cannot express.
+            comment, blank line, or indent that no value edit explains, or holds a
+            value edit the delta cannot express.
 
         """
-        edited = _parsed(public, source="the public pyproject.toml")
-        # Settings name files in the source checkout; a public edit may not
-        # repoint them.
-        if any(block.path[:1] == (SETTINGS,) for block in edited.blocks):
-            raise DeltaError(
-                f"The public pyproject.toml may not carry a [{SETTINGS}] table",
-            )
-        # Comments come from the monorepo alone. A value edit moves only the lines
-        # it owns, so any other comment or blank-line change is sent back there:
-        # folded, the next export would carry it; dropped, it would silently revert.
-        shipped = self.render()
-        explained = _one_newline(
-            delta_render.render(shipped, derive_values(shipped, public)),
-        )
-        if layout(explained) != layout(public):
-            raise DeltaError(
-                "The public pyproject.toml edits a comment or blank line that no "
-                "value edit explains; comments are maintained in the source "
-                "repository, so propose that change there.",
-            )
+        _value_edit(self.render(), public)
         text = _with_settings(derive(self.shared, public), settings=self.delta)
         rendered = _one_newline(render(self.shared, text))
         if not same_render(rendered, public):
@@ -167,6 +155,47 @@ class PyprojectSource:
                 f"first difference at {_first_difference(rendered, public)}",
             )
         return text
+
+    # The contributor edited the public base, not this render: the source may have
+    # changed since that export. Their edit is replayed key by key onto this render,
+    # so source drift beside it, a comment or a key, survives without a conflict.
+    def merge(self, *, base: str, head: str) -> str:
+        """Return the delta rendering the public edit of ``base`` into ``head`` here.
+
+        Args:
+          base: The exported ``pyproject.toml`` the contributor started from.
+          head: Their edit of it.
+
+        Returns:
+          delta: The new ``pyproject.delta.toml`` text.
+
+        Raises:
+          DeltaConflictError: The source changed a value the edit also changes, or
+            deleted one it edits.
+          DeltaError: ``head`` is not TOML, or edits what ``fold`` refuses.
+
+        """
+        edit = _value_edit(base, head)
+        current = self.render()
+        if (path := _overlap(base=base, current=current, head=head)) is not None:
+            raise DeltaConflictError(
+                f"The source changed {'.'.join(path)!r} since the public base, "
+                "and the public edit changes it too",
+            )
+        # The source already made every change the edit makes.
+        if _content(current) == _content(head):
+            return self.delta
+        try:
+            merged = _one_newline(render(current, edit))
+        except DeltaError as err:
+            raise DeltaConflictError(
+                f"The public edit no longer applies to the source: {err}",
+            ) from err
+        return self.fold(merged)
+
+
+class DeltaConflictError(DeltaError):
+    """The source and a public edit changed the same value since the public base."""
 
 
 def same_render(left: str, right: str) -> bool:
@@ -269,6 +298,56 @@ def _with_settings(delta: str, *, settings: str) -> str:
     body = "".join((*folded.preamble, *(b.text() for b in folded.blocks)))
     joiner = "\n" if body.strip() else ""
     return _one_newline(f"{body}{joiner}{tables}{''.join(folded.footer)}")
+
+
+# Comments come from the monorepo alone. A value edit moves only the lines it owns, so
+# any other comment, blank-line, or indent change is sent back there: folded, the next
+# export would carry it; dropped, it would silently revert.
+def _value_edit(shipped: str, public: str) -> str:
+    """Return the value operations turning ``shipped`` into ``public``, comments aside."""
+    edited = _parsed(public, source="the public pyproject.toml")
+    # Settings name files in the source checkout; a public edit may not repoint them.
+    if any(block.path[:1] == (SETTINGS,) for block in edited.blocks):
+        raise DeltaError(
+            f"The public pyproject.toml may not carry a [{SETTINGS}] table",
+        )
+    edit = derive_values(shipped, public)
+    explained = _one_newline(delta_render.render(shipped, edit))
+    if layout(explained) != layout(public):
+        raise DeltaError(
+            "The public pyproject.toml edits a comment, blank line, or indent "
+            "that no value edit explains; comments are maintained in the source "
+            "repository, so propose that change there. First difference at "
+            f"{_first_difference(explained, public)}",
+        )
+    return edit
+
+
+def _overlap(*, base: str, current: str, head: str) -> tuple[str, ...] | None:
+    """Return the first value both ``current`` and ``head`` changed from ``base``."""
+    old, ours, theirs = (_leaves(_content(text)) for text in (base, current, head))
+    missing = object()
+    return next(
+        (
+            path
+            for path in sorted({*old, *ours, *theirs})
+            if theirs.get(path, missing) != old.get(path, missing)
+            and ours.get(path, missing)
+            not in (old.get(path, missing), theirs.get(path, missing))
+        ),
+        None,
+    )
+
+
+def _leaves(value: object, at: tuple[str, ...] = ()) -> dict[tuple[str, ...], object]:
+    """Return every non-table value under ``value`` by its key path."""
+    if not isinstance(value, dict):
+        return {at: value}
+    return {
+        path: leaf
+        for key, nested in cast(dict[str, object], value).items()
+        for path, leaf in _leaves(nested, (*at, key)).items()
+    }
 
 
 def _one_newline(text: str) -> str:

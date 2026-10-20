@@ -33,7 +33,7 @@ from copybarista.delta_render import DeltaError
 from copybarista.errors import ImportRequestError, TransformError
 from copybarista.export import export_folder
 from copybarista.globs import GlobSet, Globstar
-from copybarista.pyproject import PyprojectSource, same_render
+from copybarista.pyproject import DeltaConflictError, PyprojectSource, same_render
 from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
@@ -780,10 +780,11 @@ class ChangeRequestImporter:
                 f"Cannot fold public pyproject.toml into {self.config.files.pyproject}: {err}",
             ) from err
 
-    # A delta has no public form to three-way merge, so the merge runs on the rendered
-    # file: the current source's render, the public base, and the public head. The
-    # result folds back into the delta against the current base, so drift on either
-    # side survives.
+    # A delta has no public form to three-way merge, and lines are the wrong unit: a
+    # comment the source added beside an edited key conflicts by line though neither
+    # side touched the other's. The public edit is replayed key by key onto the current
+    # render instead, so drift on either side survives; only a value both changed
+    # conflicts.
     def _merge_pyproject(
         self,
         *,
@@ -793,22 +794,31 @@ class ChangeRequestImporter:
         head: bytes,
     ) -> tuple[ImportChange, bool]:
         """Reconcile a public ``pyproject.toml`` edit with the delta it renders from."""
-        # Bytes, not content: a comment-only edit is content of the delta.
+        # Bytes: only an identical file skips the fold, so a comment edit always
+        # reaches the fold that rejects it.
         if ours == head:
             return _with_outcome(change, "skipped"), False
         base = self._public_base_bytes(change.public)
         # A public base spelled differently from the render (a hand-formatted
-        # contribution not yet re-exported) is not drift; byte-merging the two
-        # spellings would conflict on every line beside the edit.
+        # contribution not yet re-exported) is not drift.
         clean = _same_render(ours, base)
-        merged, conflicted = (
-            (head, False)
-            if clean
-            else _three_way_merge(current=ours, base=base, incoming=head)
-        )
-        if conflicted:
+        try:
+            source = PyprojectSource.load(
+                self.destination / self.config.files.pyproject,
+                source_ref=self.destination,
+            )
+            delta = (
+                source.fold(head.decode())
+                if clean
+                else source.merge(base=base.decode(), head=head.decode())
+            )
+        except DeltaConflictError:
             return _with_outcome(change, "merged"), True
-        target.write_bytes(self._fold_pyproject(merged))
+        except (OSError, UnicodeDecodeError, DeltaError, ReadError) as err:
+            raise ImportRequestError(
+                f"Cannot fold public pyproject.toml into {self.config.files.pyproject}: {err}",
+            ) from err
+        target.write_bytes(delta.encode())
         return _with_outcome(change, "applied" if clean else "merged"), False
 
     def _public_base_bytes(self, public_path: str) -> bytes:
