@@ -518,6 +518,29 @@ def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
         load_sync_settings(config)
 
 
+def test_empty_smoke_import_loads_and_omits_the_smoke_flag(tmp_path: Path):
+    """A stubs-only wheel has no module to import, so the smoke test is optional."""
+    # Not ``_settings``: its base fills ``validation_commands`` from the default
+    # ``smoke_import`` before the override, and ``replace`` keeps that list.
+    built = SyncSettings(
+        package_name="typings",
+        sync_label="Typings",
+        source_root="packages/typings",
+        public_repo="example/typings",
+        source_repo="example/source",
+        copybarista_project_path="tools/copybarista",
+        smoke_import="",
+        type_check_targets=("hatch_build.py",),
+        forbidden_pr_text=("loop",),
+    )
+    write_sync_scaffold(root=tmp_path, settings=built)
+    settings = load_sync_settings(tmp_path / "copybarista.sync.toml")
+
+    assert settings.smoke_import == ""
+    assert not any("python -c" in command for command in settings.validation_commands)
+    assert "--smoke-import" not in export_workflow(settings, inputs=())
+
+
 def test_generated_workflows_reject_invalid_smoke_import():
     with pytest.raises(ConfigError, match="smoke_import"):
         package_validation_workflow(

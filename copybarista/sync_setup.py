@@ -88,7 +88,8 @@ class SyncSettings:
       public_repo: Public repository in ``owner/name`` form.
       source_repo: Source repository in ``owner/name`` form.
       copybarista_project_path: Source path containing the Copybarista project.
-      smoke_import: Import target used to validate the exported package.
+      smoke_import: Import target used to validate the exported package; empty
+          for a stubs-only wheel, which ships no module to import.
       release_check_script: Optional project-relative release tree checker.
       type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
@@ -213,7 +214,7 @@ def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
         "uv sync --all-groups",
         "uv run pre-commit run --all-files --hook-stage pre-commit",
         "uv run pre-commit run --all-files --hook-stage pre-push",
-        f'uv run python -c "import {smoke_import}"',
+        *((f'uv run python -c "import {smoke_import}"',) if smoke_import else ()),
         "uv build",
     )
 
@@ -247,7 +248,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
         public_repo=_required_str(sync, "public_repo"),
         source_repo=_required_str(sync, "source_repo"),
         copybarista_project_path=_required_str(sync, "copybarista_project_path"),
-        smoke_import=_required_str(sync, "smoke_import"),
+        smoke_import=_optional_str(sync, "smoke_import", default=""),
         release_check_script=_optional_str(sync, "release_check_script", default=""),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
@@ -270,7 +271,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
             sync,
             "validation_commands",
             default=_default_validation_commands(
-                smoke_import=_required_str(sync, "smoke_import"),
+                smoke_import=_optional_str(sync, "smoke_import", default=""),
             ),
         ),
         validation_commands_comment=_optional_str_tuple(
@@ -731,7 +732,11 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "TYPE_TARGETS": type_targets,
             "VALIDATION_COMMANDS": validation_commands,
-            "SMOKE_IMPORT": _sh(settings.smoke_import),
+            "SMOKE_IMPORT_ARG": (
+                f"            --smoke-import {_sh(settings.smoke_import)} \\\n"
+                if settings.smoke_import
+                else ""
+            ),
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
         },
     )
@@ -945,11 +950,7 @@ def _validate_import_workflow_yaml(
         if text not in step_text:
             raise ConfigError(f"<repo>-to-loop.yml must reference {text}.")
     _assert_resolves_baseline_from_ledger(steps)
-    _assert_installs_system_packages(
-        steps=steps,
-        packages=settings.system_packages,
-        workflow="<repo>-to-loop.yml",
-    )
+    _assert_installs_system_packages(steps=steps, packages=settings.system_packages)
 
 
 # ``github.event.before`` is the pushed commit's parent, which equals the commit the
@@ -1064,7 +1065,6 @@ def _assert_installs_system_packages(
     *,
     steps: list[object],
     packages: tuple[str, ...],
-    workflow: str,
 ) -> None:
     """Assert a workflow's steps install every configured system package."""
     if not packages:
@@ -1073,16 +1073,14 @@ def _assert_installs_system_packages(
     # stringified step: the package name appearing in a comment, a step name,
     # or as a substring of another package used to satisfy this check with no
     # apt-get anywhere in the workflow.
-    installed = shlex.split(
-        _workflow_step_run(steps, "Install system packages", workflow=workflow),
-    )
+    installed = shlex.split(_workflow_step_run(steps, "Install system packages"))
     for package in packages:
         # ``postgresql`` renders as the PGDG-pinned server, never the bare
         # metapackage (see ``_system_deps_step``).
         expected = f"postgresql-{PG_MAJOR}" if package == "postgresql" else package
         if expected not in installed:
             raise ConfigError(
-                f"{workflow} must install system package {package!r} "
+                f"<repo>-to-loop.yml must install system package {package!r} "
                 "(see system_packages).",
             )
 
@@ -1226,7 +1224,6 @@ def _validate_settings(settings: SyncSettings) -> None:
         ("public_repo", settings.public_repo),
         ("source_repo", settings.source_repo),
         ("copybarista_project_path", settings.copybarista_project_path),
-        ("smoke_import", settings.smoke_import),
     ):
         if not value.strip():
             raise ConfigError(f"sync.{name} cannot be empty.")
@@ -1237,7 +1234,8 @@ def _validate_settings(settings: SyncSettings) -> None:
         if path.startswith("#"):
             continue
         _validate_relative_path(path, name="export_watch_paths")
-    _validate_python_module_name(settings.smoke_import, name="smoke_import")
+    if settings.smoke_import:
+        _validate_python_module_name(settings.smoke_import, name="smoke_import")
     _validate_relative_path(settings.release_check_script, name="release_check_script")
     for package in settings.system_packages:
         _validate_apt_package(package, name="system_packages")
