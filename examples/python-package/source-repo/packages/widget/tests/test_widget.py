@@ -1,8 +1,11 @@
 """Tests that show source imports before Copybarista rewrites them."""
 
 # house-ignore[test-naming] -- Example shaped like a third-party repo, not house code.
+# pyrefly: ignore[missing-import] -- Resolves from the example repo's root, which Copybarista runs it from.
 from packages.widget.widget import label
 
+
+# pyrefly: ignore[missing-import] -- Resolves from the example repo's root, which Copybarista runs it from.
 import packages.widget.widget as widget_module
 
 

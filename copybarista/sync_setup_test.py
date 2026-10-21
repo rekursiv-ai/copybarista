@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Unpack
+from typing_extensions import TypedDict
 
 import dataclasses
 import os
@@ -41,8 +42,28 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def _settings(**kwargs: object) -> SyncSettings:
-    settings = SyncSettings(
+class _SyncSettingsFields(TypedDict, total=False, closed=True):
+    """The ``SyncSettings`` fields a test overrides."""
+
+    export_watch_paths: tuple[str, ...]
+    import_branch_prefix: str
+    publish_source_rev: bool
+    refresh_public_lockfile: bool
+    release_check_script: str
+    replay_bootstrap_base: str
+    replay_bootstrap_base_comment: tuple[str, ...]
+    require_pr_metadata: bool
+    skip_source_validation: bool
+    smoke_import: str
+    sync_label: str
+    sync_token_login: str
+    system_packages: tuple[str, ...]
+    validation_commands: tuple[str, ...]
+    validation_python_versions: tuple[str, ...]
+
+
+def _settings(**fields: Unpack[_SyncSettingsFields]) -> SyncSettings:
+    built = SyncSettings(
         package_name="configgle",
         sync_label="Configgle",
         source_root="packages/configgle",
@@ -53,7 +74,7 @@ def _settings(**kwargs: object) -> SyncSettings:
         type_check_targets=("configgle", "tests"),
         forbidden_pr_text=("loop",),
     )
-    return dataclasses.replace(settings, **kwargs)
+    return dataclasses.replace(built, **fields)
 
 
 def test_sync_toml_round_trips_every_setting(tmp_path: Path):
@@ -499,7 +520,9 @@ def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
 
 def test_generated_workflows_reject_invalid_smoke_import():
     with pytest.raises(ConfigError, match="smoke_import"):
-        package_validation_workflow(_settings(smoke_import="configgle; print(1)"))
+        package_validation_workflow(
+            _settings(smoke_import="configgle; print(1)"),
+        )
 
 
 def test_package_validation_workflow_runs_configured_commands():
@@ -576,7 +599,9 @@ def test_apt_steps_cache_debs_and_serve_postgresql_from_pgdg(
     ``postgresql`` must never reach the distro install line: the metapackage
     would pull Ubuntu's older major beside PGDG's pinned one.
     """
-    workflow = render(_settings(system_packages=("ripgrep", "postgresql")))
+    workflow = render(
+        _settings(system_packages=("ripgrep", "postgresql")),
+    )
     steps = _job_steps(workflow, job=job)
     cache = steps[
         _step_index(steps, lambda step: step.get("name") == "Cache apt packages")
@@ -699,7 +724,10 @@ def test_export_workflow_passes_pr_replay_flags():
 
 
 def test_export_workflow_can_refresh_public_lockfile():
-    workflow = export_workflow(_settings(refresh_public_lockfile=True), inputs=())
+    workflow = export_workflow(
+        _settings(refresh_public_lockfile=True),
+        inputs=(),
+    )
 
     assert "--refresh-public-lockfile" in workflow
 
@@ -731,14 +759,19 @@ def test_export_workflow_can_run_release_check_script():
 
 
 def test_import_workflow_can_ignore_generated_public_lockfile():
-    workflow = import_workflow(_settings(refresh_public_lockfile=True))
+    workflow = import_workflow(
+        _settings(refresh_public_lockfile=True),
+    )
 
     assert "--refresh-public-lockfile" in workflow
 
 
 def test_export_workflow_can_guard_sync_token_login():
     sync_actor = "rekursiv-bot"
-    workflow = export_workflow(_settings(sync_token_login=sync_actor), inputs=())
+    workflow = export_workflow(
+        _settings(sync_token_login=sync_actor),
+        inputs=(),
+    )
 
     assert 'COPYBARISTA_SYNC_TOKEN_LOGIN: "rekursiv-bot"' in workflow
     assert "gh api user --jq .login" in workflow
@@ -924,7 +957,9 @@ def test_import_workflow_imports_a_push_past_the_synced_base(tmp_path: Path):
 
 def test_import_workflow_gates_every_import_step_on_the_refs_decision():
     """A skipped push must not check out, validate, import, or open a PR."""
-    steps = _import_steps(import_workflow(_settings(system_packages=("git",))))
+    steps = _import_steps(
+        import_workflow(_settings(system_packages=("git",))),
+    )
     refs = _step_index(steps, lambda step: step.get("id") == "refs")
 
     assert [
@@ -956,7 +991,9 @@ def test_import_workflow_keeps_import_token_off_public_code_steps():
 
 
 def test_import_workflow_quotes_sync_label():
-    workflow = import_workflow(_settings(sync_label="Configgle's Core"))
+    workflow = import_workflow(
+        _settings(sync_label="Configgle's Core"),
+    )
 
     assert 'COPYBARISTA_SYNC_LABEL: "Configgle\'s Core"' in workflow
 
@@ -968,7 +1005,10 @@ def _scaffold_with_import_workflow(
     edit: Callable[[str], str],
 ) -> None:
     """Scaffold a package, then rewrite its generated import workflow."""
-    write_sync_scaffold(root=tmp_path, settings=_settings(system_packages=packages))
+    write_sync_scaffold(
+        root=tmp_path,
+        settings=_settings(system_packages=packages),
+    )
     workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
     workflow.write_text(edit(workflow.read_text(encoding="utf-8")), encoding="utf-8")
 
