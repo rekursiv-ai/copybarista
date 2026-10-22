@@ -841,6 +841,12 @@ class ChangeRequestImporter:
         ours_public: bytes,
     ) -> bytes:
         """Reverse the public text, then restore lines the edit never touched."""
+        if not self.merge_import:
+            self._check_injective_reverses(
+                public_path=public_path,
+                source_path=source_path,
+                data=merged_public,
+            )
         reversed_whole = self._reverse_content(
             public_path=public_path,
             source_path=source_path,
@@ -989,11 +995,10 @@ class ChangeRequestImporter:
             if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
             if transform.type == "uncomment":
-                content = self._flush_reverse_replaces(
-                    public_path=public_path,
-                    source_path=source_path,
+                content = _reverse_replaces(
+                    content,
                     transforms=pending,
-                    content=content,
+                    public_path=public_path,
                 )
                 pending = []
                 content = self._recomment_source_blocks(
@@ -1004,11 +1009,10 @@ class ChangeRequestImporter:
                 )
                 continue
             if transform.type in ("strip_block", "internal_lines"):
-                content = self._flush_reverse_replaces(
-                    public_path=public_path,
-                    source_path=source_path,
+                content = _reverse_replaces(
+                    content,
                     transforms=pending,
-                    content=content,
+                    public_path=public_path,
                 )
                 pending = []
                 # Neither transform is invertible from the public tree: the
@@ -1029,47 +1033,48 @@ class ChangeRequestImporter:
                 )
                 continue
             pending.append(transform)
-        return self._flush_reverse_replaces(
-            public_path=public_path,
-            source_path=source_path,
-            transforms=pending,
-            content=content,
-        )
+        return _reverse_replaces(content, transforms=pending, public_path=public_path)
 
-    def _flush_reverse_replaces(
+    # Strict imports use this guard as a proxy for "is the reversal unambiguous";
+    # merge imports establish that ground truth directly by comparing the source's
+    # actual export to the public base/head, so the heuristic is redundant and wrong
+    # there (the source legitimately carries exported text from drift).
+    #
+    # ``regex_groups`` transforms are not exempt: a boundary anchor still matches the
+    # bare public name in a URL, a path segment, or prose.
+    #
+    # It reads the incoming public text, not text mid-reversal: a re-inserted
+    # source-only region carries exported names the public edit never added, and a
+    # later rule's reversal can produce an earlier rule's ``after``.
+    def _check_injective_reverses(
         self,
         *,
         public_path: str,
         source_path: str,
-        transforms: list[Transform],
-        content: bytes,
-    ) -> bytes:
-        """Reverse one contiguous run of ``replace`` transforms in a single pass."""
-        if not transforms:
-            return content
-        try:
-            text = content.decode()
-        except UnicodeDecodeError as err:
-            raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}",
-            ) from err
-        # Strict imports use this guard as a proxy for "is the reversal
-        # unambiguous"; merge imports establish that ground truth directly by
-        # comparing the source's actual export to the public base/head, so the
-        # heuristic is redundant and wrong there (the source legitimately
-        # carries exported text from drift).
-        #
-        # ``regex_groups`` transforms are not exempt: a boundary anchor still
-        # matches the bare public name in a URL, a path segment, or prose.
-        if not self.merge_import:
-            for transform in transforms:
-                self._check_injective_reverse(
-                    public_path=public_path,
-                    source_path=source_path,
-                    transform=transform,
-                    text=text,
-                )
-        return _reverse_replace_all(transforms=tuple(transforms), text=text).encode()
+        data: bytes,
+    ) -> None:
+        """Reject a public edit whose ``replace`` reversals are ambiguous."""
+        match_path = reverse_move_transforms(
+            public_path=public_path,
+            transforms=self.config.transforms,
+        )
+        replaces = [
+            transform
+            for transform in self.config.transforms
+            if transform.type == "replace"
+            and transform.reversible
+            and _matches_transform(transform, match_path, self.config.globstar)
+        ]
+        if not replaces:
+            return
+        text = _decoded(data, public_path=public_path)
+        for transform in replaces:
+            self._check_injective_reverse(
+                public_path=public_path,
+                source_path=source_path,
+                transform=transform,
+                text=text,
+            )
 
     def _check_injective_reverse(
         self,
@@ -1188,12 +1193,7 @@ class ChangeRequestImporter:
             path=source_file,
             label=f"Source base path is not UTF-8: {source_file}",
         )
-        try:
-            public_text = content.decode()
-        except UnicodeDecodeError as err:
-            raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}",
-            ) from err
+        public_text = _decoded(content, public_path=public_path)
         whole_export, _total = uncomment_source_text(source_text, transform=transform)
         public_lines = public_text.splitlines(keepends=True)
         replacements: list[tuple[int, int, str]] = []
@@ -1255,25 +1255,14 @@ class ChangeRequestImporter:
             path=source_file,
             label=f"Source base path is not UTF-8: {source_file}",
         )
-        # The oracle is the source as THIS transform saw it on export. Strips that
-        # ran earlier already removed their regions; reading the raw source instead
-        # re-inserts a line an earlier strip owns, so a later ``internal_lines``
-        # pass put a block's own ``:start`` line back inside that block.
-        for earlier in self.config.transforms[
-            : self.config.transforms.index(transform)
-        ]:
-            if (
-                earlier.type in ("strip_block", "internal_lines")
-                and earlier.reversible
-                and _matches_transform(earlier, match_path, self.config.globstar)
-            ):
-                source_text = strip_source_text(source_text, earlier)
-        try:
-            public_text = content.decode()
-        except UnicodeDecodeError as err:
-            raise ImportRequestError(
-                f"Public path requires text reversal but is not UTF-8: {public_path}",
-            ) from err
+        source_text = _exported_until(
+            source_text,
+            transforms=self.config.transforms,
+            stop=transform,
+            match_path=match_path,
+            globstar=self.config.globstar,
+        )
+        public_text = _decoded(content, public_path=public_path)
         if transform.else_marker and transform.start and transform.start in source_text:
             return _reverse_else_blocks(
                 source_text=source_text,
@@ -1458,6 +1447,50 @@ def _matches_transform(
     return GlobSet(include=(transform.path,), globstar=globstar).matches(public_path)
 
 
+# A strip's regions are offsets into the text that strip saw on export, which is
+# the source after EVERY earlier rule, reversible or not: a replace changes line
+# lengths, a strip removes lines another strip's marker also matches. Replaying
+# a subset placed a public edit on the wrong line and deleted the one it edited.
+# ``move`` changes no text and ``ruff_format`` has no text-level form.
+def _exported_until(
+    source_text: str,
+    *,
+    transforms: tuple[Transform, ...],
+    stop: Transform,
+    match_path: str,
+    globstar: Globstar,
+) -> str:
+    """Return ``source_text`` as export handed it to transform ``stop``."""
+    text = source_text
+    for earlier in transforms[: transforms.index(stop)]:
+        if earlier.type in ("move", "ruff_format") or not _matches_transform(
+            earlier,
+            match_path,
+            globstar,
+        ):
+            continue
+        if earlier.type == "replace":
+            text = _forward_replace(transform=earlier, text=text)
+        elif earlier.type == "uncomment":
+            text = uncomment_source_text(text, transform=earlier)[0]
+        else:
+            text = strip_source_text(text, earlier)
+    return text
+
+
+def _forward_replace(*, transform: Transform, text: str) -> str:
+    """Apply one ``replace`` transform as export does."""
+    compiled = replace_template(
+        before=transform.before,
+        after=transform.after,
+        regex_groups=transform.regex_groups,
+        module=transform.module,
+    )
+    if compiled is None:
+        return text.replace(transform.before, transform.after)
+    return compiled.apply(text)
+
+
 # Forward, ``ruff_format`` targets ``root / transform.path`` and formats that whole
 # SUBTREE (``transforms._ruff_format``): ``path = "pkg"`` formats every file under
 # ``pkg/``, and ``path = "."`` / ``""`` formats the entire tree. So the import-side
@@ -1534,6 +1567,21 @@ def _reverse_replace(*, transform: Transform, text: str) -> str:
     if compiled is None:
         return text.replace(reverse_before, reverse_after)
     return compiled.apply(text)
+
+
+def _reverse_replaces(
+    content: bytes,
+    *,
+    transforms: list[Transform],
+    public_path: str,
+) -> bytes:
+    """Reverse one contiguous run of ``replace`` transforms in a single pass."""
+    if not transforms:
+        return content
+    return _reverse_replace_all(
+        transforms=tuple(transforms),
+        text=_decoded(content, public_path=public_path),
+    ).encode()
 
 
 # Applying reverse replacements one after another (each fed the previous one's output)
@@ -2334,6 +2382,16 @@ def _read_import_text(*, path: Path, label: str) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as err:
         raise ImportRequestError(label) from err
+
+
+def _decoded(data: bytes, *, public_path: str) -> str:
+    """Decode public bytes that a text reversal must rewrite."""
+    try:
+        return data.decode()
+    except UnicodeDecodeError as err:
+        raise ImportRequestError(
+            f"Public path requires text reversal but is not UTF-8: {public_path}",
+        ) from err
 
 
 def _delete_path(path: Path) -> None:

@@ -2574,6 +2574,94 @@ def test_import_reinserts_a_block_and_its_line_strip_sharing_a_marker(
     assert imported == f"{source}# public edit\n"
 
 
+@pytest.mark.parametrize("reversible", ["true", "false"])
+def test_import_reinserts_regions_after_an_earlier_replace(
+    tmp_path: Path,
+    reversible: str,
+):
+    """A strip's regions sit where export removed them, after every earlier rule.
+
+    Every package's ``.pre-commit-config.yaml`` runs its ``loop.*`` replaces
+    before its strips. Rebuilding each strip's input from strips alone shifted
+    every offset by the replaces' length change, so a public edit landed on
+    another line and the line it edited was deleted.
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        f"""
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "replace"
+        path = "c.yaml"
+        before = "loop.pkg"
+        after = "tools.pkg"
+        required = false
+        reversible = {reversible}
+
+        [[transform]]
+        type = "strip_block"
+        path = "c.yaml"
+        start = "# copybarista:internal:start"
+        end = "# copybarista:internal:end"
+        required = false
+
+        [[transform]]
+        type = "internal_lines"
+        path = "c.yaml"
+        start = "# copybarista:internal"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    source = (
+        "a: python -m loop.pkg one\n"
+        "# copybarista:internal:start\n"
+        "b: python -m loop.pkg two\n"
+        "# copybarista:internal:end\n"
+        "c: python -m loop.pkg three\n"
+        "d: x  # copybarista:internal\n"
+        "e: 1\n"
+    )
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo").mkdir(parents=True)
+    (source_base / "internal/demo/c.yaml").write_text(source, encoding="utf-8")
+    loaded = load_config(config)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=loaded,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    edited = public_head / "c.yaml"
+    edited.write_text(
+        edited.read_text(encoding="utf-8").replace("e: 1", "e: 2"),
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=loaded,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+        ),
+    )
+
+    imported = (destination / "internal/demo/c.yaml").read_text(encoding="utf-8")
+    assert imported == source.replace("e: 1", "e: 2")
+
+
 def _internal_lines_config(tmp_path: Path) -> Path:
     """Write a minimal config with one ``internal_lines`` transform."""
     config = tmp_path / "copy.barista.toml"
