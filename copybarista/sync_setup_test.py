@@ -30,6 +30,7 @@ from copybarista.sync_setup import (
     import_workflow,
     load_sync_settings,
     package_validation_workflow,
+    publish_npm_workflow,
     sync_toml,
     workflow_dir,
     write_sync_scaffold,
@@ -47,6 +48,8 @@ class _SyncSettingsFields(TypedDict, total=False, closed=True):
 
     export_watch_paths: tuple[str, ...]
     import_branch_prefix: str
+    npm_build_commands: tuple[str, ...]
+    npm_packages: tuple[str, ...]
     publish_source_rev: bool
     refresh_public_lockfile: bool
     release_check_script: str
@@ -562,6 +565,174 @@ def test_package_validation_workflow_runs_configured_commands():
     assert 'python-version: ["3.12", "3.13"]' in workflow
     assert "uv sync --all-groups" in workflow
     assert "uv run pytest" in workflow
+
+
+_NPM_PACKAGES: Final = ("npm/configgle-a", "npm/configgle-b")
+_NPM_BUILD_COMMANDS: Final = ("node npm/build.js",)
+
+
+def test_npm_settings_round_trip_through_the_sync_config(tmp_path: Path):
+    original = _settings(
+        npm_packages=_NPM_PACKAGES,
+        npm_build_commands=_NPM_BUILD_COMMANDS,
+    )
+    path = tmp_path / "copybarista.sync.toml"
+    path.write_text(sync_toml(original), encoding="utf-8")
+
+    assert load_sync_settings(path) == original
+    assert load_sync_settings(path).npm_packages == _NPM_PACKAGES
+
+
+def test_no_workflow_mentions_npm_until_a_package_asks_for_it():
+    """The npm job is opt-in: every other package's workflows stay as they were."""
+    settings = _settings()
+
+    for text in (
+        package_validation_workflow(settings),
+        import_workflow(settings),
+        export_workflow(settings, inputs=()),
+    ):
+        assert "npm" not in text
+    assert settings.npm_packages == ()
+    assert settings.npm_build_commands == ()
+
+
+def test_publish_npm_workflow_publishes_with_provenance_through_trusted_publishing():
+    text = publish_npm_workflow(
+        _settings(npm_packages=_NPM_PACKAGES, npm_build_commands=_NPM_BUILD_COMMANDS),
+    )
+    parsed = from_plain(yaml.safe_load(text), dict[object, object])
+    job = from_plain(
+        from_plain(parsed["jobs"], dict[str, object])["publish"],
+        dict[str, object],
+    )
+
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert job["environment"] == "npm"
+    assert parsed["permissions"] == {"contents": "read"}
+    assert "npm publish" in text
+    assert "--provenance --access public" in text
+    assert "NODE_AUTH_TOKEN" not in text
+    assert "secrets." not in text
+    assert "npm@^11.5.1" in text
+    for package in _NPM_PACKAGES:
+        assert package in text
+    uses = [str(step.get("uses", "")) for step in _job_steps(text, job="publish")]
+    assert GITHUB_ACTION_PINS["actions/setup-node"].ref in uses
+    assert GITHUB_ACTION_PINS["actions/checkout"].ref in uses
+
+
+def test_publish_npm_workflow_builds_then_waits_for_pypi_then_publishes():
+    text = publish_npm_workflow(
+        _settings(
+            npm_packages=("npm/configgle-a",),
+            npm_build_commands=("node npm/build.js", "echo second"),
+        ),
+    )
+    names = [str(step.get("name", "")) for step in _job_steps(text, job="publish")]
+
+    assert names == [
+        "",
+        "",
+        "Install npm 11.5.1 or later",
+        "Build packages",
+        "Publish packages",
+    ]
+    assert text.index("node npm/build.js") < text.index("echo second")
+    assert text.index("echo second") < text.index("https://pypi.org/pypi/")
+    assert text.index("https://pypi.org/pypi/") < text.index("npm publish")
+    assert "npm view" in text
+
+
+def test_publish_npm_workflow_without_build_commands_has_no_build_step():
+    names = [
+        str(step.get("name", ""))
+        for step in _job_steps(
+            publish_npm_workflow(_settings(npm_packages=("npm/configgle-a",))),
+            job="publish",
+        )
+    ]
+
+    assert "Build packages" not in names
+
+
+def test_publish_npm_workflow_needs_a_package():
+    with pytest.raises(ConfigError, match="npm_packages"):
+        publish_npm_workflow(_settings())
+
+
+@pytest.mark.parametrize(
+    "package",
+    ["../outside", "/abs/path", "npm/a b", "npm/a;b", "npm/$(id)", ""],
+)
+def test_npm_package_paths_must_be_safe_to_put_in_a_shell_line(package: str):
+    with pytest.raises(ConfigError, match="npm_packages"):
+        publish_npm_workflow(_settings(npm_packages=(package,)))
+
+
+def test_npm_build_commands_without_packages_are_refused():
+    with pytest.raises(ConfigError, match="npm_build_commands"):
+        sync_toml(_settings(npm_build_commands=("node build.js",)))
+
+
+@pytest.mark.parametrize("command", ["", "  ", "# comment", "one\ntwo"])
+def test_npm_build_commands_must_be_executable_single_lines(command: str):
+    with pytest.raises(ConfigError, match="npm_build_commands"):
+        sync_toml(_settings(npm_packages=("npm/a",), npm_build_commands=(command,)))
+
+
+def test_scaffold_writes_the_npm_workflow_only_when_enabled(tmp_path: Path):
+    plain = tmp_path / "plain"
+    npm = tmp_path / "npm"
+
+    write_sync_scaffold(root=plain, settings=_settings())
+    written = write_sync_scaffold(
+        root=npm,
+        settings=_settings(
+            npm_packages=_NPM_PACKAGES,
+            npm_build_commands=_NPM_BUILD_COMMANDS,
+        ),
+    )
+
+    assert not (plain / ".github/workflows/publish-npm.yml").exists()
+    assert npm / ".github/workflows/publish-npm.yml" in written
+    check_sync_config(root=plain)
+    check_sync_config(root=npm)
+
+
+def test_check_sync_config_requires_the_npm_workflow_when_enabled(tmp_path: Path):
+    write_sync_scaffold(
+        root=tmp_path,
+        settings=_settings(
+            npm_packages=_NPM_PACKAGES,
+            npm_build_commands=_NPM_BUILD_COMMANDS,
+        ),
+    )
+    (tmp_path / ".github/workflows/publish-npm.yml").unlink()
+
+    with pytest.raises(ConfigError, match="Missing sync files"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_rejects_npm_workflow_drift(tmp_path: Path):
+    write_sync_scaffold(
+        root=tmp_path,
+        settings=_settings(
+            npm_packages=_NPM_PACKAGES,
+            npm_build_commands=_NPM_BUILD_COMMANDS,
+        ),
+    )
+    workflow = tmp_path / ".github/workflows/publish-npm.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "id-token: write",
+            "id-token: write\n      contents: write",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"publish-npm\.yml is not what"):
+        check_sync_config(root=tmp_path)
 
 
 def _export_workflow(settings: SyncSettings) -> str:

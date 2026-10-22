@@ -39,6 +39,7 @@ CONTROL_EXCLUDES: Final = (
     "copybarista.sync.toml",
 )
 CONTROL_CHAR_BOUND: Final = 32
+NPM_WORKFLOW_FILENAME: Final = "publish-npm.yml"
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_VALIDATION_PYTHON_VERSIONS: Final = ("3.12",)
@@ -118,6 +119,11 @@ class SyncSettings:
       publish_source_rev: Whether public markers may include raw source SHAs.
       refresh_public_lockfile: Whether export runs generate a public uv.lock.
       skip_source_validation: Whether export runs skip source-side validation.
+      npm_packages: Public-repository directories of npm packages the generated
+          ``publish-npm.yml`` publishes with provenance. Empty leaves the npm
+          workflow out, so a package that sets none renders what it always did.
+      npm_build_commands: Commands that workflow runs before publishing, such as
+          the step that copies a launcher into each package.
 
     """
 
@@ -150,6 +156,8 @@ class SyncSettings:
     publish_source_rev: bool = False
     refresh_public_lockfile: bool = False
     skip_source_validation: bool = False
+    npm_packages: tuple[str, ...] = ()
+    npm_build_commands: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Fill derived validation defaults."""
@@ -289,6 +297,8 @@ def load_sync_settings(path: Path) -> SyncSettings:
             "skip_source_validation",
             default=False,
         ),
+        npm_packages=_optional_str_tuple(sync, "npm_packages", default=()),
+        npm_build_commands=_optional_str_tuple(sync, "npm_build_commands", default=()),
         sync_user_name=_optional_str(
             sync,
             "sync_user_name",
@@ -375,6 +385,16 @@ def write_sync_scaffold(
         root / ".github" / "workflows" / "package-validation.yml": (
             package_validation_workflow(settings)
         ),
+        **(
+            {
+                root
+                / ".github"
+                / "workflows"
+                / NPM_WORKFLOW_FILENAME: publish_npm_workflow(settings),
+            }
+            if settings.npm_packages
+            else {}
+        ),
     }
     existing = [str(path.relative_to(root)) for path in files if path.exists()]
     if existing and not force:
@@ -434,12 +454,21 @@ def check_sync_config(*, root: Path) -> None:
     if not config.leak_check.forbidden_path:
         raise ConfigError("copy.barista.toml must define forbidden path leak checks.")
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
-    _validate_package_validation_workflow_yaml(
+    _assert_generated(
+        name="package-validation.yml",
         workflow_text=(workflow_dir(root) / "package-validation.yml").read_text(
             encoding="utf-8",
         ),
-        settings=settings,
+        expected=package_validation_workflow(settings),
     )
+    if settings.npm_packages:
+        _assert_generated(
+            name=NPM_WORKFLOW_FILENAME,
+            workflow_text=(workflow_dir(root) / NPM_WORKFLOW_FILENAME).read_text(
+                encoding="utf-8",
+            ),
+            expected=publish_npm_workflow(settings),
+        )
 
 
 def copy_barista_toml(settings: SyncSettings) -> str:
@@ -495,6 +524,10 @@ def sync_toml(settings: SyncSettings) -> str:
     commands_comment = "\n".join(
         f"  {_toml_str(line)}," for line in settings.validation_commands_comment
     )
+    npm_packages = "\n".join(f"  {_toml_str(path)}," for path in settings.npm_packages)
+    npm_build_commands = "\n".join(
+        f"  {_toml_str(command)}," for command in settings.npm_build_commands
+    )
     packages = "\n".join(
         f"  {_toml_str(package)}," for package in settings.system_packages
     )
@@ -529,6 +562,8 @@ def sync_toml(settings: SyncSettings) -> str:
             "PUBLISH_SOURCE_REV": _toml_bool(settings.publish_source_rev),
             "REFRESH_PUBLIC_LOCKFILE": _toml_bool(settings.refresh_public_lockfile),
             "SKIP_SOURCE_VALIDATION": _toml_bool(settings.skip_source_validation),
+            "NPM_PACKAGES": npm_packages,
+            "NPM_BUILD_COMMANDS": npm_build_commands,
             "SYSTEM_PACKAGES": packages,
             "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_comment,
             "TYPE_CHECK_TARGETS": targets,
@@ -587,6 +622,38 @@ def package_validation_workflow(settings: SyncSettings) -> str:
             "PYTHON_SETUP": python_setup,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
             "COMMANDS": commands,
+        },
+    )
+
+
+def publish_npm_workflow(settings: SyncSettings) -> str:
+    """Return the public workflow that publishes the npm packages.
+
+    Args:
+      settings: Sync settings naming ``npm_packages`` and their build commands.
+
+    Returns:
+      yaml_text: Rendered GitHub Actions workflow contents.
+
+    Raises:
+      ConfigError: If settings are invalid or name no npm package.
+
+    """
+    _validate_settings(settings)
+    if not settings.npm_packages:
+        raise ConfigError("sync.npm_packages must name a package to publish to npm.")
+    commands = "\n".join(
+        f"          {command}" for command in settings.npm_build_commands
+    )
+    return _render_template(
+        "publish-npm.yml.tmpl",
+        {
+            "BUILD_STEP": (
+                f"      - name: Build packages\n        run: |\n{commands}\n"
+                if commands
+                else ""
+            ),
+            "PACKAGES": " ".join(settings.npm_packages),
         },
     )
 
@@ -858,6 +925,7 @@ def _required_paths(root: Path, settings: SyncSettings) -> tuple[Path, ...]:
         root / "copybarista.sync.toml",
         workflows / import_workflow_filename(settings),
         workflows / "package-validation.yml",
+        *((workflows / NPM_WORKFLOW_FILENAME,) if settings.npm_packages else ()),
     )
 
 
@@ -1044,16 +1112,12 @@ def _workflow_step_index(
 # and ``runs-on`` all passed unexamined, so a hand edit granting ``contents: write`` was
 # accepted. The export and import workflows were already guarded this way
 # (``sync_workflow_identity_test.py``); this closes the third file.
-def _validate_package_validation_workflow_yaml(
-    *,
-    workflow_text: str,
-    settings: SyncSettings,
-) -> None:
+def _assert_generated(*, name: str, workflow_text: str, expected: str) -> None:
     """Assert the workflow is byte-identical to what the generator produces."""
-    if workflow_text == package_validation_workflow(settings):
+    if workflow_text == expected:
         return
     raise ConfigError(
-        "package-validation.yml is not what the generator produces; regenerate "
+        f"{name} is not what the generator produces; regenerate "
         "it with `copybarista write-public-workflows <sync_config>`.",
     )
 
@@ -1255,6 +1319,7 @@ def _validate_settings(settings: SyncSettings) -> None:
         )
     if not settings.validation_commands:
         raise ConfigError("sync.validation_commands cannot be empty.")
+    _validate_npm(settings)
     for command in settings.validation_commands:
         if "\n" in command or not command.strip():
             raise ConfigError("sync.validation_commands must contain shell commands.")
@@ -1287,6 +1352,27 @@ def _validate_settings(settings: SyncSettings) -> None:
         )
     _validate_branch_prefix(settings.export_prefix, name="export_branch_prefix")
     _validate_branch_prefix(settings.import_prefix, name="import_branch_prefix")
+
+
+# ``publish_npm_workflow`` joins the package paths into a ``for`` line and the build
+# commands into a ``run:`` block of a workflow that holds the npm publish identity,
+# so a path is limited to what a relative directory needs and a command to one
+# executable line, as ``validation_commands`` are.
+def _validate_npm(settings: SyncSettings) -> None:
+    """Reject npm settings that would not survive interpolation into a workflow."""
+    for path in settings.npm_packages:
+        if not re.fullmatch(r"[A-Za-z0-9][\w.-]*(/[A-Za-z0-9][\w.-]*)*", path):
+            raise ConfigError(
+                "sync.npm_packages entries must be relative directories of "
+                f"letters, digits, '.', '_', '-' and '/'; got {path!r}.",
+            )
+    if settings.npm_build_commands and not settings.npm_packages:
+        raise ConfigError("sync.npm_build_commands needs sync.npm_packages.")
+    for command in settings.npm_build_commands:
+        if "\n" in command or not command.strip() or command.lstrip().startswith("#"):
+            raise ConfigError(
+                "sync.npm_build_commands entries must be executable single lines.",
+            )
 
 
 # ``_system_deps_step`` joins these straight into a workflow ``run:``, so a value like
