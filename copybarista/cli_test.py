@@ -693,6 +693,49 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     )
 
 
+def test_cli_write_public_workflows_adds_the_npm_workflow_only_when_enabled(
+    tmp_path: Path,
+):
+    """Enabling npm is a sync-config setting, like the watch paths: no flag."""
+    for name in ("plain", "npm"):
+        root = tmp_path / name
+        main(
+            [
+                "init-sync",
+                str(root),
+                "--package-name",
+                "configgle",
+                "--source-root",
+                "packages/configgle",
+                "--public-repo",
+                "example/configgle",
+                "--source-repo",
+                "example/source",
+                "--copybarista-project-path",
+                "tools/copybarista",
+                "--smoke-import",
+                "configgle",
+            ],
+        )
+        (root / ".export/.github/workflows").mkdir(parents=True)
+    sync = tmp_path / "npm/copybarista.sync.toml"
+    sync.write_text(
+        sync.read_text(encoding="utf-8").replace(
+            "npm_packages = [\n\n]",
+            'npm_packages = [\n  "npm/configgle",\n]',
+        ),
+        encoding="utf-8",
+    )
+
+    for name in ("plain", "npm"):
+        main(["write-public-workflows", str(tmp_path / name / "copybarista.sync.toml")])
+
+    assert not (tmp_path / "plain/.export/.github/workflows/publish-npm.yml").exists()
+    assert "npm publish" in (
+        tmp_path / "npm/.export/.github/workflows/publish-npm.yml"
+    ).read_text(encoding="utf-8")
+
+
 if __name__ == "__main__":
     from copybarista.lib.testing.runner import test_main
 

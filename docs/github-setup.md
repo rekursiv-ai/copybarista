@@ -66,6 +66,8 @@ The generated public files are:
   `loop`).
 - `.github/workflows/package-validation.yml` -- public package correctness
   workflow.
+- `.github/workflows/publish-npm.yml` -- only when `npm_packages` is set (see
+  below): publishes npm packages with provenance.
 
 Package identity is data in `copybarista.sync.toml`; workflow names and the
 import workflow's file name identify the package, while scripts and environment
@@ -112,6 +114,18 @@ Use repeated `--validation-python-version` and `--validation-command` flags when
 a package needs a different public correctness contract. `check-sync-config`
 validates that `.github/workflows/package-validation.yml` still matches those
 commands.
+
+A package that also ships npm packages lists their public-repository directories
+in `npm_packages` in `copybarista.sync.toml`, and any commands that must run before
+they are published (such as copying a shared file into each) in
+`npm_build_commands`. `write-public-workflows` then also writes
+`publish-npm.yml`: on a published release it waits for each package's PyPI
+release of the same name and version, then runs `npm publish --provenance --access
+public` through npm trusted publishing, with `id-token: write` and no stored
+token. The job runs in an environment named `npm`, which the trusted publisher on
+npmjs.com names with the workflow file. A package that sets neither keeps the
+workflows it always had, and `check-sync-config` requires the npm workflow to
+match the generator only when `npm_packages` is set.
 
 The public import workflow deliberately separates validation from PR creation:
 import verification runs without `GH_TOKEN`, then a second `--open-pr-only` step

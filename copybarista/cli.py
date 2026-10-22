@@ -34,6 +34,7 @@ from copybarista.sync_setup import (
     DEFAULT_SYNC_USER_EMAIL,
     DEFAULT_SYNC_USER_NAME,
     DEFAULT_VALIDATION_PYTHON_VERSIONS,
+    NPM_WORKFLOW_FILENAME,
     SyncSettings,
     check_sync_config,
     export_inputs,
@@ -42,6 +43,7 @@ from copybarista.sync_setup import (
     import_workflow_filename,
     load_sync_settings,
     package_validation_workflow,
+    publish_npm_workflow,
     write_sync_scaffold,
 )
 
@@ -356,6 +358,11 @@ def _run_write_public_workflows(flags: _Flags) -> None:
     for name, text in (
         ("package-validation.yml", package_validation_workflow(settings)),
         (import_workflow_filename(settings), import_workflow(settings)),
+        *(
+            ((NPM_WORKFLOW_FILENAME, publish_npm_workflow(settings)),)
+            if settings.npm_packages
+            else ()
+        ),
     ):
         (workflows / name).write_text(text, encoding="utf-8")
         sys.stdout.write(f"wrote {workflows / name}\n")

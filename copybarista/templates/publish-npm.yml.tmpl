@@ -1,0 +1,59 @@
+name: Publish npm packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish packages to npm
+    runs-on: ubuntu-latest
+    # Bounded so a hung publish fails in minutes, not at the 6h default.
+    timeout-minutes: 30
+    environment: npm
+    permissions:
+      contents: read
+      # Trusted publishing: npm trades this run's OIDC token for a short-lived
+      # credential and signs the provenance, so no npm token is stored anywhere.
+      id-token: write
+    steps:
+      - uses: @@USES_CHECKOUT@@
+      - uses: @@USES_SETUP_NODE@@
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install npm 11.5.1 or later
+        run: npm install --global 'npm@^11.5.1'
+@@BUILD_STEP@@      - name: Publish packages
+        run: |
+          set -eu
+          for package in @@PACKAGES@@; do
+            name="$(node -p "require('./$package/package.json').name")"
+            version="$(node -p "require('./$package/package.json').version")"
+            # The launcher runs the PyPI package of the same name and version,
+            # so a package goes out only once that release is visible.
+            for attempt in $(seq 1 40); do
+              if curl --fail --silent --output /dev/null "https://pypi.org/pypi/$name/$version/json"; then
+                break
+              fi
+              if [ "$attempt" = 40 ]; then
+                echo "$name==$version is not on PyPI" >&2
+                exit 1
+              fi
+              sleep 15
+            done
+            # A rerun after a partial failure skips what already went out.
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published"
+            else
+              npm publish "$package" --provenance --access public
+            fi
+          done

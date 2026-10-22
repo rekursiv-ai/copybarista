@@ -5,6 +5,14 @@ All notable copybarista changes are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- `npm_packages` and `npm_build_commands` in `copybarista.sync.toml` turn on a
+  generated `publish-npm.yml`, which publishes npm packages with provenance
+  through npm trusted publishing once their PyPI releases are visible.
+  `write-public-workflows` writes it and `check-sync-config` requires it to match
+  the generator. A package that sets neither renders the workflows it always did.
+
 ### Removed
 
 - `copybarista.lib.worker_count` is no longer part of the package. It moved,
