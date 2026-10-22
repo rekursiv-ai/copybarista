@@ -2498,6 +2498,82 @@ def test_import_reinserts_stripped_block_from_source(tmp_path: Path):
     )
 
 
+def test_import_reinserts_a_block_and_its_line_strip_sharing_a_marker(
+    tmp_path: Path,
+):
+    """A line strip whose marker prefixes a block strip's never re-inserts the block.
+
+    ``.pre-commit-config.yaml`` strips ``# copybarista:internal:start`` blocks,
+    then every remaining line carrying ``# copybarista:internal``. Reversal reads
+    each strip's regions from the source; read from the RAW source, the line
+    strip also owns the block's own marker lines, so it put a ``:start`` line
+    back inside the block it opens and the next re-export raised "found nested
+    start marker".
+    """
+    config = tmp_path / "copy.barista.toml"
+    config.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "strip_block"
+        path = "c.yaml"
+        start = "# copybarista:internal:start"
+        end = "# copybarista:internal:end"
+        required = false
+
+        [[transform]]
+        type = "internal_lines"
+        path = "c.yaml"
+        start = "# copybarista:internal"
+        required = false
+        """,
+        encoding="utf-8",
+    )
+    source = (
+        "hooks:\n"
+        "  - id: a\n"
+        "    # copybarista:internal:start\n"
+        "    args: [--private]\n"
+        "    # copybarista:internal:end\n"
+        "  - id: b\n"
+        "    files: x  # copybarista:internal\n"
+    )
+    loaded = load_config(config)
+    exported = source
+    for transform in loaded.transforms:
+        exported = strip_source_text(exported, transform)
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo").mkdir(parents=True)
+    (source_base / "internal/demo/c.yaml").write_text(source, encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    public_base.mkdir()
+    (public_base / "c.yaml").write_text(exported, encoding="utf-8")
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "c.yaml").write_text(f"{exported}# public edit\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    import_change_request(
+        ImportRequest(
+            config=loaded,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            verify=False,
+        ),
+    )
+
+    imported = (destination / "internal/demo/c.yaml").read_text(encoding="utf-8")
+    assert imported == f"{source}# public edit\n"
+
+
 def _internal_lines_config(tmp_path: Path) -> Path:
     """Write a minimal config with one ``internal_lines`` transform."""
     config = tmp_path / "copy.barista.toml"

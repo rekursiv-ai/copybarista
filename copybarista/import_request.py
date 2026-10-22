@@ -1025,6 +1025,7 @@ class ChangeRequestImporter:
                     source_path=source_path,
                     transform=transform,
                     content=content,
+                    match_path=match_path,
                 )
                 continue
             pending.append(transform)
@@ -1244,6 +1245,7 @@ class ChangeRequestImporter:
         source_path: str,
         transform: Transform,
         content: bytes,
+        match_path: str,
     ) -> bytes:
         """Re-insert a transform's source-only regions into reversed content."""
         source_file = self.source_base / source_path
@@ -1253,6 +1255,19 @@ class ChangeRequestImporter:
             path=source_file,
             label=f"Source base path is not UTF-8: {source_file}",
         )
+        # The oracle is the source as THIS transform saw it on export. Strips that
+        # ran earlier already removed their regions; reading the raw source instead
+        # re-inserts a line an earlier strip owns, so a later ``internal_lines``
+        # pass put a block's own ``:start`` line back inside that block.
+        for earlier in self.config.transforms[
+            : self.config.transforms.index(transform)
+        ]:
+            if (
+                earlier.type in ("strip_block", "internal_lines")
+                and earlier.reversible
+                and _matches_transform(earlier, match_path, self.config.globstar)
+            ):
+                source_text = strip_source_text(source_text, earlier)
         try:
             public_text = content.decode()
         except UnicodeDecodeError as err:
