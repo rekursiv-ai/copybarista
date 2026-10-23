@@ -291,9 +291,9 @@ class ExportGuardError(RuntimeError):
 def run_export_sync(request: ExportRequest) -> None:
     """Validate, export, replace the public checkout, and open/update a PR.
 
-    Refuses to export while the source has not absorbed the public head:
-    an import PR for this project is still open, or a public commit has no
-    landed import. The export force-writes the public checkout from the
+    Refuses to export while an import PR for this project is still open or
+    public work is not reflected by a landed import or a proven export.
+    The export force-writes the public checkout from the
     source tree, so running it then silently reverts that public change --
     the commit stays in history but its content is gone.
 
@@ -1506,10 +1506,9 @@ def _current_source_rev(*, source_dir: Path, fallback: str) -> str:
     raise PrReplayError("Cannot resolve current source revision from source checkout.")
 
 
-# The source records each landed import's public SHA in that commit's subject, so its
-# history is the source of truth for what it has absorbed. A public head that is neither
-# that SHA nor an ancestor of it is a change the source never received -- force-writing
-# the export over it would destroy it.
+# GitHub squash merges use the authenticated App's author, not the configured Git
+# email. Resolve proven exports as well as landed imports before checking the
+# remaining public history, as the reverse-sync baseline resolver already does.
 def _public_head_unimported(
     *,
     public_dir: Path,
@@ -1524,6 +1523,7 @@ def _public_head_unimported(
         return ""
     synced = _last_synced_public_sha(
         target_dir=source_dir,
+        public_dir=public_dir,
         sync_label=sync_label,
         base_branch=base_branch,
     )
@@ -1574,20 +1574,22 @@ def _public_head_sha(*, cwd: Path) -> str:
 def _last_synced_public_sha(
     *,
     target_dir: Path,
+    public_dir: Path,
     sync_label: str,
     base_branch: str,
 ) -> str:
-    """Return the newest public SHA the source has imported, or ``""`` when none."""
+    """Return the newest proven import or export SHA, or ``""`` when none."""
     try:
         return last_synced_public_sha(
             target_dir=target_dir,
+            public_dir=public_dir,
             sync_label=sync_label,
             base_branch=base_branch,
             fallback="",
         )
     except ImportBaseError:
-        # No landed import at all: a bootstrap, where there is nothing to
-        # revert. Distinct from "cannot read the ledger" below.
+        # No proven import or export: the caller still checks bootstrap history
+        # for public work. Distinct from unreadable history below.
         return ""
     except Exception as err:
         # Fail CLOSED. This is the only check standing between a force-write
