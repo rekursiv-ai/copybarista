@@ -932,7 +932,11 @@ def test_export_workflow_lets_the_export_read_sibling_export_runs():
         yaml.safe_load(export_workflow(_settings(), inputs=())),
         dict[object, object],
     )
-    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+        "pull-requests": "read",
+    }
     jobs = from_plain(workflow["jobs"], dict[str, dict[str, object]])
     env = from_plain(jobs["export-pr"]["env"], dict[str, str])
     assert env["COPYBARISTA_ACTIONS_TOKEN"] == "${{ github.token }}"  # noqa: S105 -- An Actions expression, not a secret.
@@ -970,6 +974,141 @@ def test_export_workflow_can_guard_sync_token_login():
     assert 'COPYBARISTA_SYNC_TOKEN_LOGIN: "rekursiv-bot"' in workflow
     assert "gh api user --jq .login" in workflow
     assert "git author settings cannot change GitHub push or PR attribution" in workflow
+
+
+def _app_settings(tmp_path: Path) -> SyncSettings:
+    """Load the App opt-in through the same TOML surface packages use."""
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        sync_toml(_settings()).replace(
+            "[sync]\n",
+            '[sync]\nsync_app_slug = "example-sync"\n',
+        ),
+        encoding="utf-8",
+    )
+    return load_sync_settings(config)
+
+
+def test_app_authentication_round_trips(tmp_path: Path):
+    settings = _app_settings(tmp_path)
+
+    assert 'sync_app_slug = "example-sync"' in sync_toml(settings)
+    assert "sync_token_login" not in sync_toml(settings)
+
+
+def test_auth_fragment_omits_the_file_banner():
+    fragment = _render_template(
+        "sync-personal-auth.yml.tmpl",
+        {},
+        include_banner=False,
+    )
+
+    assert fragment.startswith("      - name: Verify sync token identity\n")
+
+
+@pytest.mark.parametrize(
+    ("render", "job", "destination"),
+    [
+        (_export_workflow, "export-pr", "example/configgle"),
+        (import_workflow, "import-change", "${{ env.TARGET_REPO }}"),
+    ],
+)
+def test_app_workflows_mint_scoped_tokens(
+    tmp_path: Path,
+    render: Callable[[SyncSettings], str],
+    job: str,
+    destination: str,
+):
+    text = render(_app_settings(tmp_path))
+    steps = _job_steps(text, job=job)
+    mint = steps[_step_index(steps, lambda step: step.get("id") == "sync-app-token")]
+    inputs = from_plain(mint["with"], dict[str, object])
+
+    assert mint["uses"] == action_ref("actions/create-github-app-token")
+    assert inputs["app-id"] == "${{ vars.SYNC_APP_ID }}"
+    assert inputs["private-key"] == "${{ secrets.SYNC_APP_PRIVATE_KEY }}"
+    assert inputs["repositories"] == destination
+    assert inputs["permission-contents"] == "write"
+    assert inputs["permission-pull-requests"] == "write"
+    assert inputs["permission-workflows"] == "write"
+    assert "COPYBARISTA_SYNC_TOKEN" not in text
+    assert "COPYBARISTA_IMPORT_TOKEN" not in text
+    assert "gh api user" not in text
+    assert "${{ steps.sync-app-token.outputs.token }}" in text
+
+
+def test_app_import_keeps_write_credentials_off_validation(tmp_path: Path):
+    steps = _import_steps(import_workflow(_app_settings(tmp_path)))
+    checkout = steps[_step_index(steps, lambda step: _checkout_path(step) == "target")]
+    validation = steps[
+        _step_index(
+            steps,
+            lambda step: (
+                step.get("name") == "Import public tree into target repository"
+            ),
+        )
+    ]
+
+    assert (
+        from_plain(checkout["with"], dict[str, object])["persist-credentials"] is False
+    )
+    assert "env" not in validation
+    assert [
+        str(step.get("name", step.get("uses", "")))
+        for step in steps
+        if "${{ steps.sync-app-token.outputs.token }}" in str(step)
+    ] == [action_ref("actions/checkout"), "Open or update target import PR"]
+
+
+@pytest.mark.parametrize("slug", ["wrong app", "Example-App", "../app"])
+def test_app_settings_reject_invalid_slugs(tmp_path: Path, slug: str):
+    _app_settings(tmp_path)
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("example-sync", slug),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="sync_app_slug"):
+        load_sync_settings(config)
+
+
+def test_app_settings_reject_conflicting_personal_identity(tmp_path: Path):
+    _app_settings(tmp_path)
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'sync_token_login = ""',
+            'sync_token_login = "some-user"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="only one"):
+        load_sync_settings(config)
+
+
+@pytest.mark.cli_bash
+@pytest.mark.parametrize("actual", ["example-sync", "different-app", ""])
+def test_app_identity_guard_rejects_another_app(tmp_path: Path, actual: str):
+    steps = _job_steps(_export_workflow(_app_settings(tmp_path)), job="export-pr")
+    guard = steps[
+        _step_index(steps, lambda step: step.get("name") == "Verify sync App identity")
+    ]
+    env = from_plain(guard["env"], dict[str, str])
+    env["ACTUAL_SYNC_APP_SLUG"] = actual
+    bash = shutil.which("bash")
+    assert bash is not None
+
+    result = subprocess.run(  # noqa: S603 -- Execute the generated identity guard.
+        [bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", str(guard["run"])],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is (actual == "example-sync")
 
 
 def test_export_workflow_skips_the_source_repos_uv_cache():

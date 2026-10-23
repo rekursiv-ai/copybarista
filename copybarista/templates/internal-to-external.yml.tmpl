@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
   # The export waits for a sibling export of the same commit before locking.
   actions: read
 
@@ -39,8 +40,7 @@ jobs:
     # Bounded so a hung step fails in minutes, not at the 6h default.
     timeout-minutes: 45
     env:
-      GH_TOKEN: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
-      COPYBARISTA_ACTIONS_TOKEN: ${{ github.token }}
+@@EXPORT_JOB_TOKEN_ENV@@      COPYBARISTA_ACTIONS_TOKEN: ${{ github.token }}
       TARGET_REPO: @@PUBLIC_REPO@@
       BASE_BRANCH: main
       EXPORT_BRANCH: @@EXPORT_BRANCH@@
@@ -48,28 +48,11 @@ jobs:
       FORBIDDEN_PR_TEXT: @@FORBIDDEN_PR_TEXT@@
       COPYBARISTA_SYNC_USER_NAME: @@SYNC_USER_NAME@@
       COPYBARISTA_SYNC_USER_EMAIL: @@SYNC_USER_EMAIL@@
-      COPYBARISTA_SYNC_TOKEN_LOGIN: @@SYNC_TOKEN_LOGIN@@
-      COPYBARISTA_AUTO_MERGE: ${{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}
+@@SYNC_LOGIN_ENV@@      COPYBARISTA_AUTO_MERGE: ${{ vars.COPYBARISTA_AUTO_MERGE || 'false' }}
 @@REPLAY_BOOTSTRAP_BASE_COMMENT@@      COPYBARISTA_REPLAY_BOOTSTRAP_BASE: ${{ inputs.replay_bootstrap_base@@REPLAY_BOOTSTRAP_BASE_DEFAULT@@ }}
 
     steps:
-      - name: Verify sync token identity
-        if: env.COPYBARISTA_SYNC_TOKEN_LOGIN != ''
-        run: |
-          # Retried: this is one unauthenticated-side API call standing in front
-          # of the whole export, and a transient GitHub 503 on it failed three
-          # package exports in the same second. The call is idempotent, so
-          # re-asking costs nothing; an empty result after three tries is a real
-          # auth failure and still fails the check below.
-          for attempt in 1 2 3; do
-            token_login="$(gh api user --jq .login)" && break
-            sleep $((attempt * 5))
-          done
-          if [ "$token_login" != "$COPYBARISTA_SYNC_TOKEN_LOGIN" ]; then
-            echo "::error::COPYBARISTA_SYNC_TOKEN authenticates as '$token_login', expected '$COPYBARISTA_SYNC_TOKEN_LOGIN'. Rotate COPYBARISTA_SYNC_TOKEN to a token owned by $COPYBARISTA_SYNC_TOKEN_LOGIN; git author settings cannot change GitHub push or PR attribution."
-            exit 1
-          fi
-      - uses: @@USES_CHECKOUT@@
+@@SYNC_AUTH_STEPS@@      - uses: @@USES_CHECKOUT@@
         with:
           path: source
           fetch-depth: 0
@@ -89,7 +72,7 @@ jobs:
       - uses: @@USES_CHECKOUT@@
         with:
           repository: ${{ env.TARGET_REPO }}
-          token: ${{ secrets.COPYBARISTA_SYNC_TOKEN }}
+          token: @@SYNC_TOKEN@@
           ref: ${{ env.BASE_BRANCH }}
           path: public
           # Full history: the data-loss guard walks `<last-import>..HEAD` to see
@@ -99,7 +82,7 @@ jobs:
           fetch-depth: 0
 @@SYSTEM_DEPS@@      - name: Open export PR
         env:
-          PYTHONPATH: source
+@@EXPORT_STEP_TOKEN_ENV@@          PYTHONPATH: source
         run: |
           uv --quiet run --no-project --with pyyaml --with rignore --with ruff --with tomlkit --with treekle \
             python3 \
