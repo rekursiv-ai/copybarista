@@ -645,6 +645,13 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _source_gh_env() -> dict[str, str]:
+    """Use the workflow identity for source reads, or the CLI identity outside Actions."""
+    env = _child_env()
+    env["GH_TOKEN"] = env.get("COPYBARISTA_ACTIONS_TOKEN") or env.get("GH_TOKEN", "")
+    return env
+
+
 def _run(
     argv: list[str],
     *,
@@ -1287,13 +1294,7 @@ def _await_upstream_exports(
     """Wait, up to a deadline, for each workflow's run on ``source_sha`` to finish."""
     if source_sha == "manual":
         return
-    # The sync token is scoped to the public repos; the workflow's own token reads
-    # this repository's Actions runs.
-    env = _child_env()
-    env["GH_TOKEN"] = os.environ.get("COPYBARISTA_ACTIONS_TOKEN") or env.get(
-        "GH_TOKEN",
-        "",
-    )
+    env = _source_gh_env()
     waited = 0.0
     for workflow in workflows:
         while waited < UPSTREAM_EXPORT_WAIT_SEC:
@@ -1648,6 +1649,7 @@ def _pending_import_prs(*, prefix: str, repo: str, cwd: Path) -> tuple[str, ...]
         ],
         cwd=cwd,
         capture=True,
+        env=_source_gh_env(),
     )
     parsed = _json_from_gh(result.stdout, context=f"open PR list for {repo}")
     try:

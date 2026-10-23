@@ -107,6 +107,7 @@ class SyncSettings:
       sync_user_name: Commit author name for generated sync commits.
       sync_user_email: Commit author email for generated sync commits.
       sync_token_login: GitHub login that must own the sync token.
+      sync_app_slug: Expected GitHub App slug; empty uses personal tokens.
       export_branch_prefix: Optional loop-to-repo (export) branch prefix.
       import_branch_prefix: Optional repo-to-loop (import) branch prefix.
       pr_default_title: Default public PR title when commit metadata is absent.
@@ -145,6 +146,7 @@ class SyncSettings:
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
     sync_token_login: str = ""
+    sync_app_slug: str = ""
     export_branch_prefix: str = ""
     import_branch_prefix: str = ""
     pr_default_title: str = ""
@@ -310,6 +312,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
             default=DEFAULT_SYNC_USER_EMAIL,
         ),
         sync_token_login=_optional_str(sync, "sync_token_login", default=""),
+        sync_app_slug=_optional_str(sync, "sync_app_slug", default=""),
         export_branch_prefix=_optional_str(sync, "export_branch_prefix", default=""),
         import_branch_prefix=_optional_str(sync, "import_branch_prefix", default=""),
         pr_default_title=_optional_pr_str(
@@ -541,7 +544,11 @@ def sync_toml(settings: SyncSettings) -> str:
             "SYNC_LABEL": _toml_str(settings.sync_label),
             "SYNC_USER_NAME": _toml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _toml_str(settings.sync_user_email),
-            "SYNC_TOKEN_LOGIN": _toml_str(settings.sync_token_login),
+            "SYNC_AUTH_SETTING": (
+                f"sync_app_slug = {_toml_str(settings.sync_app_slug)}\n"
+                if settings.sync_app_slug
+                else f"sync_token_login = {_toml_str(settings.sync_token_login)}\n"
+            ),
             "SOURCE_ROOT": _toml_str(settings.source_root),
             "PUBLIC_REPO": _toml_str(settings.public_repo),
             "SOURCE_REPO": _toml_str(settings.source_repo),
@@ -805,6 +812,7 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
                 else ""
             ),
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
+            **_sync_auth(settings, importing=False),
         },
     )
 
@@ -852,6 +860,7 @@ def import_workflow(settings: SyncSettings) -> str:
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
             "VALIDATION_COMMANDS": validation_commands,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
+            **_sync_auth(settings, importing=True),
         },
     )
 
@@ -1279,6 +1288,11 @@ def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
 
 def _validate_settings(settings: SyncSettings) -> None:
     """Validate sync settings before writing workflow files."""
+    if settings.sync_app_slug:
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", settings.sync_app_slug):
+            raise ConfigError("sync.sync_app_slug must be a GitHub App slug.")
+        if settings.sync_token_login:
+            raise ConfigError("Set only one of sync_app_slug and sync_token_login.")
     for name, value in (
         ("package_name", settings.package_name),
         ("sync_label", settings.sync_label),
@@ -1596,7 +1610,12 @@ def _packages_key(packages: tuple[str, ...]) -> str:
 # workflows were hand-edited for months precisely because nothing on the file said not
 # to, so the banner is emitted here rather than written into each template, where the
 # next new template would silently omit it.
-def _render_template(name: str, values: dict[str, str]) -> str:
+def _render_template(
+    name: str,
+    values: dict[str, str],
+    *,
+    include_banner: bool = True,
+) -> str:
     """Render one package-data template with explicit token replacement."""
     template = resources.files(f"{__package__}.templates").joinpath(name)
     # A test cannot change the process locale, so it cannot tell "UTF-8" or the
@@ -1610,7 +1629,7 @@ def _render_template(name: str, values: dict[str, str]) -> str:
         text = text.replace(f"@@{key}@@", value)
     if "@@" in text:
         raise AssertionError(f"Unrendered token in template {name}.")
-    return _generated_banner(name) + text
+    return (_generated_banner(name) if include_banner else "") + text
 
 
 def _generated_banner(template_name: str) -> str:
@@ -1625,3 +1644,78 @@ def _generated_banner(template_name: str) -> str:
         f"{comment} package's sync config. Hand edits are overwritten; change\n"
         f"{comment} the template, the generator, or the sync config instead.\n"
     )
+
+
+def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
+    """Render credentials and identity checks for one direction of a sync pair."""
+    if settings.sync_app_slug:
+        credential_expression = "${{ steps.sync-app-token.outputs.token }}"
+        steps = _render_template(
+            "sync-app-auth.yml.tmpl",
+            {
+                "AUTH_GUARD": (
+                    "        if: steps.settings.outputs.enabled == 'true'\n"
+                    if importing
+                    else ""
+                ),
+                "APP_OWNER": _yaml_str(
+                    (settings.source_repo if importing else settings.public_repo).split(
+                        "/",
+                        1,
+                    )[0],
+                ),
+                "APP_REPOSITORY": (
+                    "${{ env.TARGET_REPO }}"
+                    if importing
+                    else _yaml_str(settings.public_repo)
+                ),
+                "SYNC_APP_SLUG": _yaml_str(settings.sync_app_slug),
+            },
+            include_banner=False,
+        )
+    else:
+        credential_expression = (
+            "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}"
+            if importing
+            else "${{ secrets.COPYBARISTA_SYNC_TOKEN }}"
+        )
+        steps = (
+            ""
+            if importing
+            else _render_template(
+                "sync-personal-auth.yml.tmpl",
+                {},
+                include_banner=False,
+            )
+        )
+    return {
+        "SYNC_TOKEN": credential_expression,
+        "SYNC_AUTH_STEPS": steps,
+        "EXPORT_JOB_TOKEN_ENV": (
+            ""
+            if settings.sync_app_slug
+            else f"      GH_TOKEN: {credential_expression}\n"
+        ),
+        "EXPORT_STEP_TOKEN_ENV": (
+            f"          GH_TOKEN: {credential_expression}\n"
+            if settings.sync_app_slug
+            else ""
+        ),
+        "SYNC_LOGIN_ENV": (
+            ""
+            if settings.sync_app_slug
+            else "      COPYBARISTA_SYNC_TOKEN_LOGIN: "
+            f"{_yaml_str(settings.sync_token_login)}\n"
+        ),
+        "IMPORT_CREDENTIAL_PROBE": (
+            "${{ vars.SYNC_APP_ID != '' && secrets.SYNC_APP_PRIVATE_KEY != '' "
+            "&& 'configured' || '' }}"
+            if settings.sync_app_slug
+            else credential_expression
+        ),
+        "IMPORT_CREDENTIAL_ERROR": (
+            "Set SYNC_APP_ID and SYNC_APP_PRIVATE_KEY."
+            if settings.sync_app_slug
+            else "Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
+        ),
+    }

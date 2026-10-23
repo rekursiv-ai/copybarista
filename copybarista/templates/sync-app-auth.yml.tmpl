@@ -1,0 +1,23 @@
+      - name: Create sync App token
+        id: sync-app-token
+@@AUTH_GUARD@@        uses: @@USES_CREATE_GITHUB_APP_TOKEN@@
+        with:
+          app-id: ${{ vars.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: @@APP_OWNER@@
+          repositories: @@APP_REPOSITORY@@
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Verify sync App identity
+@@AUTH_GUARD@@        env:
+          EXPECTED_SYNC_APP_SLUG: @@SYNC_APP_SLUG@@
+          ACTUAL_SYNC_APP_SLUG: ${{ steps.sync-app-token.outputs.app-slug }}
+        run: |
+          # The pinned action authenticates the App and resolves its installation;
+          # its slug output identifies the App that minted this token. GET /user
+          # does not accept installation tokens.
+          if [ "$ACTUAL_SYNC_APP_SLUG" != "$EXPECTED_SYNC_APP_SLUG" ]; then
+            echo "::error::Sync token belongs to App '$ACTUAL_SYNC_APP_SLUG', expected '$EXPECTED_SYNC_APP_SLUG'."
+            exit 1
+          fi

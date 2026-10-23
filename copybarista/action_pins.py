@@ -61,6 +61,11 @@ GITHUB_ACTION_PINS: Final = {
             version="v6",
         ),
         ActionPin(
+            action="actions/create-github-app-token",
+            sha="64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
+            version="v3.3.0",
+        ),
+        ActionPin(
             action="actions/deploy-pages",
             sha="cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
             version="v5",

@@ -60,11 +60,11 @@ jobs:
       - id: settings
         name: Check settings
         env:
-          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          IMPORT_TOKEN: @@IMPORT_CREDENTIAL_PROBE@@
         run: |
           missing=false
           if [ -z "$IMPORT_TOKEN" ]; then
-            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
+            echo "::error::@@IMPORT_CREDENTIAL_ERROR@@"
             missing=true
           fi
           if [ -z "$TARGET_REPO" ]; then
@@ -89,7 +89,7 @@ jobs:
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
 
-      # The target checkout comes first because it carries the import ledger the
+@@SYNC_AUTH_STEPS@@      # The target checkout comes first because it carries the import ledger the
       # merge baseline is read from, and because the trusted helper is installed
       # out of it before any public tree exists on disk. It keeps
       # persist-credentials: false, so the import token is used for this fetch
@@ -99,7 +99,7 @@ jobs:
         if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
-          token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          token: @@SYNC_TOKEN@@
           ref: main
           path: target
           persist-credentials: false
@@ -236,7 +236,7 @@ jobs:
       - name: Open or update target import PR
         if: steps.refs.outputs.import == 'true' && github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          GH_TOKEN: @@SYNC_TOKEN@@
         run: |
           public_base_ref="${{ steps.refs.outputs.base_ref }}"
           public_head_ref="${{ steps.refs.outputs.head_ref }}"
