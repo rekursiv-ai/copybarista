@@ -73,11 +73,22 @@ Package identity is data in `copybarista.sync.toml`; workflow names and the
 import workflow's file name identify the package, while scripts and environment
 names stay the same across packages. This avoids `sync_<package>.py` wrappers
 and package-specific environment names.
-Generated workflows use shared
-`COPYBARISTA_` names internally and fill them from `copybarista.sync.toml`:
+Set `sync_app_slug` in the `[sync]` table to use a GitHub App. Regenerate both
+workflow directions after editing it. App mode requires `SYNC_APP_ID` (Actions
+variable) and `SYNC_APP_PRIVATE_KEY` (Actions secret) in both repositories, which
+may be organization credentials restricted to selected repositories.
 
-- `COPYBARISTA_SYNC_TOKEN` -- source workflow token for opening public PRs.
-- `COPYBARISTA_IMPORT_TOKEN` -- public workflow token for opening source PRs.
+The generated workflows mint a token scoped to the destination repository and
+verify the expected App slug against the pinned token action's output. They do
+not call `GET /user`, which installation tokens cannot use. Grant the App
+Contents, Pull requests, and Workflows read/write; install it on both sides.
+Source-repository reads during export use the source's read-only Actions token.
+
+Generated workflows use shared `COPYBARISTA_` names internally and fill them
+from `copybarista.sync.toml`:
+
+- `COPYBARISTA_SYNC_TOKEN` -- source workflow token in personal-token mode only.
+- `COPYBARISTA_IMPORT_TOKEN` -- public workflow token in personal-token mode only.
 - `COPYBARISTA_SOURCE_REPO`, `COPYBARISTA_TARGET_PROJECT_PATH`, and
   `COPYBARISTA_TOOL_PROJECT_PATH` -- public repository variables that point the
   import workflow at the source repository and Copybarista checkout path.
@@ -91,10 +102,9 @@ copybarista write-export-workflow copybarista.sync.toml \
   --output .github/workflows/loop-to-configgle.yml
 ```
 
-Review the generated workflow before committing it; it is intentionally plain
-YAML so teams can adjust triggers, required checks, or token names if their
-repository policy differs. Run `init-sync --overwrite` only when intentionally
-regenerating existing sync files.
+Review the generated workflow before committing it. Change templates or sync
+metadata, then regenerate; direct edits are overwritten. Run
+`init-sync --overwrite` only when intentionally regenerating existing sync files.
 
 The generated package validation workflow runs package-owned commands from
 `copybarista.sync.toml`. Defaults install all dependency groups, run the
@@ -539,7 +549,11 @@ one package from blocking an unrelated package.
 
 ## Required Secrets And Variables
 
-Set these in the source repository:
+For App mode, set `SYNC_APP_ID` and `SYNC_APP_PRIVATE_KEY` in both repositories
+as described above. The following personal-token credentials are needed only
+when `sync_app_slug` is empty.
+
+Set this in the source repository:
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
