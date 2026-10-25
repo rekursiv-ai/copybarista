@@ -368,17 +368,37 @@ def _content(text: str) -> dict[str, object]:
     )
 
 
-# Spacing within a line never fails the check, so it never names the line either; the
-# indent opening a line does.
+# Spacing within a line never fails the check, so it names a line only when nothing
+# else does: spaces inside a string, or a blank line closing one file. The indent
+# opening a line always does. The two texts differ, so some line does, if only in its
+# line break.
 def _first_difference(rendered: str, public: str) -> str:
     """Return ``line N: public '...', render '...'`` for the first line that differs."""
-    pairs = itertools.zip_longest(public.splitlines(), rendered.splitlines())
-    number, (want, got) = next(
-        (n, pair)
-        for n, pair in enumerate(pairs, start=1)
-        if _spelled(pair[0] or "") != _spelled(pair[1] or "")
+    pairs = list(
+        enumerate(
+            itertools.zip_longest(
+                public.splitlines(keepends=True),
+                rendered.splitlines(keepends=True),
+            ),
+            start=1,
+        ),
     )
-    return f"line {number}: public {want or ''!r}, render {got or ''!r}"
+    number, (want, got) = next(
+        itertools.chain(
+            (
+                (n, pair)
+                for n, pair in pairs
+                if _spelled(pair[0] or "") != _spelled(pair[1] or "")
+            ),
+            ((n, pair) for n, pair in pairs if pair[0] != pair[1]),
+        ),
+    )
+    return f"line {number}: public {_shown(want)}, render {_shown(got)}"
+
+
+def _shown(line: str | None) -> str:
+    """Return ``line`` quoted without its line break, or ``end of file`` past the end."""
+    return "end of file" if line is None else repr(line.rstrip("\r\n"))
 
 
 def _spelled(line: str) -> str:
