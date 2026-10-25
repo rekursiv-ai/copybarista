@@ -1018,7 +1018,7 @@ def test_fold_rejects_a_delta_whose_render_loses_a_value(
         return exact(base, delta).replace("b = 2\n", "")
 
     monkeypatch.setattr(pyproject, "render", lossy)  # Fold's own render call.
-    with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render ''"):
+    with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render end of file"):
         source.fold("[t]\na = 1\nb = 2\n")
 
 
@@ -1158,6 +1158,33 @@ def test_fold_names_a_line_that_differs_only_in_indentation(
     monkeypatch.setattr(pyproject, "render", indented)
     with pytest.raises(DeltaError, match=r"line 3: public 'b = 2', render '  b = 2'"):
         source.fold("[t]\na = 1\nb = 2\n")
+
+
+def test_fold_names_a_blank_line_closing_the_public_file(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[t]\na = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    with pytest.raises(DeltaError, match=r"line 3: public '', render end of file$"):
+        source.fold("[t]\na = 2\n\n")
+
+
+def test_fold_names_a_line_that_differs_only_in_a_string_spaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Spacing that is not spelling, inside a string, is named when nothing else is."""
+    (tmp_path / "pyproject.toml").write_text("[t]\na = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    exact = render
+
+    def squeezed(base: str, delta: str) -> str:
+        return exact(base, delta).replace('"x y"', '"xy"')
+
+    monkeypatch.setattr(pyproject, "render", squeezed)  # Fold's own render call.
+    with pytest.raises(
+        DeltaError,
+        match=r"""line 2: public 'a = "x y"', render 'a = "xy"'""",
+    ):
+        source.fold('[t]\na = "x y"\n')
 
 
 @pytest.mark.parametrize(
