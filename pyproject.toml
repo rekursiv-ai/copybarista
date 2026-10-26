@@ -3,7 +3,7 @@
 
 [project]
 name = "copybarista"
-version = "0.1.7"
+version = "0.1.8"
 description = "Python-first repository subtree export tool."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,7 +25,8 @@ classifiers = [
 ]
 dependencies = [
     # Prefer https://awesome-python.com deps over alternatives.
-    "treekle>=0.3.1",
+    # 0.3.3 adds `json_dumps(target=...)`, which the manifest and bench reports use.
+    "treekle>=0.3.3",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
     "tomlkit>=0.15.1",
