@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import hashlib
-import json
+
+from treekle import json_dumps
 
 
 if TYPE_CHECKING:
@@ -80,9 +81,10 @@ class ExportManifest:
           result: The str.
 
         """
-        data = asdict(self)
-        del data["elapsed_sec"]
-        return json.dumps(data, indent=2, sort_keys=True) + "\n"
+        stable = _StableManifest(files=self.files, transforms=self.transforms)
+        return (
+            json_dumps(stable, target=_StableManifest, indent=2, sort_keys=True) + "\n"
+        )
 
 
 def file_entry(source: str, destination: str, path: Path) -> ManifestEntry:
@@ -114,3 +116,12 @@ def _manifest_bytes(path: Path) -> bytes:
     if path.is_symlink():
         return path.readlink().as_posix().encode()
     return path.read_bytes()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _StableManifest:
+    """What ``ExportManifest.to_json`` writes: all of it but the elapsed time."""
+
+    files: tuple[ManifestEntry, ...]
+
+    transforms: tuple[TransformReport, ...]

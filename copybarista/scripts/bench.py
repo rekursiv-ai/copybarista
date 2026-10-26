@@ -9,18 +9,19 @@ Benchmark Copybarista folder export.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Protocol, cast
 
 import argparse
-import json
 import platform as platform_lib
 import shutil
 import sys
 import tempfile
 import time
+
+from treekle import json_dumps
 
 from copybarista.config import load_config
 from copybarista.destinations import (
@@ -81,7 +82,7 @@ class BenchmarkReport:
           result: The str.
 
         """
-        return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
+        return json_dumps(self, target=type(self), indent=2, sort_keys=True) + "\n"
 
 
 def run_copybarista_benchmark(

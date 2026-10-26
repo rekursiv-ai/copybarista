@@ -3,7 +3,7 @@
 All notable copybarista changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.1.8 - 2026-10-26
 
 ### Added
 
@@ -12,6 +12,11 @@ All notable copybarista changes are documented here. This project follows
   through npm trusted publishing once their PyPI releases are visible.
   `write-public-workflows` writes it and `check-sync-config` requires it to match
   the generator. A package that sets neither renders the workflows it always did.
+
+### Changed
+
+- Requires treekle 0.3.3. The export manifest and benchmark reports are written
+  with `json_dumps(target=...)`.
 
 ### Removed
 
