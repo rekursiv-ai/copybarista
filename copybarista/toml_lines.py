@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import functools
 import itertools
 import tomllib
 
@@ -89,6 +90,9 @@ class Document:
         return f"{''.join(self.preamble)}{body}{''.join(self.footer)}"
 
 
+# One fold parses the same base and delta texts many times over, and a Document is
+# immutable, so a text is parsed once. An error is not cached and raises again.
+@functools.lru_cache(maxsize=256)
 def parse(text: str) -> Document:
     """Split ``text`` into the lines each key and table owns.
 
