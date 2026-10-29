@@ -3,6 +3,17 @@
 All notable copybarista changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- `init-sync` writes a `.python-version` of 3.14, and `check-sync-config` requires
+  one, unignored by `.gitignore`. Without it, uv in a public checkout picks the
+  newest Python installed, which can be one a dependency has no wheels for yet.
+  `requires-python` is unchanged, so 3.12 still installs.
+- Every generated workflow passes its validation Python to setup-uv, which
+  outranks the checkout's `.python-version`; the 3.12 jobs ran 3.14 otherwise.
+
 ## 0.1.8 - 2026-10-26
 
 ### Added
