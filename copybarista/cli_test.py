@@ -259,8 +259,6 @@ _INIT_SYNC_REQUIRED = (
     "so",
     "--copybarista-project-path",
     "cp",
-    "--smoke-import",
-    "si",
 )
 
 
@@ -315,12 +313,10 @@ _INIT_SYNC_REQUIRED = (
                 "public_repo": "pr",
                 "source_repo": "so",
                 "copybarista_project_path": "cp",
-                "smoke_import": "si",
                 "release_check_script": "",
                 "type_check_target": [],
                 "forbidden_pr_text": [],
                 "validation_python_version": [],
-                "validation_command": [],
                 "refresh_public_lockfile": False,
                 "sync_user_name": DEFAULT_SYNC_USER_NAME,
                 "sync_user_email": DEFAULT_SYNC_USER_EMAIL,
@@ -353,7 +349,6 @@ def test_cli_sets_every_flag_by_its_documented_name():
                 *("--forbidden-pr-text", "c", "--forbidden-pr-text", "d"),
                 *("--validation-python-version", "3.12"),
                 *("--validation-python-version", "3.13"),
-                *("--validation-command", "e", "--validation-command", "f"),
             ],
         ),
     )
@@ -361,7 +356,6 @@ def test_cli_sets_every_flag_by_its_documented_name():
     assert parsed["type_check_target"] == ["a", "b"]
     assert parsed["forbidden_pr_text"] == ["c", "d"]
     assert parsed["validation_python_version"] == ["3.12", "3.13"]
-    assert parsed["validation_command"] == ["e", "f"]
     assert vars(
         _parser().parse_args(
             [
@@ -465,8 +459,6 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "configgle",
             "--type-check-target",
             "configgle",
             "--type-check-target",
@@ -481,7 +473,7 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
     assert not (tmp_path / "private").exists()
 
 
-def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
+def test_cli_init_sync_writes_the_python_matrix(tmp_path: Path):
     main(
         [
             "init-sync",
@@ -496,8 +488,6 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "configgle",
             # The published floor must always be present; a package may add
             # NEWER versions on top of it, never replace it. Validating on
             # 3.13 alone would leave the >=3.12 floor every package declares
@@ -506,10 +496,6 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
             "3.12",
             "--validation-python-version",
             "3.13",
-            "--validation-command",
-            "uv sync --all-groups",
-            "--validation-command",
-            "uv run pytest",
         ],
     )
 
@@ -517,8 +503,6 @@ def test_cli_init_sync_writes_custom_validation_commands(tmp_path: Path):
         encoding="utf-8",
     )
     assert 'python-version: ["3.12", "3.13"]' in workflow
-    assert "uv sync --all-groups" in workflow
-    assert "uv run pytest" in workflow
 
 
 def test_cli_init_sync_can_refresh_public_lockfile(
@@ -539,8 +523,6 @@ def test_cli_init_sync_can_refresh_public_lockfile(
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "sagent",
             "--refresh-public-lockfile",
         ],
     )
@@ -572,8 +554,6 @@ def test_cli_init_sync_can_add_release_check_script(
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "copybarista",
             "--release-check-script",
             "scripts/check_release_tree.py",
         ],
@@ -603,8 +583,6 @@ def test_cli_check_sync_config_accepts_generated_scaffold(tmp_path: Path):
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "configgle",
         ],
     )
 
@@ -629,8 +607,6 @@ def test_cli_write_export_workflow_uses_sync_metadata(
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "configgle",
         ],
     )
 
@@ -642,14 +618,14 @@ def test_cli_write_export_workflow_uses_sync_metadata(
     assert "CONFIGGLE" not in output
 
 
-def test_cli_write_public_workflows_rewrites_both_generated_files(
+def test_cli_write_public_workflows_rewrites_every_generated_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """Both ``.export/`` workflows embed ``validation_commands``.
+    """Both workflows render from the sync config.
 
-    Rewriting only one leaves the other asserting a stale command list, so
-    the subcommand must cover the pair.
+    Rewriting only one leaves the other stale against it, so the subcommand
+    must cover the pair.
     """
     main(
         [
@@ -665,8 +641,6 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--smoke-import",
-            "configgle",
         ],
     )
     # A distinctive sentinel, not a plain word: the generated workflows carry
@@ -674,23 +648,21 @@ def test_cli_write_public_workflows_rewrites_both_generated_files(
     # appear there -- the check is "the placeholder was overwritten", not "this
     # English word is absent".
     placeholder = "PLACEHOLDER_NOT_YET_REWRITTEN\n"
-    workflows = tmp_path / ".export/.github/workflows"
-    workflows.mkdir(parents=True, exist_ok=True)
-    for name in ("package-validation.yml", "configgle-to-loop.yml"):
-        (workflows / name).write_text(placeholder, encoding="utf-8")
+    public = tmp_path / ".export"
+    generated = (
+        public / ".github/workflows/package-validation.yml",
+        public / ".github/workflows/configgle-to-loop.yml",
+    )
+    for path in generated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(placeholder, encoding="utf-8")
 
     capsys.readouterr()
     main(["write-public-workflows", str(tmp_path / "copybarista.sync.toml")])
 
-    assert placeholder.strip() not in (workflows / "package-validation.yml").read_text(
-        encoding="utf-8",
-    )
-    assert placeholder.strip() not in (workflows / "configgle-to-loop.yml").read_text(
-        encoding="utf-8",
-    )
-    assert "--hook-stage pre-push" in (workflows / "package-validation.yml").read_text(
-        encoding="utf-8",
-    )
+    for path in generated:
+        assert placeholder.strip() not in path.read_text(encoding="utf-8"), path
+    assert "--hook-stage pre-push" in generated[0].read_text(encoding="utf-8")
 
 
 def test_cli_write_public_workflows_adds_the_npm_workflow_only_when_enabled(
@@ -713,8 +685,6 @@ def test_cli_write_public_workflows_adds_the_npm_workflow_only_when_enabled(
                 "example/source",
                 "--copybarista-project-path",
                 "tools/copybarista",
-                "--smoke-import",
-                "configgle",
             ],
         )
         (root / ".export/.github/workflows").mkdir(parents=True)

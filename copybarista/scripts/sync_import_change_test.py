@@ -591,19 +591,12 @@ def test_run_import_sync_imports_then_validates(
         *,
         request: ImportRequest,
         project: Path,
-        validation_commands: tuple[str, ...],
         runner_temp: Path,
         requirements: Path,
     ) -> None:
         del request  # Unused here; present to match the patched signature.
         calls.append(
-            [
-                "validate",
-                str(project),
-                str(runner_temp),
-                str(requirements),
-                *validation_commands,
-            ],
+            ["validate", str(project), str(runner_temp), str(requirements)],
         )
 
     monkeypatch.setattr(sync_import_change, "_run", fake_run)
@@ -657,7 +650,6 @@ def test_run_import_sync_imports_then_validates(
         str(target / "package"),
         str(tmp_path),
         reqs,
-        "uv run pytest",
     ]
 
 
@@ -976,18 +968,80 @@ def test_validate_target_runs_checks_against_exported_tree(
     monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
 
     _validate_target(
-        request=_import_request(target_dir=Path("/repo/target")),
+        request=replace(
+            _import_request(target_dir=Path("/repo/target")),
+            validation_commands=("uv sync", "uv run pytest"),
+        ),
         project=Path("/repo/pkg"),
-        validation_commands=("uv sync --all-groups", "uv run pytest"),
         runner_temp=Path("/sentinel/runner"),
         requirements=Path("/sentinel/copybarista-requirements.txt"),
     )
 
-    # Each validation command runs via bash -c against the exported public tree.
+    # One script, run as a GitHub ``run:`` step runs it.
     assert calls == [
-        (["bash", "-c", "uv sync --all-groups"], tree),
-        (["bash", "-c", "uv run pytest"], tree),
+        (
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-eo",
+                "pipefail",
+                "-c",
+                "uv sync\nuv run pytest",
+            ],
+            tree,
+        ),
     ]
+
+
+@pytest.mark.cli_bash
+@pytest.mark.parametrize(
+    ("commands", "ok"),
+    [
+        (("cd sub", "test -f marker"), True),
+        (("false", "true"), False),
+        (("false | true", "true"), False),
+    ],
+    ids=["cd-carries", "stops-at-failure", "pipefail"],
+)
+def test_validation_runs_as_one_github_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    commands: tuple[str, ...],
+    ok: bool,
+) -> None:
+    """A bare ``cd`` passed the one-shell-per-command gate and failed public CI."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "marker").touch()
+
+    def fake_export(
+        *,
+        request: ImportRequest,
+        project: Path,
+        runner_temp: Path,
+        requirements: Path,
+    ) -> Path:
+        del request, project, runner_temp, requirements
+        return tmp_path
+
+    monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
+
+    def validate() -> None:
+        _validate_target(
+            request=replace(
+                _import_request(target_dir=tmp_path),
+                validation_commands=commands,
+            ),
+            project=tmp_path,
+            runner_temp=tmp_path,
+            requirements=tmp_path / "requirements.txt",
+        )
+
+    if ok:
+        validate()
+    else:
+        with pytest.raises(SystemExit):
+            validate()
 
 
 def test_export_public_tree_runs_copybarista_export(
@@ -1672,8 +1726,8 @@ def test_export_public_tree_initializes_git_repo(
 ) -> None:
     """The exported tree must be a git repo before validation runs in it.
 
-    ``sync.validation_commands`` is shared with the public repo's
-    ``package-validation.yml`` and the export gate, and every package's list
+    The validation script is shared with the public repo's
+    ``package-validation.yml`` and the export gate, and every package's script
     runs ``pre-commit run --all-files``. pre-commit resolves ``--all-files``
     through git and aborts with "git failed. Is it installed, and are you in a
     Git repository directory?" outside a repo. The other two consumers run in a

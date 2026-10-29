@@ -45,7 +45,6 @@ from copybarista.scripts.sync_export_pr import (
     _source_rev_digest,
     _state_from_pr_body,
     _upstream_export_workflows,
-    _validate_public,
     export_branch_name,
     export_pr_text,
     replay_pr_metadata,
@@ -98,8 +97,6 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         runner_temp=tmp_path,
         release_check_script=None,
         type_check_targets=(".",),
-        smoke_import="",
-        validation_commands=(),
         dry_run=False,
     )
 
@@ -138,15 +135,12 @@ def test_main_accepts_generic_project_validation_args(
             "configgle",
             "--type-check-target",
             "tests",
-            "--smoke-import",
-            "configgle",
         ],
     )
 
     assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].release_check_script == Path("scripts/check_release_tree.py")
     assert captured[0].type_check_targets == ("configgle", "tests")
-    assert captured[0].smoke_import == "configgle"
 
 
 def test_main_accepts_dry_run(
@@ -197,7 +191,6 @@ def test_main_derives_request_from_project_positional(
     assert request.project_path == Path("packages/sagent")
     assert request.public_dir == source_dir.parent / "sagent"
     assert request.target_repo == "rekursiv-ai/sagent"
-    assert request.smoke_import == "sagent"
     assert request.type_check_targets == (".",)
     assert request.forbidden_pr_text == ("src",)
     assert request.refresh_public_lockfile
@@ -223,10 +216,10 @@ def test_main_explicit_flag_overrides_sync_setting(
     monkeypatch.setattr(sync_export_pr, "_git_toplevel", fake_git_toplevel)
 
     sync_export_pr.run(
-        [str(project_dir), "--dry-run", "--smoke-import", "alt_package"],
+        [str(project_dir), "--dry-run", "--sync-label", "Alt"],
     )
 
-    assert captured[0].smoke_import == "alt_package"
+    assert captured[0].sync_label == "Alt"
 
 
 def _project_with_sync_settings(tmp_path: Path) -> tuple[Path, Path]:
@@ -245,7 +238,6 @@ source_root = "packages/sagent"
 public_repo = "rekursiv-ai/sagent"
 source_repo = "rekursiv-ai/src"
 copybarista_project_path = "packages/copybarista"
-smoke_import = "sagent"
 type_check_targets = ["."]
 forbidden_pr_text = ["src"]
 refresh_public_lockfile = true
@@ -2337,13 +2329,6 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
         (export_dir / "pkg").mkdir()
         (export_dir / "pkg/module.py").write_text("source\n", encoding="utf-8")
 
-    def fake_validate_public(
-        *,
-        public_dir: Path,
-        validation_commands: tuple[str, ...],
-    ) -> None:
-        del public_dir, validation_commands
-
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
@@ -2363,7 +2348,6 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
         sync_export_pr,
         "_open_or_update_export_pr",
@@ -2418,13 +2402,6 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
     ) -> None:
         del project, source_dir, export_dir, manifest
 
-    def fake_validate_public(
-        *,
-        public_dir: Path,
-        validation_commands: tuple[str, ...],
-    ) -> None:
-        del public_dir, validation_commands
-
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
@@ -2447,7 +2424,6 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
         sync_export_pr,
         "_open_or_update_export_pr",
@@ -2567,14 +2543,6 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         (export_dir / "pkg").mkdir()
         (export_dir / "pkg/module.py").write_text("source\n", encoding="utf-8")
 
-    def fake_validate_public(
-        *,
-        public_dir: Path,
-        validation_commands: tuple[str, ...],
-    ) -> None:
-        del validation_commands
-        (public_dir / "uv.lock").write_text("validation lock\n", encoding="utf-8")
-
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
@@ -2595,7 +2563,6 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
         sync_export_pr,
         "_open_or_update_export_pr",
@@ -2693,15 +2660,6 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         calls.append(("export", export_dir))
         (export_dir / "exported.txt").write_text("exported\n", encoding="utf-8")
 
-    def fake_validate_public(
-        *,
-        public_dir: Path,
-        validation_commands: tuple[str, ...],
-    ) -> None:
-        del validation_commands
-        calls.append(("validate", public_dir))
-        assert (public_dir / "exported.txt").read_text(encoding="utf-8") == "exported\n"
-
     def fail_open_or_update_export_pr(
         *,
         request: ExportRequest,
@@ -2725,7 +2683,6 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         "_export_public_tree",
         fake_export_public_tree,
     )
-    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
         sync_export_pr,
         "_open_or_update_export_pr",
@@ -2748,8 +2705,7 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
         ("clone", public_dir),
         ("resolve", dry_public_dir),
     ]
-    assert calls[-1][0] == "validate"
-    assert calls[-1][1] != public_dir
+    assert calls[-1][0] == "export"
     assert not dry_public_dir.exists()
 
 
@@ -2849,7 +2805,6 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
                 public_repo=f"rekursiv-ai/{repo}",
                 source_repo="example/source",
                 copybarista_project_path="src/tool",
-                smoke_import=name,
                 type_check_targets=(".",),
                 forbidden_pr_text=("private",),
             ),
@@ -3013,15 +2968,6 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         calls.append("lock")
         (public_dir / "uv.lock").write_text("public lock\n", encoding="utf-8")
 
-    def fake_validate_public(
-        *,
-        public_dir: Path,
-        validation_commands: tuple[str, ...],
-    ) -> None:
-        del validation_commands
-        assert (public_dir / "uv.lock").read_text(encoding="utf-8") == "public lock\n"
-        calls.append("validate")
-
     def fake_open_or_update_export_pr(
         *,
         request: ExportRequest,
@@ -3049,7 +2995,6 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         "_refresh_public_lockfile",
         fake_refresh_public_lockfile,
     )
-    monkeypatch.setattr(sync_export_pr, "_validate_public", fake_validate_public)
     monkeypatch.setattr(
         sync_export_pr,
         "_open_or_update_export_pr",
@@ -3066,7 +3011,8 @@ def test_run_export_sync_refreshes_public_lockfile_before_validation(
         ),
     )
 
-    assert calls == ["lock", "validate", "open"]
+    # Public CI validates the PR; the export runs no package checks of its own.
+    assert calls == ["lock", "open"]
 
 
 def test_postleakcheck_validation_runs_ty_check(
@@ -3124,115 +3070,6 @@ def test_preleakcheck_validation_runs_lint_not_types(
     assert "ty" not in verbs
     assert "pytest" not in verbs
     assert not any(argv[0] == "basedpyright" for argv in calls)
-
-
-@pytest.mark.cli_git
-@pytest.mark.parametrize("empty", [False, True])
-def test_validation_builds_can_read_a_commit_of_the_exported_tree(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    empty: bool,
-) -> None:
-    """Build provenance can read HEAD, including a package with an empty tree."""
-    config = tmp_path / "gitconfig"
-    config.touch()
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    public = tmp_path / "public"
-    public.mkdir()
-    if not empty:
-        (public / "package.py").write_text("value = 1\n", encoding="utf-8")
-
-    _validate_public(
-        public_dir=public,
-        validation_commands=(
-            "git cat-file -e 'HEAD^{commit}'",
-            "git ls-tree -r --name-only HEAD > tracked.txt",
-        ),
-    )
-
-    assert (public / "tracked.txt").read_text(encoding="utf-8") == (
-        "" if empty else "package.py\n"
-    )
-
-
-def test_validate_public_runs_each_validation_command_via_bash(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[list[str], Path | None]] = []
-    public_dir = Path("/public")
-
-    def fake_run(
-        argv: list[str],
-        *,
-        cwd: Path | None = None,
-        **_: object,
-    ) -> subprocess.CompletedProcess[str]:
-        calls.append((argv, cwd))
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-
-    commands = ("uv sync --all-groups", "uv run pytest")
-    _validate_public(public_dir=public_dir, validation_commands=commands)
-
-    # The validation tree is copied WITHOUT .git, but the command set now runs
-    # pre-commit, which refuses to work outside a repository -- and only sees
-    # tracked files, so the `git add` matters as much as the `git init`. The
-    # commit gives HEAD to a build that stamps its commit.
-    assert calls == [
-        (["git", "init", "--quiet", "--initial-branch=main"], public_dir),
-        (["git", "add", "--all"], public_dir),
-        (
-            [
-                "git",
-                "-c",
-                "user.name=copybarista",
-                "-c",
-                "user.email=copybarista@example.com",
-                "commit",
-                "--quiet",
-                "--allow-empty",
-                "-m",
-                "Copybarista validation snapshot",
-            ],
-            public_dir,
-        ),
-        (["bash", "-c", "uv sync --all-groups"], public_dir),
-        (["bash", "-c", "uv run pytest"], public_dir),
-    ]
-
-
-def test_validate_public_runs_nothing_without_commands(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
-
-    _validate_public(public_dir=Path("/public"), validation_commands=())
-
-    # The tree is still made a repository: an empty command set is a config
-    # that validates nothing, not a signal to skip setup.
-    assert calls == [
-        ["git", "init", "--quiet", "--initial-branch=main"],
-        ["git", "add", "--all"],
-        [
-            "git",
-            "-c",
-            "user.name=copybarista",
-            "-c",
-            "user.email=copybarista@example.com",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "Copybarista validation snapshot",
-        ],
-    ]
 
 
 def test_pending_import_branches_lists_open_import_prs(
