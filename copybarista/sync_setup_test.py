@@ -643,16 +643,58 @@ def test_the_export_leaves_validation_to_public_ci():
     assert "--validation-command" not in export_workflow(_settings(), inputs=())
 
 
-def test_ci_commands_run_the_package_gates_once():
-    """The pre-push stage supersedes the per-file ty, pyrefly and pytest hooks."""
-    assert CI_COMMANDS == (
-        "uv sync --frozen --all-groups",
-        (
-            "SKIP=superseded-at-pre-push uv run pre-commit run --all-files "
-            "--hook-stage pre-commit"
-        ),
-        "uv run pre-commit run --all-files --hook-stage pre-push",
+def test_every_hook_ci_skips_runs_at_pre_push():
+    """A hook skipped at pre-commit runs in its stronger pre-push form instead.
+
+    ``CI_COMMANDS`` skips the ``superseded-at-pre-push`` alias at pre-commit and
+    then runs the pre-push stage, so a hook given that alias with no pre-push
+    counterpart would run nowhere in public CI.
+    """
+    # The nearest one up: the monorepo nests this package a level deeper than
+    # the public repository does.
+    path = next(
+        directory / ".pre-commit-config.yaml"
+        for directory in _CWD.parents
+        if (directory / ".pre-commit-config.yaml").is_file()
     )
+    config = from_plain(
+        yaml.safe_load(path.read_text(encoding="utf-8")),
+        dict[str, object],
+    )
+    hooks = [
+        from_plain(hook, dict[str, object])
+        for repo in from_plain(config["repos"], list[dict[str, object]])
+        for hook in from_plain(repo.get("hooks", []), list[object])
+    ]
+    skipped = [
+        hook["id"] for hook in hooks if hook.get("alias") == "superseded-at-pre-push"
+    ]
+    pre_push = {
+        hook["id"]
+        for hook in hooks
+        if "pre-push" in from_plain(hook.get("stages", []), list[str])
+    }
+
+    assert "SKIP=superseded-at-pre-push" in CI_COMMANDS[1]
+    assert "--hook-stage pre-push" in CI_COMMANDS[2]
+    assert skipped
+    assert [hook for hook in skipped if f"{hook}-global" not in pre_push] == []
+
+
+def test_the_export_job_installs_no_system_packages():
+    """The export runs no package checks, so nothing there needs them.
+
+    Rendered anyway, the step ran ``bash install-libjpeg-turbo.sh`` from the
+    job's root, where the script is not, and failed every priml export.
+    """
+    workflow = export_workflow(
+        _settings(system_packages=("ripgrep", "libturbojpeg")),
+        inputs=(),
+    )
+
+    names = [step.get("name") for step in _job_steps(workflow, job="export-pr")]
+    assert "Install system packages" not in names
+    assert "install-libjpeg-turbo" not in workflow
 
 
 def test_libturbojpeg_installs_with_the_shipped_script():
@@ -923,8 +965,8 @@ def _export_workflow(settings: SyncSettings) -> str:
 
 @pytest.mark.parametrize(
     "render",
-    [package_validation_workflow, import_workflow, _export_workflow],
-    ids=["package-validation", "import", "export"],
+    [package_validation_workflow, import_workflow],
+    ids=["package-validation", "import"],
 )
 def test_apt_is_bounded_and_retried_in_every_workflow(
     render: Callable[[SyncSettings], str],
@@ -940,8 +982,8 @@ def test_apt_is_bounded_and_retried_in_every_workflow(
     Both parts are load-bearing. The timeout converts a hang into a fast
     failure; the retry is what lets a transient stall still succeed, since apt
     had already fallen back from the Azure mirror to archive.ubuntu.com in that
-    same run. All three workflows render from one helper, so all three are
-    checked -- the export is the one that actually failed.
+    same run. Both workflows that install packages render from one helper, so
+    both are checked.
     """
     workflow = render(_settings(system_packages=("ripgrep",)))
 
@@ -955,14 +997,13 @@ def test_apt_is_bounded_and_retried_in_every_workflow(
     ("render", "job", "guard"),
     [
         (package_validation_workflow, "validate", {}),
-        (_export_workflow, "export-pr", {}),
         (
             import_workflow,
             "import-change",
             {"if": "steps.refs.outputs.import == 'true'"},
         ),
     ],
-    ids=["package-validation", "export", "import"],
+    ids=["package-validation", "import"],
 )
 def test_apt_steps_cache_debs_and_serve_postgresql_from_pgdg(
     render: Callable[[SyncSettings], str],

@@ -3,7 +3,7 @@
 # fmt: off
 '''' 2>/dev/null #
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
-Fail when a public export PR has stayed open past a time limit.
+Fail when a public export PR stays open past a time limit after its last push.
 
 An export opens or updates its PR on the public repository, enables
 auto-merge, and exits green whether or not the PR ever merges. A PR whose
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol, TypedDict, cast
 
 import argparse
 import json
@@ -52,9 +52,7 @@ def main() -> int:
             "--state",
             "open",
             "--json",
-            "url,createdAt",
-            "--jq",
-            "map({url, created_at: .createdAt})",
+            "url,createdAt,commits",
         ],
     )
     stale = stale_export_prs(
@@ -64,8 +62,9 @@ def main() -> int:
     )
     for pr in stale:
         print(
-            f"::error::{pr.url} has been open since {pr.created_at}, over "
-            f"{flags.max_age_hours:g}h; its checks are likely failing.",
+            f"::error::{pr.url} has had no push since {pr.pushed_at}, over "
+            f"{flags.max_age_hours:g}h ago, and has not merged; its checks are "
+            "likely failing.",
         )
     return 1 if stale else 0
 
@@ -76,12 +75,12 @@ class ExportPr:
 
     Attributes:
       url: The PR's web address.
-      created_at: When the PR opened, in ISO 8601.
+      pushed_at: When the export last pushed to it, in ISO 8601.
 
     """
 
     url: str
-    created_at: str
+    pushed_at: str
 
 
 def stale_export_prs(
@@ -90,18 +89,18 @@ def stale_export_prs(
     now: datetime,
     max_age: timedelta,
 ) -> list[ExportPr]:
-    """Return the PRs open longer than ``max_age`` at ``now``.
+    """Return the PRs left unmerged longer than ``max_age`` after their last push.
 
     Args:
       prs: Open export PRs.
       now: The current time, timezone-aware.
-      max_age: How long a PR may stay open.
+      max_age: How long a PR may stay open after a push.
 
     Returns:
       stale: The PRs past ``max_age``, in input order.
 
     """
-    return [pr for pr in prs if now - datetime.fromisoformat(pr.created_at) > max_age]
+    return [pr for pr in prs if now - datetime.fromisoformat(pr.pushed_at) > max_age]
 
 
 class _Flags(Protocol):
@@ -121,16 +120,39 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-age-hours",
         type=float,
         default=2.0,
-        help="Hours an export PR may stay open (default: %(default)s).",
+        help="Hours an export PR may stay open after a push (default: %(default)s).",
     )
 
 
 # Stdlib ``json``, not the house JSON reader: the workflow runs this file from a
 # sparse checkout of the scripts directory alone, with no package to import.
+#
+# The export reuses one PR per branch, so a PR's age is from its newest commit: from
+# ``createdAt``, a PR the export had just updated read as a day old.
 def _export_prs(listed: str) -> list[ExportPr]:
-    """Read ``gh pr list`` output, renamed by its ``--jq``, into ``ExportPr``s."""
-    rows = cast(list[dict[str, str]], json.loads(listed))
-    return [ExportPr(url=row["url"], created_at=row["created_at"]) for row in rows]
+    """Read ``gh pr list --json url,createdAt,commits`` output into ``ExportPr``s."""
+    rows = cast(list[_ListedPr], json.loads(listed))
+    return [
+        ExportPr(
+            url=row["url"],
+            pushed_at=max(
+                (commit["committedDate"] for commit in row["commits"]),
+                key=datetime.fromisoformat,
+                default=row["createdAt"],
+            ),
+        )
+        for row in rows
+    ]
+
+
+class _Commit(TypedDict):
+    committedDate: str
+
+
+class _ListedPr(TypedDict):
+    url: str
+    createdAt: str
+    commits: list[_Commit]
 
 
 def _gh(argv: list[str]) -> str:

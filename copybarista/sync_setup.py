@@ -811,7 +811,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "SOURCE_ROOT": _sh(settings.source_root),
             "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
             "IMPORT_BRANCH_PREFIX": _sh(settings.import_prefix),
-            "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
             "REPLAY_BOOTSTRAP_BASE_DEFAULT": replay_bootstrap_base_default,
             "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_bootstrap_base_comment,
             "PR_DEFAULT_TITLE": _sh(settings.pr_default_title),
