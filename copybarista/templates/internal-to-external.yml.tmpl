@@ -109,7 +109,8 @@ jobs:
           # export. A shallow clone cannot resolve that range, so the guard
           # fails closed and every export skips forever.
           fetch-depth: 0
-@@SYSTEM_DEPS@@      - name: Open export PR
+      # No system packages: the export runs no package checks (public CI does).
+      - name: Open export PR
         env:
 @@EXPORT_STEP_TOKEN_ENV@@          PYTHONPATH: source
         run: |

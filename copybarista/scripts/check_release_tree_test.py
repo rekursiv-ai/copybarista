@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import ast
+import shutil
+import subprocess
 import sys
 
 import pytest
 
 from copybarista.scripts import check_release_tree
 from copybarista.scripts.check_release_tree import check_tree
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def _write_required_tree(root: Path) -> None:
@@ -371,6 +377,36 @@ def test_the_script_imports_only_the_standard_library():
     }
 
     assert roots - {"mutmut"} <= sys.stdlib_module_names
+
+
+_REPO: Final = _CWD.parents[1]
+
+
+@pytest.mark.cli_git
+@pytest.mark.skipif(
+    not (_REPO / ".github/workflows/copybarista-to-loop.yml").is_file(),
+    reason="the public repository's tree is checked there, not in the monorepo",
+)
+def test_the_published_tree_passes_release_policy(tmp_path: Path) -> None:
+    """Public CI checks the tree it publishes, as committed.
+
+    Only tracked files: a run's ``.venv``, caches and ``dist`` are not the
+    release. This was a CI command before checks became tests, and moving CI to
+    the shared commands dropped it.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],  # noqa: S607 -- git from PATH.
+        cwd=_REPO,
+        check=True,
+        capture_output=True,
+    ).stdout
+    for name in filter(None, listed.decode().split("\0")):
+        source = _REPO / name
+        if source.is_file() and not source.is_symlink():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, tmp_path / name)
+
+    assert check_tree(root=tmp_path) == ()
 
 
 def test_parser_uses_the_third_docstring_line(

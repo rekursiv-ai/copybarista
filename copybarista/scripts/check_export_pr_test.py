@@ -17,15 +17,18 @@ _NOW: Final = datetime(2026, 10, 29, 17, 0, tzinfo=UTC)
 _URL: Final = "https://github.com/example/sagent/pull/729"
 
 
-def _pr(*, opened_hours_ago: float) -> ExportPr:
-    created = _NOW - timedelta(hours=opened_hours_ago)
-    return ExportPr(url=_URL, created_at=created.isoformat().replace("+00:00", "Z"))
+def _stamp(hours_ago: float) -> str:
+    return (_NOW - timedelta(hours=hours_ago)).isoformat().replace("+00:00", "Z")
 
 
-def test_a_pr_inside_the_limit_is_not_stale() -> None:
+def _pr(*, pushed_hours_ago: float) -> ExportPr:
+    return ExportPr(url=_URL, pushed_at=_stamp(pushed_hours_ago))
+
+
+def test_a_pr_pushed_inside_the_limit_is_not_stale() -> None:
     assert (
         stale_export_prs(
-            [_pr(opened_hours_ago=1.9)],
+            [_pr(pushed_hours_ago=1.9)],
             now=_NOW,
             max_age=timedelta(hours=2),
         )
@@ -33,11 +36,11 @@ def test_a_pr_inside_the_limit_is_not_stale() -> None:
     )
 
 
-def test_a_pr_past_the_limit_is_stale() -> None:
-    stuck = _pr(opened_hours_ago=21)
+def test_a_pr_not_pushed_past_the_limit_is_stale() -> None:
+    stuck = _pr(pushed_hours_ago=21)
 
     assert stale_export_prs(
-        [_pr(opened_hours_ago=0.1), stuck],
+        [_pr(pushed_hours_ago=0.1), stuck],
         now=_NOW,
         max_age=timedelta(hours=2),
     ) == [stuck]
@@ -69,21 +72,46 @@ def _run_main(
     return check_export_pr.main(), calls
 
 
-def test_main_fails_and_names_a_stuck_pr(
+def _listed(*, created_hours_ago: float, pushed_hours_ago: float) -> str:
+    """``gh pr list --json url,createdAt,commits`` output for one PR."""
+    return (
+        f'[{{"url": "{_URL}", "createdAt": "{_stamp(created_hours_ago)}", '
+        f'"commits": [{{"committedDate": "{_stamp(created_hours_ago)}"}}, '
+        f'{{"committedDate": "{_stamp(pushed_hours_ago)}"}}]}}]'
+    )
+
+
+def test_main_fails_and_names_a_pr_with_no_recent_push(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     code, calls = _run_main(
         monkeypatch,
-        listed=f'[{{"url": "{_URL}", "created_at": "2026-10-28T20:04:21Z"}}]',
+        listed=_listed(created_hours_ago=30, pushed_hours_ago=21),
     )
 
     assert code == 1
     assert calls[0][:6] == ["gh", "pr", "list", "--repo", "example/sagent", "--head"]
     assert calls[0][6] == "sagent/export/main"
-    assert f"::error::{_URL} has been open since 2026-10-28T20:04:21Z" in (
+    assert f"::error::{_URL} has had no push since {_stamp(21)}" in (
         capsys.readouterr().out
     )
+
+
+def test_main_passes_a_long_lived_pr_the_export_just_updated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The export reuses one PR, so its age is from its last push.
+
+    Measured from creation, sagent's #729 read 23h old three minutes after the
+    export updated it, and failed the export run it then merged in.
+    """
+    code, _ = _run_main(
+        monkeypatch,
+        listed=_listed(created_hours_ago=30, pushed_hours_ago=0.05),
+    )
+
+    assert code == 0
 
 
 def test_main_passes_without_an_open_pr(monkeypatch: pytest.MonkeyPatch) -> None:
