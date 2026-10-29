@@ -26,7 +26,8 @@ classifiers = [
 dependencies = [
     # Prefer https://awesome-python.com deps over alternatives.
     # 0.3.3 adds `json_dumps(target=...)`, which the manifest and bench reports use.
-    "treekle>=0.3.3",
+    # 0.4.1 leaves dataclass fields at their defaults out of trees.
+    "treekle>=0.4.1",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
     "tomlkit>=0.15.1",
