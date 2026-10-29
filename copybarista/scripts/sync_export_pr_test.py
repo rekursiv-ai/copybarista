@@ -1900,6 +1900,132 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
     assert not pr_open
 
 
+def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The branch keeps the merged squash's tree, which the export guard reads.
+
+    Auto-merge squashed the open export PR 44s into a run that cloned main before it;
+    the run force-pushed a branch built on the stale main, the squash's tree left the
+    branch history, and the guard blocked every later export as unimported work.
+    """
+    public, origin = _public_clone(tmp_path)
+    merged = _land_on_main(origin, tmp_path / "merger", "merged export\n")
+    (public / "f.txt").write_text("this export\n", encoding="utf-8")
+    created: list[list[str]] = []
+    _stub_pr_calls(monkeypatch, created)
+
+    assert _open_or_update_export_pr(
+        request=replace(
+            _export_request(tmp_path),
+            public_dir=public,
+            runner_temp=tmp_path,
+        ),
+        pr_plan=_merged_pr_plan(),
+    )
+
+    branch = "refs/heads/copybarista/export/main"
+    assert _git_out(origin, "merge-base", "--is-ancestor", merged, branch) == ""
+    assert _git_out(origin, "show", f"{branch}:f.txt") == "this export"
+    assert [argv[2] for argv in created] == ["create"]
+
+
+def test_an_export_main_already_holds_opens_no_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public, origin = _public_clone(tmp_path)
+    merged = _land_on_main(origin, tmp_path / "merger", "this export\n")
+    (public / "f.txt").write_text("this export\n", encoding="utf-8")
+    created: list[list[str]] = []
+    _stub_pr_calls(monkeypatch, created)
+
+    assert not _open_or_update_export_pr(
+        request=replace(
+            _export_request(tmp_path),
+            public_dir=public,
+            runner_temp=tmp_path,
+        ),
+        pr_plan=_merged_pr_plan(),
+    )
+
+    assert _git_out(origin, "rev-parse", "refs/heads/copybarista/export/main") == merged
+    assert created == []
+
+
+def _public_clone(tmp_path: Path) -> tuple[Path, Path]:
+    """Return a public checkout of ``main`` and the bare origin it cloned."""
+    seed = _git_repo(tmp_path / "seed", [("export", "bot@example.com")])
+    origin = tmp_path / "origin.git"
+    _git_out(tmp_path, "clone", "-q", "--bare", str(seed), str(origin))
+    public = tmp_path / "public"
+    _git_out(tmp_path, "clone", "-q", str(origin), str(public))
+    _git_out(public, "config", "commit.gpgsign", "false")
+    return public, origin
+
+
+def _land_on_main(origin: Path, clone: Path, text: str) -> str:
+    """Advance ``origin``'s main with ``f.txt`` holding ``text``; return the SHA."""
+    _git_out(origin.parent, "clone", "-q", str(origin), str(clone))
+    (clone / "f.txt").write_text(text, encoding="utf-8")
+    _git_out(
+        clone,
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=bot",
+        "-c",
+        "user.email=bot@example.com",
+        "commit",
+        "-qam",
+        "squash",
+    )
+    _git_out(clone, "push", "-q", "origin", "main")
+    return _git_out(clone, "rev-parse", "HEAD")
+
+
+def _stub_pr_calls(monkeypatch: pytest.MonkeyPatch, created: list[list[str]]) -> None:
+    """Make the merged PR read as closed, and record every other ``gh`` call."""
+
+    def no_open_pr(*, branch: str, repo: str, cwd: Path) -> bool:
+        del branch, repo, cwd
+        return False
+
+    def run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        created.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_export_pr, "_gh_pr_exists", no_open_pr)
+    monkeypatch.setattr(sync_export_pr, "_run_gh", run_gh)
+
+
+def _merged_pr_plan() -> sync_export_pr.PrReplayPlan:
+    """Return a plan that still names the export PR the run saw open."""
+    return sync_export_pr.PrReplayPlan(
+        state=_pr_state(),
+        body="body\n",
+        replay_base="",
+        replay_base_digest="",
+        current_pr=sync_export_pr.CurrentPr(
+            title="Public title",
+            body="body\n",
+            number=422,
+            url="https://example.test/pr/422",
+        ),
+    )
+
+
+def _git_out(cwd: Path, *args: str) -> str:
+    """Run ``git`` in ``cwd`` and return its stripped stdout."""
+    return subprocess.run(  # noqa: S603 -- fixed argv, test-only.
+        ["git", "-C", str(cwd), *args],  # noqa: S607 -- The test invokes fixed Git subcommands with fixture paths.
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 def test_replay_without_metadata_keeps_generic_pr_text():
     base = PrReplayState(
         title="Update Sagent export",

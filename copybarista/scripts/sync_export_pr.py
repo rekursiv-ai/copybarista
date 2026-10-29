@@ -1848,30 +1848,28 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         ["git", "config", "user.email", request.sync_user_email],
         cwd=request.public_dir,
     )
+    commit_argv = [
+        "git",
+        "commit",
+        "--author",
+        _generated_commit_author(
+            authors=pr_plan.state.authors,
+            fallback_name=request.sync_user_name,
+            fallback_email=request.sync_user_email,
+        ),
+        "--file",
+        str(message_file),
+    ]
     _fetch_branch(branch=branch, cwd=request.public_dir)
     _run(["git", "switch", "-C", branch], cwd=request.public_dir)
     _run(["git", "add", "-A"], cwd=request.public_dir)
-    _run(
-        [
-            "git",
-            "commit",
-            "--author",
-            _generated_commit_author(
-                authors=pr_plan.state.authors,
-                fallback_name=request.sync_user_name,
-                fallback_email=request.sync_user_email,
-            ),
-            "--file",
-            str(message_file),
-        ],
-        cwd=request.public_dir,
-    )
-    _run(
-        ["git", "push", "--force-with-lease", "origin", branch],
-        cwd=request.public_dir,
-    )
+    _run(commit_argv, cwd=request.public_dir)
+    if not _push_export_branch(request=request, commit_argv=commit_argv):
+        _log(f"{request.base_branch} already holds this export; no PR needed.")
+        return False
 
-    if pr_plan.current_pr or _gh_pr_exists(
+    # Asked now, not taken from ``pr_plan``: the PR it saw may have merged since.
+    if _gh_pr_exists(
         branch=branch,
         repo=request.target_repo,
         cwd=request.public_dir,
@@ -1897,6 +1895,64 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         cwd=request.public_dir,
     )
     return True
+
+
+# Auto-merge squashes the open export PR whenever its checks pass, which can fall
+# while this run renders. A branch built on the main it cloned then drops the squash
+# commit's tree from its history -- the evidence the export guard uses to tell that
+# commit from human work -- and every later export is blocked. So after each push,
+# rebuild on any main the push did not contain, until the branch holds main.
+def _push_export_branch(
+    *,
+    request: ExportRequest,
+    commit_argv: list[str],
+    attempts: int = 3,
+) -> bool:
+    """Push the export commit on top of the current base branch."""
+    cwd = request.public_dir
+    base_ref = f"refs/remotes/origin/{request.base_branch}"
+    for _ in range(attempts):
+        _run(["git", "push", "--force-with-lease", "origin", request.branch], cwd=cwd)
+        _run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{request.base_branch}:{base_ref}",
+            ],
+            cwd=cwd,
+        )
+        held = _run(
+            ["git", "merge-base", "--is-ancestor", base_ref, "HEAD"],
+            cwd=cwd,
+            check=False,
+        )
+        if held.returncode == 0:
+            return True
+        _log(
+            f"{request.base_branch} moved during the export (an export PR merged); "
+            "rebuilding the export commit on it.",
+        )
+        _run(["git", "reset", "--soft", base_ref], cwd=cwd)
+        if (
+            _run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=cwd,
+                check=False,
+            ).returncode
+            == 0
+        ):
+            _run(
+                ["git", "push", "--force-with-lease", "origin", request.branch],
+                cwd=cwd,
+            )
+            return False
+        _run(commit_argv, cwd=cwd)
+    raise ExportGuardError(
+        f"{request.base_branch} kept moving across {attempts} export pushes; "
+        "re-run this export.",
+    )
 
 
 # ``gh pr merge --auto`` only works when the merge can be *deferred* (branch protection
