@@ -59,6 +59,16 @@ A generated workflow that pins anything else has drifted; ``check_sync_config``
 rejects the mismatch rather than letting the two silently diverge.
 """
 
+CHECKOUT_PYTHON_VERSION: Final = "3.14"
+"""The interpreter a public checkout's ``.python-version`` pins uv to.
+
+Without it uv picks the newest Python installed, which can be one some
+dependency has no wheels for yet. ``requires-python`` keeps its open upper
+bound, so installs from PyPI and ``uv sync --python 3.12`` still reach the
+floor; every generated workflow passes its version to setup-uv, which outranks
+the pin.
+"""
+
 
 # System (apt) packages installed before both public package validation and
 # repo-to-loop import validation. Both workflows run the same test suite, so
@@ -379,6 +389,7 @@ def write_sync_scaffold(
     files = {
         root / "copy.barista.toml": copy_barista_toml(settings),
         root / "copybarista.sync.toml": sync_toml(settings),
+        root / ".python-version": f"{CHECKOUT_PYTHON_VERSION}\n",
         root
         / ".github"
         / "workflows"
@@ -456,6 +467,7 @@ def check_sync_config(*, root: Path) -> None:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
     if not config.leak_check.forbidden_path:
         raise ConfigError("copy.barista.toml must define forbidden path leak checks.")
+    _validate_python_pin(public_root(root))
     _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
     _assert_generated(
         name="package-validation.yml",
@@ -890,8 +902,21 @@ def workflow_dir(root: Path) -> Path:
       result: ``.export/.github/workflows`` if it exists, else ``.github/workflows``.
 
     """
-    staged = root / ".export" / ".github" / "workflows"
-    return staged if staged.is_dir() else root / ".github" / "workflows"
+    return public_root(root) / ".github" / "workflows"
+
+
+def public_root(root: Path) -> Path:
+    """Where ``root``'s files for the public repository root live: ``workflow_dir``'s rule.
+
+    Args:
+      root: Package directory (contains .export or .github).
+
+    Returns:
+      result: ``.export`` if its workflows exist, else ``root``.
+
+    """
+    staged = root / ".export"
+    return staged if (staged / ".github" / "workflows").is_dir() else root
 
 
 def export_workflow_filename(settings: SyncSettings) -> str:
@@ -932,6 +957,7 @@ def _required_paths(root: Path, settings: SyncSettings) -> tuple[Path, ...]:
     return (
         root / "copy.barista.toml",
         root / "copybarista.sync.toml",
+        public_root(root) / ".python-version",
         workflows / import_workflow_filename(settings),
         workflows / "package-validation.yml",
         *((workflows / NPM_WORKFLOW_FILENAME,) if settings.npm_packages else ()),
@@ -1719,3 +1745,16 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
             else "Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
         ),
     }
+
+
+def _validate_python_pin(public: Path) -> None:
+    """Refuse a public tree whose checkout is not pinned to ``CHECKOUT_PYTHON_VERSION``."""
+    pinned = (public / ".python-version").read_text(encoding="utf-8").strip()
+    if pinned != CHECKOUT_PYTHON_VERSION:
+        raise ConfigError(
+            f".python-version must hold {CHECKOUT_PYTHON_VERSION}, not {pinned!r}.",
+        )
+    ignore = public / ".gitignore"
+    lines = ignore.read_text(encoding="utf-8").splitlines() if ignore.exists() else []
+    if any(line.strip() in {".python-version", "/.python-version"} for line in lines):
+        raise ConfigError(".gitignore must not ignore .python-version.")

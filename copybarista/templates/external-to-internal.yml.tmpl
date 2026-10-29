@@ -114,6 +114,9 @@ jobs:
           python-version: @@PYTHON_VERSION@@
       - uses: @@USES_SETUP_UV@@
         if: steps.settings.outputs.enabled == 'true'
+        with:
+          # Outranks the checkouts' .python-version, which pins a newer one.
+          python-version: @@PYTHON_VERSION@@
 
       - name: Capture trusted import helper
         if: steps.settings.outputs.enabled == 'true'

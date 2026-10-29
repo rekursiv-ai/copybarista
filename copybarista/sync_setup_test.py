@@ -271,6 +271,92 @@ def test_check_sync_config_rejects_missing_package_validation_workflow(
         check_sync_config(root=tmp_path)
 
 
+def test_the_scaffold_pins_a_checkout_to_the_newest_supported_python(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+
+    assert (tmp_path / ".python-version").read_text(encoding="utf-8") == "3.14\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "message"),
+    [
+        (".python-version", None, "Missing sync files"),
+        (".python-version", "3.15\n", r"\.python-version must hold 3\.14"),
+        (
+            ".gitignore",
+            "*.pyc\n.python-version\n",
+            r"\.gitignore must not ignore \.python-version",
+        ),
+    ],
+    ids=["missing", "another version", "ignored"],
+)
+def test_check_sync_config_rejects_a_checkout_without_its_python_pin(
+    tmp_path: Path,
+    name: str,
+    text: str | None,
+    message: str,
+):
+    # Without the pin, uv in a public checkout picks the newest Python installed,
+    # which can be one the package's wheels do not yet exist for.
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    if text is None:
+        (tmp_path / name).unlink()
+    else:
+        (tmp_path / name).write_text(text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_accepts_a_commented_python_pin_ignore(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    (tmp_path / ".gitignore").write_text("# .python-version\n", encoding="utf-8")
+
+    check_sync_config(root=tmp_path)
+
+
+def _setup_steps(workflow: str) -> list[tuple[str, object]]:
+    """Return each setup-python and setup-uv step's ``python-version``, in order."""
+    # YAML 1.1 reads the ``on:`` key as ``True``.
+    jobs = from_plain(yaml.safe_load(workflow), dict[object, object])["jobs"]
+    found: list[tuple[str, object]] = []
+    for job in from_plain(jobs, dict[str, dict[str, object]]).values():
+        for step in from_plain(job["steps"], list[dict[str, object]]):
+            uses = str(step.get("uses", ""))
+            if "setup-python" in uses or "setup-uv" in uses:
+                given = from_plain(step.get("with", {}), dict[str, object])
+                found.append(
+                    (uses.split("@", maxsplit=1)[0], given.get("python-version")),
+                )
+    return found
+
+
+# A checkout's ``.python-version`` outranks the interpreter setup-python installs, so
+# without it every job would test the pinned version instead of the one it names.
+@pytest.mark.parametrize(
+    "render",
+    [
+        lambda: package_validation_workflow(_settings()),
+        lambda: package_validation_workflow(
+            _settings(validation_python_versions=("3.12", "3.13")),
+        ),
+        lambda: export_workflow(_settings(), inputs=()),
+        lambda: import_workflow(_settings()),
+    ],
+    ids=["validation", "validation matrix", "export", "import"],
+)
+def test_setup_uv_runs_the_python_setup_python_installed(
+    render: Callable[[], str],
+):
+    steps = _setup_steps(render())
+
+    assert [action for action, _ in steps] == [
+        "actions/setup-python",
+        "astral-sh/setup-uv",
+    ]
+    assert steps[1][1] == steps[0][1]
+
+
 def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
     workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
