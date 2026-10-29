@@ -70,7 +70,7 @@ is the point, and it forces the two gates apart:
 
 Traps:
 
-- **`validation_commands` feeds generated workflows.** After editing it, run
+- **The sync config feeds generated workflows.** After editing it, run
   `write-public-workflows <sync.toml>` AND
   `write-export-workflow <sync.toml> --output .github/workflows/loop-to-<pkg>.yml`.
   Inspect the sync config for output paths and run the repository's workflow
@@ -315,5 +315,5 @@ substitution (`import_request.py:854-859`). Reversible, different mechanism.
 | Glob in a `move`/`ruff_format` path | Exact file or directory only |
 | Leave `required = true` on a may-be-noop rule | It fails on no CHANGE, not no match |
 | Shallow glob to enumerate configs | Discover nested configs with `fdfind --hidden copy.barista.toml` |
-| Edit `validation_commands`, stop there | Regenerate BOTH workflow sets |
+| Edit the sync config, stop there | Regenerate BOTH workflow sets |
 | Add a git source, skip the publish gate | PyPI-only check must exist somewhere |

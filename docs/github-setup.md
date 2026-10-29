@@ -49,7 +49,6 @@ copybarista init-sync . \
   --public-repo example/configgle \
   --source-repo example/source \
   --copybarista-project-path tools/copybarista \
-  --smoke-import configgle \
   --type-check-target configgle \
   --type-check-target tests
 copybarista check-sync-config .
@@ -59,8 +58,7 @@ The generated public files are:
 
 - `copy.barista.toml` -- the deterministic export config.
 - `copybarista.sync.toml` -- package metadata such as package name, source path,
-  public repo, branch prefixes, smoke import, type-check targets, and public
-  validation commands.
+  public repo, branch prefixes, type-check targets, and validation Pythons.
 - `.github/workflows/configgle-to-loop.yml` -- public-to-source import
   workflow, named `<package>-to-loop.yml` (the generator calls the source side
   `loop`).
@@ -106,24 +104,24 @@ Review the generated workflow before committing it. Change templates or sync
 metadata, then regenerate; direct edits are overwritten. Run
 `init-sync --overwrite` only when intentionally regenerating existing sync files.
 
-The generated package validation workflow runs package-owned commands from
-`copybarista.sync.toml`. Defaults install all dependency groups, run the
-package's own `pre-commit` hooks at the `pre-commit` and `pre-push` stages, a
-smoke import, and `uv build`. Pass `--release-check-script` during setup, or
+The generated package validation workflow runs the same commands for every
+package: it installs all dependency groups and runs the package's own
+`pre-commit` hooks at the `pre-commit` and `pre-push` stages. The import
+workflow runs those commands too. A check one package needs is a test in that
+package. Pass `--release-check-script` during setup, or
 set `release_check_script` in `copybarista.sync.toml`, when the source export
 workflow should run an additional project-relative release-tree checker before
 opening or updating the public PR.
 Set `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
 lockfile is private or source-specific but the public repository should publish
-a generated `uv.lock`; pair it with `uv sync --frozen --all-groups` in package
-validation commands. The generated public-to-source import workflow then
+a generated `uv.lock`, which validation installs with `uv sync --frozen
+--all-groups`. The generated public-to-source import workflow then
 ignores the public root `uv.lock` during source mapping because that file is
 regenerated from public package metadata instead of imported into the source
 checkout.
-Use repeated `--validation-python-version` and `--validation-command` flags when
-a package needs a different public correctness contract. `check-sync-config`
-validates that `.github/workflows/package-validation.yml` still matches those
-commands.
+Repeat `--validation-python-version` to validate on more Pythons than the
+published floor. `check-sync-config` validates that
+`.github/workflows/package-validation.yml` is what the generator produces.
 
 A package that also ships npm packages lists their public-repository directories
 in `npm_packages` in `copybarista.sync.toml`, and any commands that must run before

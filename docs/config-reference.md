@@ -478,13 +478,11 @@ copybarista init-sync ROOT \
   --public-repo OWNER/REPO \
   --source-repo OWNER/REPO \
   --copybarista-project-path PATH \
-  --smoke-import MODULE \
   [--sync-label LABEL] \
   [--release-check-script PATH] \
   [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] \
   [--validation-python-version VERSION] \
-  [--validation-command COMMAND] \
   [--sync-user-name NAME] \
   [--sync-user-email EMAIL] \
   [--overwrite]

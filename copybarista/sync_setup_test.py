@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 import dataclasses
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,7 @@ import yaml
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
+    CI_COMMANDS,
     PG_MAJOR,
     SyncSettings,
     _render_template,
@@ -50,6 +52,7 @@ class _SyncSettingsFields(TypedDict, total=False, closed=True):
     import_branch_prefix: str
     npm_build_commands: tuple[str, ...]
     npm_packages: tuple[str, ...]
+    package_name: str
     publish_source_rev: bool
     refresh_public_lockfile: bool
     release_check_script: str
@@ -57,11 +60,9 @@ class _SyncSettingsFields(TypedDict, total=False, closed=True):
     replay_bootstrap_base_comment: tuple[str, ...]
     require_pr_metadata: bool
     skip_source_validation: bool
-    smoke_import: str
     sync_label: str
     sync_token_login: str
     system_packages: tuple[str, ...]
-    validation_commands: tuple[str, ...]
     validation_python_versions: tuple[str, ...]
 
 
@@ -73,7 +74,6 @@ def _settings(**fields: Unpack[_SyncSettingsFields]) -> SyncSettings:
         public_repo="example/configgle",
         source_repo="example/source",
         copybarista_project_path="tools/copybarista",
-        smoke_import="configgle",
         type_check_targets=("configgle", "tests"),
         forbidden_pr_text=("loop",),
     )
@@ -476,7 +476,6 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
         public_repo = "rekursiv-ai/configgle"
         source_repo = "example/source"
         copybarista_project_path = "tools/copybarista"
-        smoke_import = "configgle"
         type_check_targets = ["configgle"]
         forbidden_pr_text = []
         """,
@@ -491,17 +490,6 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert settings.export_prefix == "configgle/export/"
     assert settings.import_prefix == "configgle/import/"
     assert settings.validation_python_versions == ("3.12",)
-    # Lint/type/test checks are delegated to the package's own
-    # .pre-commit-config.yaml; only the steps pre-commit does not own stay
-    # here. Restating each tool would mean a newly added hook silently goes
-    # unrun in the public repo.
-    assert settings.validation_commands == (
-        "uv sync --all-groups",
-        "uv run pre-commit run --all-files --hook-stage pre-commit",
-        "uv run pre-commit run --all-files --hook-stage pre-push",
-        'uv run python -c "import configgle"',
-        "uv build",
-    )
     assert settings.pr_default_title == "Update Configgle export"
     assert (
         settings.pr_default_body
@@ -526,7 +514,6 @@ def test_load_sync_settings_reads_pull_request_defaults(tmp_path: Path):
         public_repo = "rekursiv-ai/configgle"
         source_repo = "example/source"
         copybarista_project_path = "tools/copybarista"
-        smoke_import = "configgle"
         type_check_targets = ["configgle"]
         forbidden_pr_text = []
 
@@ -579,7 +566,6 @@ def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
         public_repo = "rekursiv-ai/configgle"
         source_repo = "example/source"
         copybarista_project_path = "tools/copybarista"
-        smoke_import = "configgle"
         export_branch_prefix = "configgle/export/"
         import_branch_prefix = "configgle/import/"
         type_check_targets = "configgle"
@@ -607,50 +593,159 @@ def test_load_sync_settings_rejects_unsafe_branch_prefix(tmp_path: Path):
         load_sync_settings(config)
 
 
-def test_empty_smoke_import_loads_and_omits_the_smoke_flag(tmp_path: Path):
-    """A stubs-only wheel has no module to import, so the smoke test is optional."""
-    # Not ``_settings``: its base fills ``validation_commands`` from the default
-    # ``smoke_import`` before the override, and ``replace`` keeps that list.
-    built = SyncSettings(
-        package_name="typings",
-        sync_label="Typings",
-        source_root="packages/typings",
-        public_repo="example/typings",
-        source_repo="example/source",
-        copybarista_project_path="tools/copybarista",
-        smoke_import="",
-        type_check_targets=("hatch_build.py",),
-        forbidden_pr_text=("loop",),
-    )
-    write_sync_scaffold(root=tmp_path, settings=built)
-    settings = load_sync_settings(tmp_path / "copybarista.sync.toml")
-
-    assert settings.smoke_import == ""
-    assert not any("python -c" in command for command in settings.validation_commands)
-    assert "--smoke-import" not in export_workflow(settings, inputs=())
-
-
-def test_generated_workflows_reject_invalid_smoke_import():
-    with pytest.raises(ConfigError, match="smoke_import"):
-        package_validation_workflow(
-            _settings(smoke_import="configgle; print(1)"),
-        )
-
-
-def test_package_validation_workflow_runs_configured_commands():
-    workflow = package_validation_workflow(
-        _settings(
-            validation_python_versions=("3.12", "3.13"),
-            validation_commands=(
-                "uv sync --all-groups",
-                "uv run pytest",
-            ),
+@pytest.mark.parametrize("key", ["validation_commands", "smoke_import", "typo"])
+def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: str):
+    """A key the loader ignores would look like a setting that takes effect."""
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "[sync]\n",
+            f'[sync]\n{key} = ["uv run pytest"]\n',
         ),
+        encoding="utf-8",
     )
 
-    assert 'python-version: ["3.12", "3.13"]' in workflow
-    assert "uv sync --all-groups" in workflow
-    assert "uv run pytest" in workflow
+    with pytest.raises(ConfigError, match=rf"sync\.{key} is not a setting"):
+        load_sync_settings(config)
+
+
+def test_every_package_validates_with_the_ci_commands():
+    """No package chooses its commands, so none can validate differently."""
+    for settings in (
+        _settings(),
+        _settings(package_name="sagent", validation_python_versions=("3.12", "3.13")),
+    ):
+        assert _step_run(
+            package_validation_workflow(settings),
+            job="validate",
+            name="Validate package",
+        ) == "".join(f"{command}\n" for command in CI_COMMANDS)
+
+
+def test_the_import_validates_with_the_ci_commands():
+    run = _step_run(
+        import_workflow(_settings()),
+        job="import-change",
+        name="Import public tree into target repository",
+    )
+
+    flags = shlex.split(run.replace("\\\n", " "))
+    commands = [
+        flags[index + 1]
+        for index, flag in enumerate(flags)
+        if flag == "--validation-command"
+    ]
+    assert commands == list(CI_COMMANDS)
+
+
+def test_the_export_leaves_validation_to_public_ci():
+    assert "--validation-command" not in export_workflow(_settings(), inputs=())
+
+
+def test_ci_commands_run_the_package_gates_once():
+    """The pre-push stage supersedes the per-file ty, pyrefly and pytest hooks."""
+    assert CI_COMMANDS == (
+        "uv sync --frozen --all-groups",
+        (
+            "SKIP=superseded-at-pre-push uv run pre-commit run --all-files "
+            "--hook-stage pre-commit"
+        ),
+        "uv run pre-commit run --all-files --hook-stage pre-push",
+    )
+
+
+def test_libturbojpeg_installs_with_the_shipped_script():
+    """No apt release carries libjpeg-turbo 3, which pyturbojpeg 2 needs."""
+    run = _step_run(
+        package_validation_workflow(
+            _settings(system_packages=("ripgrep", "libturbojpeg")),
+        ),
+        job="validate",
+        name="Install system packages",
+    )
+
+    assert "apt-get install -y --no-install-recommends ripgrep\n" in run
+    assert run.endswith("bash install-libjpeg-turbo.sh\n")
+
+
+_REQUIRED_CHECK: Final = "Lint, type-check, test, and build"
+
+
+def test_a_python_matrix_still_reports_the_required_check():
+    """A matrix suffixes each job name, so one job must carry the bare name.
+
+    The public rulesets require the check by that bare name. With only
+    ``... (3.12)``-style checks, sagent's export PR passed every check and sat
+    blocked, never merging.
+    """
+    workflow = package_validation_workflow(
+        _settings(validation_python_versions=("3.12", "3.13")),
+    )
+    jobs = from_plain(
+        from_plain(yaml.safe_load(workflow), dict[object, object])["jobs"],
+        dict[str, dict[str, object]],
+    )
+    named = [job for job in jobs.values() if job["name"] == _REQUIRED_CHECK]
+
+    assert len(named) == 1
+    assert named[0]["needs"] == "validate"
+    # Runs after a failure: a required check that is SKIPPED counts as passing.
+    assert named[0]["if"] == "${{ !cancelled() }}"
+    assert _step_run(workflow, job="validated", name="Require every version") == (
+        'test "${{ needs.validate.result }}" = success\n'
+    )
+
+
+def test_a_single_python_validates_under_the_required_check():
+    workflow = package_validation_workflow(_settings())
+    jobs = from_plain(
+        from_plain(yaml.safe_load(workflow), dict[object, object])["jobs"],
+        dict[str, dict[str, object]],
+    )
+
+    assert {name: job["name"] for name, job in jobs.items()} == {
+        "validate": _REQUIRED_CHECK,
+    }
+
+
+def test_export_workflow_rechecks_its_pr_hourly_and_after_each_export():
+    """A green export only enabled auto-merge; this job reports whether it landed."""
+    workflow = from_plain(
+        yaml.safe_load(export_workflow(_settings(), inputs=())),
+        dict[object, object],
+    )
+    # PyYAML reads the bare ``on`` key as a YAML 1.1 boolean.
+    triggers = from_plain(workflow[True], dict[str, object])
+    jobs = from_plain(workflow["jobs"], dict[str, dict[str, object]])
+
+    assert from_plain(triggers["schedule"], list[dict[str, str]]) == [
+        {"cron": "17 * * * *"},
+    ]
+    assert jobs["export-pr"]["if"] == "github.event_name != 'schedule'"
+    assert jobs["export-pr-age"]["needs"] == "export-pr"
+    assert jobs["export-pr-age"]["if"] == "${{ !cancelled() }}"
+    run = _step_run(
+        export_workflow(_settings(), inputs=()),
+        job="export-pr-age",
+        name="Check the export PR is landing",
+    )
+    assert run.split() == [
+        "python3",
+        "source/tools/copybarista/scripts/check_export_pr.py",
+        "\\",
+        "--repo",
+        '"example/configgle"',
+        "\\",
+        "--branch",
+        '"configgle/export/main"',
+    ]
+    checkout = _job_steps(export_workflow(_settings(), inputs=()), job="export-pr-age")[
+        0
+    ]
+    assert from_plain(checkout["with"], dict[str, str])["sparse-checkout"] == (
+        "tools/copybarista/scripts"
+    )
 
 
 _NPM_PACKAGES: Final = ("npm/configgle-a", "npm/configgle-b")
@@ -1651,6 +1746,12 @@ def _job_steps(workflow: str, *, job: str) -> list[dict[str, object]]:
     job_config = from_plain(jobs[job], dict[str, object])
     steps = from_plain(job_config["steps"], list[object])
     return [from_plain(step, dict[str, object]) for step in steps]
+
+
+def _step_run(workflow: str, *, job: str, name: str) -> str:
+    """Return the ``run`` script of the named step of one generated job."""
+    steps = _job_steps(workflow, job=job)
+    return str(steps[_step_index(steps, lambda step: step.get("name") == name)]["run"])
 
 
 def _step_index(

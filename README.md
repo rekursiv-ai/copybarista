@@ -194,7 +194,6 @@ copybarista init-sync . \
   --public-repo example/configgle \
   --source-repo example/source \
   --copybarista-project-path tools/copybarista \
-  --smoke-import configgle \
   --type-check-target configgle \
   --type-check-target tests
 ```
@@ -209,21 +208,14 @@ variable names stay stable. New packages do not need `sync_<package>.py` files
 or package-specific environment names. Use `init-sync --overwrite` only when
 intentionally regenerating existing sync files.
 
-The validation workflow runs package-owned commands from `copybarista.sync.toml`.
-By default it syncs dependencies, runs the package's own `pre-commit` hooks at
-the `pre-commit` and `pre-push` stages, a smoke import, and `uv build`. Pass
+The validation workflow runs the same commands for every package
+(`sync_setup.CI_COMMANDS`): it syncs dependencies and runs the package's own
+`pre-commit` hooks at the `pre-commit` and `pre-push` stages. A check one
+package needs is a test in that package; a wheel test built on
+`lib/testing/wheel.py` builds the wheel and runs code against it alone. Pass
 `--release-check-script` when the source export workflow should run a
-project-relative release-tree checker before opening the public PR. Override
-validation commands at setup time when a package needs different public
-correctness gates:
-
-```bash
-copybarista init-sync . \
-  ... \
-  --validation-python-version 3.12 \
-  --validation-command 'uv sync --all-groups' \
-  --validation-command 'uv run pytest'
-```
+project-relative release-tree checker before opening the public PR, and
+`--validation-python-version` once per Python to validate on.
 
 Use `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
 lockfile contains private or source-specific entries but the public repository
@@ -382,11 +374,11 @@ copybarista import-change CONFIG --public-base DIR --public-head DIR \
   --source-base DIR --destination DIR [--workflow NAME] [--no-verify] [--json]
 copybarista init-sync ROOT --package-name NAME --source-root PATH \
   --public-repo OWNER/REPO --source-repo OWNER/REPO \
-  --copybarista-project-path PATH --smoke-import MODULE \
+  --copybarista-project-path PATH \
   [--sync-label LABEL] [--release-check-script PATH] \
   [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] [--validation-python-version VERSION] \
-  [--validation-command COMMAND] [--sync-user-name NAME] \
+  [--sync-user-name NAME] \
   [--sync-user-email EMAIL] [--overwrite]
 copybarista check-sync-config ROOT
 copybarista write-export-workflow copybarista.sync.toml [--output PATH]

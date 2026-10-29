@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Final, cast
 
 import hashlib
 import json
-import keyword
 import re
 import shlex
 import tomllib
@@ -40,6 +39,22 @@ CONTROL_EXCLUDES: Final = (
 )
 CONTROL_CHAR_BOUND: Final = 32
 NPM_WORKFLOW_FILENAME: Final = "publish-npm.yml"
+CI_COMMANDS: Final = (
+    "uv sync --frozen --all-groups",
+    (
+        "SKIP=superseded-at-pre-push uv run pre-commit run --all-files "
+        "--hook-stage pre-commit"
+    ),
+    "uv run pre-commit run --all-files --hook-stage pre-push",
+)
+"""What every public package's CI runs, and the import gate with it.
+
+The same for every package: a check one package needs is a test in that
+package, which these run. Per-package command lists drifted apart, and the
+gates ran them differently from CI, so a command that passed the export failed
+every public PR. The per-file ty, pyrefly and pytest hooks are skipped because
+the pre-push stage runs a stronger form of each.
+"""
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_VALIDATION_PYTHON_VERSIONS: Final = ("3.12",)
@@ -99,18 +114,11 @@ class SyncSettings:
       public_repo: Public repository in ``owner/name`` form.
       source_repo: Source repository in ``owner/name`` form.
       copybarista_project_path: Source path containing the Copybarista project.
-      smoke_import: Import target used to validate the exported package; empty
-          for a stubs-only wheel, which ships no module to import.
       release_check_script: Optional project-relative release tree checker.
       type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
       export_watch_paths: Additional source-repository paths that trigger export.
       validation_python_versions: Python versions used by public package validation.
-      validation_commands: Commands run by public package validation. Every
-          entry executes; explanatory text belongs in the comment field below,
-          since a ``#``-leading entry here would silently never run.
-      validation_commands_comment: Lines rendered as YAML comments above the
-          validation command block.
       system_packages: apt packages installed before BOTH validation workflows.
           Both run the same test suite, so the same tools must be present in
           each; one setting renders into both workflows to prevent env drift.
@@ -144,14 +152,11 @@ class SyncSettings:
     public_repo: str
     source_repo: str
     copybarista_project_path: str
-    smoke_import: str
     type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
     export_watch_paths: tuple[str, ...] = ()
     release_check_script: str = ""
     validation_python_versions: tuple[str, ...] = DEFAULT_VALIDATION_PYTHON_VERSIONS
-    validation_commands: tuple[str, ...] = ()
-    validation_commands_comment: tuple[str, ...] = ()
     system_packages: tuple[str, ...] = DEFAULT_SYSTEM_PACKAGES
     sync_user_name: str = DEFAULT_SYNC_USER_NAME
     sync_user_email: str = DEFAULT_SYNC_USER_EMAIL
@@ -172,13 +177,7 @@ class SyncSettings:
     npm_build_commands: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Fill derived validation defaults."""
-        if not self.validation_commands:
-            object.__setattr__(
-                self,
-                "validation_commands",
-                _default_validation_commands(smoke_import=self.smoke_import),
-            )
+        """Fill derived PR text defaults."""
         if not self.pr_default_title:
             object.__setattr__(
                 self,
@@ -220,25 +219,6 @@ def _branch_slug(value: str) -> str:
     return slug
 
 
-# The lint/type/test checks are delegated to the package's own ``.pre-commit-
-# config.yaml`` rather than restated here: restating them means every added hook must be
-# copied into this list too, and the copy that gets forgotten is a check the public repo
-# silently stops running. Only the steps pre-commit does not own -- the environment
-# sync, the import smoke test, and the wheel build -- stay as explicit commands.
-#
-# Which paths basedpyright checks is likewise the ``basedpyright-global`` hook's
-# business, so ``type_check_targets`` is not a parameter here.
-def _default_validation_commands(*, smoke_import: str) -> tuple[str, ...]:
-    """Build the default exported-package validation command list."""
-    return (
-        "uv sync --all-groups",
-        "uv run pre-commit run --all-files --hook-stage pre-commit",
-        "uv run pre-commit run --all-files --hook-stage pre-push",
-        *((f'uv run python -c "import {smoke_import}"',) if smoke_import else ()),
-        "uv build",
-    )
-
-
 def load_sync_settings(path: Path) -> SyncSettings:
     """Load and validate package sync settings from TOML.
 
@@ -261,6 +241,37 @@ def load_sync_settings(path: Path) -> SyncSettings:
         raise ConfigError(f"Cannot read sync config {path}: {err}") from err
     sync = from_plain(raw.get("sync"), dict[str, object], default={})
     pull_request = from_plain(raw.get("pull_request"), dict[str, object], default={})
+    # An ignored key reads as a setting that takes effect: a leftover
+    # ``validation_commands`` would look like it still chose the package's CI.
+    unknown = sorted(
+        sync.keys()
+        - {
+            "package_name",
+            "sync_label",
+            "source_root",
+            "public_repo",
+            "source_repo",
+            "copybarista_project_path",
+            "release_check_script",
+            "type_check_targets",
+            "forbidden_pr_text",
+            "export_watch_paths",
+            "validation_python_versions",
+            "system_packages",
+            "refresh_public_lockfile",
+            "skip_source_validation",
+            "npm_packages",
+            "npm_build_commands",
+            "sync_user_name",
+            "sync_user_email",
+            "sync_token_login",
+            "sync_app_slug",
+            "export_branch_prefix",
+            "import_branch_prefix",
+        },
+    )
+    if unknown:
+        raise ConfigError(f"copybarista.sync.toml sync.{unknown[0]} is not a setting.")
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -268,7 +279,6 @@ def load_sync_settings(path: Path) -> SyncSettings:
         public_repo=_required_str(sync, "public_repo"),
         source_repo=_required_str(sync, "source_repo"),
         copybarista_project_path=_required_str(sync, "copybarista_project_path"),
-        smoke_import=_optional_str(sync, "smoke_import", default=""),
         release_check_script=_optional_str(sync, "release_check_script", default=""),
         type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
@@ -286,18 +296,6 @@ def load_sync_settings(path: Path) -> SyncSettings:
             sync,
             "system_packages",
             default=DEFAULT_SYSTEM_PACKAGES,
-        ),
-        validation_commands=_optional_str_tuple(
-            sync,
-            "validation_commands",
-            default=_default_validation_commands(
-                smoke_import=_optional_str(sync, "smoke_import", default=""),
-            ),
-        ),
-        validation_commands_comment=_optional_str_tuple(
-            sync,
-            "validation_commands_comment",
-            default=(),
         ),
         refresh_public_lockfile=_optional_sync_bool(
             sync,
@@ -533,12 +531,6 @@ def sync_toml(settings: SyncSettings) -> str:
     python_versions = "\n".join(
         f"  {_toml_str(version)}," for version in settings.validation_python_versions
     )
-    commands = "\n".join(
-        f"  {_toml_str(command)}," for command in settings.validation_commands
-    )
-    commands_comment = "\n".join(
-        f"  {_toml_str(line)}," for line in settings.validation_commands_comment
-    )
     npm_packages = "\n".join(f"  {_toml_str(path)}," for path in settings.npm_packages)
     npm_build_commands = "\n".join(
         f"  {_toml_str(command)}," for command in settings.npm_build_commands
@@ -565,7 +557,6 @@ def sync_toml(settings: SyncSettings) -> str:
             "PUBLIC_REPO": _toml_str(settings.public_repo),
             "SOURCE_REPO": _toml_str(settings.source_repo),
             "COPYBARISTA_PROJECT_PATH": _toml_str(settings.copybarista_project_path),
-            "SMOKE_IMPORT": _toml_str(settings.smoke_import),
             "RELEASE_CHECK_SCRIPT": _toml_str(settings.release_check_script),
             # The RAW field, not the ``export_prefix``/``import_prefix``
             # properties: those fall back to a value derived from the package
@@ -589,8 +580,6 @@ def sync_toml(settings: SyncSettings) -> str:
             "FORBIDDEN_PR_TEXT": forbidden,
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
-            "VALIDATION_COMMANDS": commands,
-            "VALIDATION_COMMANDS_COMMENT": commands_comment,
         },
     )
 
@@ -609,13 +598,6 @@ def package_validation_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    commands = "\n".join(
-        f"{'          '}{command}"
-        for command in (
-            *(f"# {line}" for line in settings.validation_commands_comment),
-            *settings.validation_commands,
-        )
-    )
     python_setup = (
         f"          python-version: {_yaml_str(settings.validation_python_versions[0])}"
         if len(settings.validation_python_versions) == 1
@@ -640,9 +622,33 @@ def package_validation_workflow(settings: SyncSettings) -> str:
             "STRATEGY": strategy,
             "PYTHON_SETUP": python_setup,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
-            "COMMANDS": commands,
+            "CI_COMMANDS": "\n".join(f"          {command}" for command in CI_COMMANDS),
+            "VALIDATE_JOB_NAME": (
+                "Lint, type-check, test, and build (${{ matrix.python-version }})"
+                if strategy
+                else "Lint, type-check, test, and build"
+            ),
+            "MATRIX_GATE": _MATRIX_GATE if strategy else "",
         },
     )
+
+
+# A matrix suffixes each job's name with its Python version, but a public repo's
+# ruleset requires the check by the bare name, so without this job the export PR
+# passes every check and stays blocked. ``!cancelled()`` so a failed version runs
+# this job to red: a SKIPPED required check counts as passing.
+_MATRIX_GATE: Final = """
+
+  validated:
+    name: Lint, type-check, test, and build
+    needs: validate
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every version
+        run: |
+          test "${{ needs.validate.result }}" = success"""
 
 
 def publish_npm_workflow(settings: SyncSettings) -> str:
@@ -742,14 +748,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
         ],
         indent="            ",
     )
-    validation_commands = _shell_lines(
-        [
-            part
-            for command in settings.validation_commands
-            for part in ("--validation-command", command)
-        ],
-        indent="            ",
-    )
     pr_replay_flags = _shell_args(
         _pr_replay_args(settings),
         indent="            ",
@@ -789,6 +787,11 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "JOB_NAME": _yaml_str(
                 f"Loop to {settings.sync_label} and update public PR",
             ),
+            "AGE_JOB_NAME": _yaml_str(f"{settings.sync_label} export PR lands"),
+            "AGE_SCRIPT_DIR": _yaml_str(
+                f"{settings.copybarista_project_path}/scripts",
+            ),
+            "AGE_SCRIPT": _sh(f"{project_path}/scripts/check_export_pr.py"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
@@ -817,12 +820,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "RELEASE_CHECK_ARG": release_check_arg,
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "TYPE_TARGETS": type_targets,
-            "VALIDATION_COMMANDS": validation_commands,
-            "SMOKE_IMPORT_ARG": (
-                f"            --smoke-import {_sh(settings.smoke_import)} \\\n"
-                if settings.smoke_import
-                else ""
-            ),
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
             **_sync_auth(settings, importing=False),
         },
@@ -843,14 +840,6 @@ def import_workflow(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    validation_commands = _shell_lines(
-        [
-            part
-            for command in settings.validation_commands
-            for part in ("--validation-command", command)
-        ],
-        indent="            ",
-    )
     refresh_public_lockfile_arg = (
         "            --refresh-public-lockfile \\\n"
         if settings.refresh_public_lockfile
@@ -869,8 +858,15 @@ def import_workflow(settings: SyncSettings) -> str:
             "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
             "EXPORT_PREFIX_EXPR": _github_expr_str(settings.export_prefix),
             "REFRESH_PUBLIC_LOCKFILE_ARG": refresh_public_lockfile_arg,
+            "VALIDATION_COMMANDS": _shell_lines(
+                [
+                    part
+                    for command in CI_COMMANDS
+                    for part in ("--validation-command", command)
+                ],
+                indent="            ",
+            ),
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=True),
-            "VALIDATION_COMMANDS": validation_commands,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
             **_sync_auth(settings, importing=True),
         },
@@ -1175,8 +1171,12 @@ def _assert_installs_system_packages(
     installed = shlex.split(_workflow_step_run(steps, "Install system packages"))
     for package in packages:
         # ``postgresql`` renders as the PGDG-pinned server, never the bare
-        # metapackage (see ``_system_deps_step``).
-        expected = f"postgresql-{PG_MAJOR}" if package == "postgresql" else package
+        # metapackage, and ``libturbojpeg`` as its installer (see
+        # ``_system_deps_step``).
+        expected = {
+            "postgresql": f"postgresql-{PG_MAJOR}",
+            "libturbojpeg": "public-head/install-libjpeg-turbo.sh",
+        }.get(package, package)
         if expected not in installed:
             raise ConfigError(
                 f"<repo>-to-loop.yml must install system package {package!r} "
@@ -1338,8 +1338,6 @@ def _validate_settings(settings: SyncSettings) -> None:
         if path.startswith("#"):
             continue
         _validate_relative_path(path, name="export_watch_paths")
-    if settings.smoke_import:
-        _validate_python_module_name(settings.smoke_import, name="smoke_import")
     _validate_relative_path(settings.release_check_script, name="release_check_script")
     for package in settings.system_packages:
         _validate_apt_package(package, name="system_packages")
@@ -1357,21 +1355,7 @@ def _validate_settings(settings: SyncSettings) -> None:
             f"sync.validation_python_versions must include the published floor "
             f"{floor!r}; got {settings.validation_python_versions!r}.",
         )
-    if not settings.validation_commands:
-        raise ConfigError("sync.validation_commands cannot be empty.")
     _validate_npm(settings)
-    for command in settings.validation_commands:
-        if "\n" in command or not command.strip():
-            raise ConfigError("sync.validation_commands must contain shell commands.")
-        # A ``#``-leading entry renders as a comment and never executes, so a
-        # stray ``#`` (typo, merge artifact) would silently retire a real
-        # check while every byte-equality gate still passed. Comments belong
-        # in ``validation_commands_comment``, which renders above the block.
-        if command.lstrip().startswith("#"):
-            raise ConfigError(
-                "sync.validation_commands entries must be executable commands; "
-                "put explanatory text in sync.validation_commands_comment.",
-            )
     if not settings.pr_default_title.strip():
         raise ConfigError(
             "copybarista.sync.toml [pull_request].default_title cannot be empty.",
@@ -1397,7 +1381,7 @@ def _validate_settings(settings: SyncSettings) -> None:
 # ``publish_npm_workflow`` joins the package paths into a ``for`` line and the build
 # commands into a ``run:`` block of a workflow that holds the npm publish identity,
 # so a path is limited to what a relative directory needs and a command to one
-# executable line, as ``validation_commands`` are.
+# executable line.
 def _validate_npm(settings: SyncSettings) -> None:
     """Reject npm settings that would not survive interpolation into a workflow."""
     for path in settings.npm_packages:
@@ -1426,13 +1410,6 @@ def _validate_apt_package(value: str, *, name: str) -> None:
             f"sync.{name} entries must be Debian package names "
             f"([a-z0-9][a-z0-9+.-]*); got {value!r}.",
         )
-
-
-def _validate_python_module_name(value: str, *, name: str) -> None:
-    """Reject module names that cannot be safely embedded in smoke commands."""
-    parts = value.split(".")
-    if not all(part.isidentifier() and not keyword.iskeyword(part) for part in parts):
-        raise ConfigError(f"sync.{name} must be a dotted Python module name.")
 
 
 def _validate_relative_path(value: str, *, name: str) -> None:
@@ -1564,9 +1541,11 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
     if not packages:
         return ""
     guard = "        if: steps.refs.outputs.import == 'true'\n" if guarded else ""
-    # ``postgresql`` is a request, not an apt name to pass through: it is
-    # served from PGDG below, never the distro metapackage (see there).
-    names = " ".join(package for package in packages if package != "postgresql")
+    # ``postgresql`` and ``libturbojpeg`` are requests, not apt names to pass
+    # through: each is served below, never from the distro (see there).
+    names = " ".join(
+        package for package in packages if package not in {"postgresql", "libturbojpeg"}
+    )
     lines = [
         # Cache the downloaded .debs, so a warm run never reaches the mirror
         # that stalled below. Keyed on the package list, so adding one busts it;
@@ -1622,6 +1601,13 @@ def _system_deps_step(packages: tuple[str, ...], *, guarded: bool) -> str:
             f"postgresql-{PG_MAJOR} postgresql-client-{PG_MAJOR} "
             f"postgresql-{PG_MAJOR}-pgvector\n",
         )
+    if "libturbojpeg" in packages:
+        # Pyturbojpeg 2.x needs libjpeg-turbo 3, which no apt release carries;
+        # the package ships the installer every monorepo provisioner runs. The
+        # import step finds the public tree under ``public-head``.
+        lines.append(
+            f"          bash {'public-head/' if guarded else ''}install-libjpeg-turbo.sh\n",
+        )
     return "".join(lines)
 
 
@@ -1661,7 +1647,7 @@ def _render_template(
 def _generated_banner(template_name: str) -> str:
     """Return the DO-NOT-EDIT header for a file rendered from ``template_name``."""
     # Names carry a ``.tmpl`` suffix, so test the type BEFORE it: every
-    # template rendered today is YAML or TOML, both ``#``-commented.
+    # template rendered today is YAML, TOML, or shell, all ``#``-commented.
     comment = "#"
     # Public-safe wording: these files ship to the public repositories, whose
     # leak check rejects both monorepo paths and the generator's own name.

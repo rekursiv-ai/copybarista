@@ -193,7 +193,6 @@ def run_import_sync(request: ImportRequest) -> None:
         _validate_target(
             request=request,
             project=project,
-            validation_commands=request.validation_commands,
             runner_temp=request.runner_temp,
             requirements=requirements,
         )
@@ -699,10 +698,9 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Shell command run in the exported public tree to validate the "
-            "imported change. Repeat for the full validation set. These are the "
-            "single source of truth (copybarista.sync.toml "
-            "sync.validation_commands) that also drives the public repository's "
-            "package-validation.yml."
+            "imported change; repeat for each. The import workflow passes "
+            "``CI_COMMANDS``, which public CI runs, and they run as one script "
+            "in the same shell a workflow step uses."
         ),
     )
     parser.add_argument(
@@ -833,17 +831,13 @@ def _public_tree_for_import(
 # against *that*. The exported env has the package's real runtime deps but never the
 # monorepo ML stack, so a CPU runner validates exactly what ships.
 #
-# ``validation_commands`` is the single source of truth (``copybarista.sync.toml``
-# ``sync.validation_commands``) that also drives the public repository's ``package-
-# validation.yml`` and the source-to-public export gate. Running the same shell commands
-# here makes all three verify byte-identical checks. Each command runs through ``bash
-# -c`` in the exported tree, so it self-contains its ``uv sync`` and may use shell
-# features.
+# The commands are the ones public CI runs, and they run as a workflow ``run:`` step
+# runs them: one script, in GitHub's default bash. One shell per command let a ``cd``
+# pass here that public CI then failed.
 def _validate_target(
     *,
     request: ImportRequest,
     project: Path,
-    validation_commands: tuple[str, ...],
     runner_temp: Path,
     requirements: Path,
 ) -> None:
@@ -854,8 +848,18 @@ def _validate_target(
         runner_temp=runner_temp,
         requirements=requirements,
     )
-    for command in validation_commands:
-        _run(["bash", "-c", command], cwd=tree)
+    _run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            "\n".join(request.validation_commands),
+        ],
+        cwd=tree,
+    )
 
 
 # Runs ``copybarista export`` (dependency-free) against the post-import source checkout,
@@ -885,17 +889,14 @@ def _export_public_tree(
         cwd=request.target_dir,
     )
     # `copybarista export` writes a plain directory, but the caller then runs
-    # `sync.validation_commands` here -- and since those became
-    # `pre-commit run --all-files` (previously ruff/ty/pytest invoked directly),
-    # they need a git repo: pre-commit resolves `--all-files` through git and
+    # the CI commands here -- `pre-commit run --all-files`, which needs a git
+    # repo: pre-commit resolves `--all-files` through git and
     # otherwise aborts with "git failed. Is it installed, and are you in a Git
-    # repository directory?". The list's other two consumers (the public repo's
-    # package-validation.yml and the export gate) run inside a real checkout, so
+    # repository directory?". Public CI runs inside a real checkout, so
     # only this path has to supply one. Staging is what makes the files visible
     # to `--all-files`; the commit gives HEAD to tests that record their
     # checkout's commit (craftax ghosts' build provenance), as a real checkout
-    # has one. Mirrors ``sync_export_pr._init_validation_repo``, which this
-    # stdlib-only copy cannot import. The tree is discarded after.
+    # has one. The tree is discarded after.
     if request.refresh_public_lockfile:
         # Seeded from the source lock, as the export's relock is
         # (``sync_export_pr._refresh_public_lockfile``), so both validate the same pins.

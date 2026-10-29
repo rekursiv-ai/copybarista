@@ -139,8 +139,6 @@ def run(argv: list[str] | None = None) -> int:
         if flags.release_check_script
         else None,
         type_check_targets=tuple(flags.type_check_target) or (".",),
-        smoke_import=flags.smoke_import,
-        validation_commands=tuple(flags.validation_command),
         dry_run=flags.dry_run,
     )
     try:
@@ -189,8 +187,6 @@ class ExportRequest:
     runner_temp: Path
     release_check_script: Path | None
     type_check_targets: tuple[str, ...]
-    smoke_import: str
-    validation_commands: tuple[str, ...]
     dry_run: bool
     import_branch_prefix: str = ""
     source_repo: str = ""
@@ -776,7 +772,7 @@ def _run_export_sync(request: ExportRequest) -> None:
         _log("Checking exported release tree.")
         # The release-check script ships inside the exported package (e.g.
         # copybarista/scripts/check_release_tree.py), so resolve it against the
-        # export tree -- the same public-relative path _validate_public runs.
+        # export tree, at its public-relative path.
         _check_release_tree(
             project=export_dir,
             root=export_dir,
@@ -805,16 +801,8 @@ def _run_export_sync(request: ExportRequest) -> None:
             public_dir=request.public_dir,
             seed=request.source_dir / "uv.lock",
         )
-    _log("Validating public checkout.")
-    validation_dir = Path(tempfile.mkdtemp(prefix="copybarista-validate-"))
-    try:
-        _copy_validation_tree(source=request.public_dir, destination=validation_dir)
-        _validate_public(
-            public_dir=validation_dir,
-            validation_commands=request.validation_commands,
-        )
-    finally:
-        _delete_path(validation_dir)
+    # No package checks here: the PR cannot merge until public CI passes them, and
+    # a second runner here drifted from CI and passed what CI then failed.
     if request.dry_run:
         _log("Dry run complete; skipped public checkout and GitHub mutations.")
         return
@@ -986,22 +974,6 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         help="Path passed to basedpyright. Repeat for multiple targets.",
     )
-    parser.add_argument(
-        "--validation-command",
-        action="append",
-        default=[],
-        help=(
-            "Shell command run in the exported public checkout to validate it. "
-            "Repeat for the full validation set. These are the single source of "
-            "truth (copybarista.sync.toml sync.validation_commands) that also "
-            "drives the public repository's package-validation.yml."
-        ),
-    )
-    parser.add_argument(
-        "--smoke-import",
-        default=os.environ.get("COPYBARISTA_SMOKE_IMPORT", ""),
-        help="Optional module imported from the built wheel as a smoke test.",
-    )
     return parser
 
 
@@ -1046,8 +1018,6 @@ def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[st
         settings.package_name,
         "--replay-bootstrap-base",
         settings.replay_bootstrap_base,
-        "--smoke-import",
-        settings.smoke_import,
         "--require-pr-metadata"
         if settings.require_pr_metadata
         else "--no-require-pr-metadata",
@@ -1063,8 +1033,6 @@ def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[st
         argv.extend(["--type-check-target", target])
     for term in settings.forbidden_pr_text:
         argv.extend(["--forbidden-pr-text", term])
-    for command in settings.validation_commands:
-        argv.extend(["--validation-command", command])
     return argv
 
 
@@ -1114,8 +1082,7 @@ def _postleakcheck_validation(*, project: Path) -> None:
     # Source checkout: the package sits directly in ``project``. type_check_targets
     # are export-relative (e.g. ``madcatter``, which only exists as a subdir in the
     # exported tree), so basedpyright the source against ``.`` like ``ty`` above.
-    # The exported tree's own basedpyright run happens in _validate_public via the
-    # configured validation_commands.
+    # The exported tree's own basedpyright run is public CI's.
     _run_basedpyright(project=project, targets=(".",))
     _run([*uv_run, "pytest", "-q"], cwd=project)
 
@@ -1160,18 +1127,6 @@ def _replace_tree(*, source: Path, destination: Path) -> None:
             continue
         _delete_path(path)
     for path in source.iterdir():
-        target = destination / path.name
-        if path.is_dir() and not path.is_symlink():
-            shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())
-        else:
-            shutil.copy2(path, target, follow_symlinks=False)
-
-
-def _copy_validation_tree(*, source: Path, destination: Path) -> None:
-    """Copy a public checkout into a disposable validation tree."""
-    for path in source.iterdir():
-        if path.name == ".git":
-            continue
         target = destination / path.name
         if path.is_dir() and not path.is_symlink():
             shutil.copytree(path, target, symlinks=True, dirs_exist_ok=target.exists())
@@ -1332,53 +1287,6 @@ def _await_upstream_exports(
             _log(f"Waiting for {workflow} on {source_sha[:12]} to publish.")
             time.sleep(UPSTREAM_EXPORT_POLL_SEC)
             waited += UPSTREAM_EXPORT_POLL_SEC
-
-
-# ``validation_commands`` is the single source of truth (``copybarista.sync.toml``
-# ``sync.validation_commands``) that also drives the public repository's ``package-
-# validation.yml``. Running the exact same shell commands here makes the export PR gate
-# and the public repo's own CI verify byte-identical checks -- a change to the command
-# set can never leave one behind. Each command runs through ``bash -c`` in the public
-# checkout, so it self-contains its ``uv sync`` and may use shell features (pipes,
-# ``||``, subshells) the same way the workflow does.
-#
-# The tree is initialized as a git repository first. ``_copy_validation_tree``
-# deliberately omits ``.git``, but the validation set now runs ``pre-commit``, which
-# refuses to operate outside a repository ("git failed. Is it installed, and are you in
-# a Git repository directory?") -- and pre-commit only sees TRACKED files, so an
-# untracked tree would validate nothing at all. The tree is also committed: a build
-# that stamps its commit (trackinizer's web app runs ``git rev-parse HEAD``) fails in
-# a repository with no commit. This disposable history is never published.
-def _validate_public(
-    *,
-    public_dir: Path,
-    validation_commands: tuple[str, ...],
-) -> None:
-    """Validate the exported public checkout with the shared command set."""
-    _init_validation_repo(public_dir)
-    for command in validation_commands:
-        _run(["bash", "-c", command], cwd=public_dir)
-
-
-def _init_validation_repo(public_dir: Path) -> None:
-    """Commit a disposable git snapshot, so checks see every file and HEAD resolves."""
-    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=public_dir)
-    _run(["git", "add", "--all"], cwd=public_dir)
-    _run(
-        [
-            "git",
-            "-c",
-            f"user.name={DEFAULT_SYNC_USER_NAME}",
-            "-c",
-            f"user.email={DEFAULT_SYNC_USER_EMAIL}",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "Copybarista validation snapshot",
-        ],
-        cwd=public_dir,
-    )
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
@@ -2991,8 +2899,6 @@ class _Flags(Protocol):
     runner_temp: str
     release_check_script: str
     type_check_target: list[str]
-    validation_command: list[str]
-    smoke_import: str
 
 
 if __name__ == "__main__":
