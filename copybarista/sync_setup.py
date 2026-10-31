@@ -21,6 +21,7 @@ from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.config import load_config
 from copybarista.errors import ConfigError
 from copybarista.globs import GlobSet
+from copybarista.lib.yaml import parse
 from copybarista.pyproject import pyproject_inputs
 
 
@@ -966,7 +967,10 @@ def _validate_import_workflow_yaml(
 ) -> None:
     """Validate the exported repo-to-loop import workflow matches settings."""
     try:
-        parsed = from_plain(yaml.safe_load(workflow_text), dict[object, object])
+        parsed = from_plain(
+            parse(workflow_text, string_keys=False),
+            dict[object, object],
+        )
     except yaml.YAMLError as err:
         raise ConfigError(f"Cannot read sync workflow: {err}") from err
     workflow = parsed
