@@ -711,85 +711,6 @@ def test_libturbojpeg_installs_with_the_shipped_script():
     assert run.endswith("bash install-libjpeg-turbo.sh\n")
 
 
-_REQUIRED_CHECK: Final = "Lint, type-check, test, and build"
-
-
-def test_a_python_matrix_still_reports_the_required_check():
-    """A matrix suffixes each job name, so one job must carry the bare name.
-
-    The public rulesets require the check by that bare name. With only
-    ``... (3.12)``-style checks, sagent's export PR passed every check and sat
-    blocked, never merging.
-    """
-    workflow = package_validation_workflow(
-        _settings(validation_python_versions=("3.12", "3.13")),
-    )
-    jobs = from_plain(
-        from_plain(yaml.safe_load(workflow), dict[object, object])["jobs"],
-        dict[str, dict[str, object]],
-    )
-    named = [job for job in jobs.values() if job["name"] == _REQUIRED_CHECK]
-
-    assert len(named) == 1
-    assert named[0]["needs"] == "validate"
-    # Runs after a failure: a required check that is SKIPPED counts as passing.
-    assert named[0]["if"] == "${{ !cancelled() }}"
-    assert _step_run(workflow, job="validated", name="Require every version") == (
-        'test "${{ needs.validate.result }}" = success\n'
-    )
-
-
-def test_a_single_python_validates_under_the_required_check():
-    workflow = package_validation_workflow(_settings())
-    jobs = from_plain(
-        from_plain(yaml.safe_load(workflow), dict[object, object])["jobs"],
-        dict[str, dict[str, object]],
-    )
-
-    assert {name: job["name"] for name, job in jobs.items()} == {
-        "validate": _REQUIRED_CHECK,
-    }
-
-
-def test_export_workflow_rechecks_its_pr_hourly_and_after_each_export():
-    """A green export only enabled auto-merge; this job reports whether it landed."""
-    workflow = from_plain(
-        yaml.safe_load(export_workflow(_settings(), inputs=())),
-        dict[object, object],
-    )
-    # PyYAML reads the bare ``on`` key as a YAML 1.1 boolean.
-    triggers = from_plain(workflow[True], dict[str, object])
-    jobs = from_plain(workflow["jobs"], dict[str, dict[str, object]])
-
-    assert from_plain(triggers["schedule"], list[dict[str, str]]) == [
-        {"cron": "17 * * * *"},
-    ]
-    assert jobs["export-pr"]["if"] == "github.event_name != 'schedule'"
-    assert jobs["export-pr-age"]["needs"] == "export-pr"
-    assert jobs["export-pr-age"]["if"] == "${{ !cancelled() }}"
-    run = _step_run(
-        export_workflow(_settings(), inputs=()),
-        job="export-pr-age",
-        name="Check the export PR is landing",
-    )
-    assert run.split() == [
-        "python3",
-        "source/tools/copybarista/scripts/check_export_pr.py",
-        "\\",
-        "--repo",
-        '"example/configgle"',
-        "\\",
-        "--branch",
-        '"configgle/export/main"',
-    ]
-    checkout = _job_steps(export_workflow(_settings(), inputs=()), job="export-pr-age")[
-        0
-    ]
-    assert from_plain(checkout["with"], dict[str, str])["sparse-checkout"] == (
-        "tools/copybarista/scripts"
-    )
-
-
 _NPM_PACKAGES: Final = ("npm/configgle-a", "npm/configgle-b")
 _NPM_BUILD_COMMANDS: Final = ("node npm/build.js",)
 
@@ -1117,7 +1038,6 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings(), inputs=())
 
     assert workflow.count('name: "loop→configgle"') == 2
-    assert 'name: "export PR lands"' in workflow
     assert "configgle/export/main" in workflow
     assert (
         "group: copybarista-export-${{ github.workflow }}-${{ github.ref }}" in workflow

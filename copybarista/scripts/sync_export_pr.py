@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol, TextIO, cast
+from typing import Final, NoReturn, Protocol, TextIO, TypedDict, cast
 
 import argparse
 import hashlib
@@ -60,6 +60,11 @@ GITHUB_RETRY_ATTEMPTS: Final = 3
 GITHUB_RETRY_DELAY_SEC: Final = 2
 UPSTREAM_EXPORT_POLL_SEC: Final = 20.0
 UPSTREAM_EXPORT_WAIT_SEC: Final = 900.0
+# Public CI's own job cap is 45 minutes; the export job allows for this plus export.
+PUBLIC_CI_WAIT_SEC: Final = 2700.0
+# The workflow token allows 1,000 requests an hour, shared by all 11 exports; at a
+# minute a poll, the slowest public CI (13 minutes) costs 13 of them.
+PUBLIC_CI_POLL_SEC: Final = 60.0
 PR_TEMPLATE_PATHS = (
     Path(".github/PULL_REQUEST_TEMPLATE.md"),
     Path(".github/pull_request_template.md"),
@@ -810,6 +815,7 @@ def _run_export_sync(request: ExportRequest) -> None:
     pr_open = _open_or_update_export_pr(request=request, pr_plan=pr_plan)
     if request.auto_merge and pr_open:
         _enable_export_pr_auto_merge(request=request, pr_title=pr_plan.state.title)
+        _await_public_ci(request=request)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1993,6 +1999,120 @@ def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> No
         return
     _write_process_output(result)
     raise SystemExit(result.returncode)
+
+
+# Merging is not landing: public CI runs on the merged commit, and the export used to
+# exit green before it did, so sagent's exports failed public CI for a day with every
+# export run green. Waiting here makes the export's status public CI's.
+def _await_public_ci(*, request: ExportRequest) -> None:
+    """Wait for the export PR to merge and public CI on it to pass; fail otherwise."""
+    _await_ci(
+        repo=request.target_repo,
+        sha=_merged_sha(request=request),
+        cwd=request.public_dir,
+    )
+
+
+def _merged_sha(*, request: ExportRequest) -> str:
+    """Wait for the export PR to merge; return its merge commit."""
+    waited = 0.0
+    while True:
+        pr = from_plain(
+            _json_from_gh(
+                _run_gh(
+                    [
+                        "gh",
+                        "pr",
+                        "view",
+                        request.branch,
+                        "--repo",
+                        request.target_repo,
+                        "--json",
+                        "state,mergeCommit",
+                    ],
+                    cwd=request.public_dir,
+                    capture=True,
+                ).stdout,
+                context="export PR",
+            ),
+            _MergeState,
+        )
+        if pr["state"] == "CLOSED":
+            _fail_public_ci(f"the export PR on {request.branch} was closed unmerged")
+        if pr["state"] == "MERGED" and pr["mergeCommit"] is not None:
+            return pr["mergeCommit"]["oid"]
+        waited = _wait_public_ci(waited, repo=request.target_repo)
+
+
+# Read with the workflow's token: the sync App holds no Actions permission, and the
+# public repositories' runs are readable by any token.
+def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
+    """Wait for ``repo``'s package validation on ``sha``; fail unless it passed."""
+    waited = 0.0
+    while True:
+        runs = from_plain(
+            _json_from_gh(
+                _run_gh(
+                    [
+                        "gh",
+                        "run",
+                        "list",
+                        "--repo",
+                        repo,
+                        "--commit",
+                        sha,
+                        "--workflow",
+                        "package-validation.yml",
+                        "--json",
+                        "status,conclusion",
+                    ],
+                    cwd=cwd,
+                    capture=True,
+                    env=_source_gh_env(),
+                ).stdout,
+                context="public CI runs",
+            ),
+            list[_RunState],
+        )
+        if runs and all(run["status"] == "completed" for run in runs):
+            failed = [
+                run["conclusion"] for run in runs if run["conclusion"] != "success"
+            ]
+            if failed:
+                _fail_public_ci(f"public CI on {repo}@{sha[:12]}: {', '.join(failed)}")
+            _log(f"Public CI passed on {repo}@{sha[:12]}.")
+            return
+        waited = _wait_public_ci(waited, repo=repo)
+
+
+class _MergeCommit(TypedDict):
+    oid: str
+
+
+class _MergeState(TypedDict):
+    state: str
+    mergeCommit: _MergeCommit | None
+
+
+class _RunState(TypedDict):
+    status: str
+    conclusion: str
+
+
+def _wait_public_ci(waited: float, *, repo: str) -> float:
+    """Sleep one poll; fail once the wait passes its limit."""
+    if waited >= PUBLIC_CI_WAIT_SEC:
+        _fail_public_ci(
+            f"public CI on {repo} did not finish in {PUBLIC_CI_WAIT_SEC / 60:g} minutes",
+        )
+    time.sleep(PUBLIC_CI_POLL_SEC)
+    return waited + PUBLIC_CI_POLL_SEC
+
+
+def _fail_public_ci(message: str) -> NoReturn:
+    """Report ``message`` as the export's error and exit nonzero."""
+    _log(f"::error::{message}")
+    raise SystemExit(1)
 
 
 def _auto_merge_unavailable(result: subprocess.CompletedProcess[str]) -> bool:

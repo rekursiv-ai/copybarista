@@ -22,10 +22,6 @@ on:
           replaying commits at or before this revision.
         required: false
         default: ""
-  # The export exits green once its PR has auto-merge on, merged or not; this
-  # re-checks the PR hourly so a stuck one turns the workflow red with no push.
-  schedule:
-    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -38,34 +34,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  export-pr-age:
-    name: @@AGE_JOB_NAME@@
-    needs: export-pr
-    # After an export, to judge the PR it left; alone on the schedule, which
-    # skips the export.
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: @@USES_CHECKOUT@@
-        with:
-          path: source
-          sparse-checkout: @@AGE_SCRIPT_DIR@@
-          filter: blob:none
-      - name: Check the export PR is landing
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 @@AGE_SCRIPT@@ \
-            --repo @@PUBLIC_REPO@@ \
-            --branch @@EXPORT_BRANCH@@
-
   export-pr:
     name: @@JOB_NAME@@
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # Bounded so a hung step fails in minutes, not at the 6h default.
-    timeout-minutes: 45
+    # Bounded so a hung step fails in minutes, not at the 6h default. It covers
+    # the export and then public CI on what it merged, itself capped at 45.
+    timeout-minutes: 75
     env:
 @@EXPORT_JOB_TOKEN_ENV@@      COPYBARISTA_ACTIONS_TOKEN: ${{ github.token }}
       TARGET_REPO: @@PUBLIC_REPO@@
