@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import contextlib
 import itertools
+import os
 import pathlib
 import shutil
 import subprocess
@@ -27,10 +29,8 @@ from copybarista.lib.files.grep import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
-
-    import os
 
 
 _RG_BASE = [
@@ -39,6 +39,7 @@ _RG_BASE = [
     "--with-filename",
     "--hidden",
     "--no-mmap",
+    "--no-messages",
     "--field-match-separator=\x01",
     "--field-context-separator=\x02",
 ]
@@ -579,30 +580,34 @@ def test_the_default_rg_timeout_is_thirty_seconds(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("rg", [True], ids=["rg"])
-@pytest.mark.parametrize(
-    ("stderr", "message"),
-    [
-        (b"bad\xff\n", "ripgrep error (exit 2): bad\ufffd"),
-        (b"  \n", "ripgrep error (exit 2): unknown"),
-    ],
-)
-def test_a_rg_failure_names_its_exit_and_stderr(
-    tmp_path: Path,
-    stderr: bytes,
-    message: str,
-) -> None:
+def test_a_rg_failure_names_its_exit_and_stderr(tmp_path: Path) -> None:
     f = tmp_path / "f.txt"
     f.write_text("x\n")
     with (
         patch("copybarista.lib.files.grep.shutil.which", return_value="/rg"),
         patch(
             "copybarista.lib.files.grep.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 2, b"", stderr),
+            return_value=subprocess.CompletedProcess([], 2, b"", b"bad\xff\n"),
         ),
         pytest.raises(GrepError) as raised,
     ):
         grep(f, Query(pattern="x"))
-    assert str(raised.value) == message
+    assert str(raised.value) == "ripgrep error (exit 2): bad\ufffd"
+
+
+@pytest.mark.parametrize("rg", [True], ids=["rg"])
+def test_a_rg_exit_without_a_message_keeps_what_it_found(tmp_path: Path) -> None:
+    """``--no-messages`` silences per-file failures; their exit 2 is no error."""
+    f = tmp_path / "f.txt"
+    f.write_text("x\n")
+    with (
+        patch("copybarista.lib.files.grep.shutil.which", return_value="/rg"),
+        patch(
+            "copybarista.lib.files.grep.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 2, f"{f}\n".encode(), b" \n"),
+        ),
+    ):
+        assert grep(f, Query(pattern="x")) == [str(f)]
 
 
 @_BOTH
@@ -848,6 +853,12 @@ def test_rg_command_with_every_knob_on(tmp_path: Path) -> None:
         multiline=True,
         pcre=True,
         text=True,
+        word=True,
+        whole_line=True,
+        fixed=True,
+        search_ignored=True,
+        follow=True,
+        max_depth=3,
     )
     assert rg_command("/rg", [tmp_path], query) == [
         *_RG_BASE,
@@ -857,7 +868,30 @@ def test_rg_command_with_every_knob_on(tmp_path: Path) -> None:
         *("-B", "1", "-A", "2"),
         *("--type-clear", "py", "--type-add", "py:*.py", "--type", "py"),
         *("--text", "-P"),
+        *("-w", "-x", "-F", "--no-ignore", "--follow", "--max-depth", "3"),
         *("--", "pat", str(tmp_path)),
+    ]
+
+
+def test_rg_command_for_line_selection_knobs(tmp_path: Path) -> None:
+    """An inverted line has no match to locate, and ripgrep's columns then lie."""
+    query = Query(pattern="pat", output_mode="content", invert=True, max_count=2)
+    assert rg_command("/rg", [tmp_path], query) == [
+        *_RG_BASE,
+        *_RG_VCS,
+        *("-n", "-v", "--max-count", "2", "--", "pat", str(tmp_path)),
+    ]
+    only = Query(pattern="pat", output_mode="content", only_matching=True)
+    assert rg_command("/rg", [tmp_path], only) == [
+        *_RG_BASE,
+        *_RG_VCS,
+        *("-n", "--column", "-o", "--", "pat", str(tmp_path)),
+    ]
+    without = Query(pattern="pat", output_mode="files_without_match")
+    assert rg_command("/rg", [tmp_path], without) == [
+        *_RG_BASE,
+        *_RG_VCS,
+        *("-n", "--files-without-match", "--", "pat", str(tmp_path)),
     ]
 
 
@@ -966,6 +1000,391 @@ def test_an_invalid_pattern_gets_rgs_error(tmp_path: Path) -> None:
     file.write_text("hit\n")
     with pytest.raises(GrepError, match="ripgrep error \\(exit 2\\)"):
         grep(file, Query(pattern="("))
+
+
+_LINES = "foo bar\nfoobar\nbaz\nfoo foo\n"
+
+
+def _rows(f: Path, *specs: tuple[str, str, int]) -> list[Row]:
+    """Build rows of ``f`` from ``(prefix after the name, text, match column)``."""
+    out: list[Row] = []
+    for head, text, column in specs:
+        prefix = f"{f}{head}"
+        out.append(
+            Row(
+                text=prefix + text,
+                prefix_end=len(prefix),
+                column=len(prefix) + column if column >= 0 else -1,
+            ),
+        )
+    return out
+
+
+@_BOTH
+@pytest.mark.parametrize(
+    ("mode", "rows"),
+    [
+        ("content", ["{f}:3:baz", "{g}:1:nothing"]),
+        ("count", ["{f}:1", "{g}:1"]),
+        ("files_with_matches", ["{f}", "{g}"]),
+        ("files_without_match", []),
+    ],
+)
+def test_invert_selects_the_lines_that_do_not_match(
+    tmp_path: Path,
+    mode: OutputMode,
+    rows: list[str],
+) -> None:
+    f, g = tmp_path / "f", tmp_path / "g"
+    f.write_text(_LINES)
+    g.write_text("nothing\n")
+    query = Query(pattern="foo", output_mode=mode, invert=True)
+    assert grep([f, g], query) == [row.format(f=f, g=g) for row in rows]
+
+
+@_BOTH
+def test_an_inverted_line_has_no_match_to_locate(tmp_path: Path) -> None:
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    query = Query(pattern="foo", output_mode="content", invert=True)
+    assert grep_rows(f, query) == _rows(f, (":3:", "baz", -1))
+
+
+@_BOTH
+def test_inverted_context_is_the_matching_lines(tmp_path: Path) -> None:
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    query = Query(pattern="baz", output_mode="content", invert=True, context_before=1)
+    assert grep(f, query) == [
+        f"{f}:1:foo bar",
+        f"{f}:2:foobar",
+        f"{f}-3-baz",
+        f"{f}:4:foo foo",
+    ]
+
+
+@_BOTH
+def test_word_needs_no_word_character_beside_the_match(tmp_path: Path) -> None:
+    f, h = tmp_path / "f", tmp_path / "h"
+    f.write_text(_LINES)
+    h.write_text("foo\nao-x b\n")
+    word = Query(pattern="foo", output_mode="content", word=True)
+    assert grep_rows(f, word) == _rows(f, (":1:", "foo bar", 0), (":4:", "foo foo", 0))
+    assert grep(h, Query(pattern="-x", word=True)) == []
+    alternation = Query(pattern="foo|ao", output_mode="count", word=True)
+    assert grep(h, alternation) == [f"{h}:2"]
+
+
+@_BOTH
+def test_whole_line_wraps_the_whole_pattern(tmp_path: Path) -> None:
+    h, h2 = tmp_path / "h", tmp_path / "h2"
+    h.write_text("foo\nao-x b\n")
+    h2.write_text("foo foo\nfoo\n")
+    line = Query(pattern="foo|ao", output_mode="content", whole_line=True)
+    assert grep(h, line) == [f"{h}:1:foo"]
+    both = Query(pattern="foo", output_mode="content", whole_line=True, word=True)
+    assert grep(h2, both) == [f"{h2}:2:foo"]
+
+
+@_BOTH
+def test_fixed_reads_the_pattern_as_text(tmp_path: Path) -> None:
+    f = tmp_path / "f"
+    f.write_text("a.b\naxb\nx\\ny (\n")
+    assert grep(f, Query(pattern="a.b", output_mode="content", fixed=True)) == [
+        f"{f}:1:a.b",
+    ]
+    assert grep(f, Query(pattern="x\\ny (", output_mode="count", fixed=True)) == [
+        f"{f}:1",
+    ]
+    folded = Query(
+        pattern="A.B",
+        output_mode="count",
+        fixed=True,
+        case_insensitive=True,
+    )
+    assert grep(f, folded) == [f"{f}:1"]
+
+
+@_BOTH
+def test_fixed_text_holding_a_newline_needs_multiline(tmp_path: Path) -> None:
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    with pytest.raises(GrepError, match="multiline is off"):
+        grep(f, Query(pattern="bar\nfoo", fixed=True))
+    assert grep(f, Query(pattern="bar\nfoo", fixed=True, multiline=True)) == [str(f)]
+
+
+@_BOTH
+def test_only_matching_prints_each_match_as_its_own_row(tmp_path: Path) -> None:
+    """Each row's text is its match, so the match begins where the text does."""
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    query = Query(
+        pattern="FOO",
+        output_mode="content",
+        only_matching=True,
+        case_insensitive=True,
+    )
+    assert grep_rows(f, query) == _rows(
+        f,
+        (":1:", "foo", 0),
+        (":2:", "foo", 0),
+        (":4:", "foo", 0),
+        (":4:", "foo", 0),
+    )
+    count = Query(pattern="foo", output_mode="count", only_matching=True)
+    assert grep(f, count) == [f"{f}:4"]
+
+
+@_BOTH
+def test_only_matching_skips_an_empty_match_where_one_just_ended(
+    tmp_path: Path,
+) -> None:
+    """Ripgrep's engine, unlike Python's, finds no empty match at a match's end."""
+    h = tmp_path / "h"
+    h.write_text("foo\nao-x b\n")
+    query = Query(pattern="o*", output_mode="content", only_matching=True)
+    assert grep(h, query) == [
+        f"{h}:1:",
+        f"{h}:1:oo",
+        *(f"{h}:2:{text}" for text in ("", "o", "", "", "", "")),
+    ]
+    count = Query(pattern="o*", output_mode="count", only_matching=True)
+    assert grep(h, count) == [f"{h}:8"]
+
+
+@_BOTH
+def test_only_matching_keeps_context_lines_whole(tmp_path: Path) -> None:
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    query = Query(
+        pattern="foo",
+        output_mode="content",
+        only_matching=True,
+        context_after=1,
+    )
+    assert grep(f, query) == [
+        f"{f}:1:foo",
+        f"{f}:2:foo",
+        f"{f}-3-baz",
+        f"{f}:4:foo",
+        f"{f}:4:foo",
+    ]
+
+
+@_BOTH
+def test_max_count_stops_but_shows_a_match_in_its_trailing_context(
+    tmp_path: Path,
+) -> None:
+    f = tmp_path / "f"
+    f.write_text(_LINES)
+    query = Query(pattern="foo", output_mode="content", max_count=1, context_after=2)
+    assert grep_rows(f, query) == _rows(
+        f,
+        (":1:", "foo bar", 0),
+        (":2:", "foobar", 0),
+        ("-3-", "baz", -1),
+    )
+    count = Query(pattern="foo", output_mode="count", max_count=1)
+    assert grep(f, count) == [f"{f}:1"]
+    inverted = Query(
+        pattern="baz",
+        output_mode="content",
+        invert=True,
+        max_count=1,
+        context_after=2,
+    )
+    assert grep(f, inverted) == [f"{f}:1:foo bar", f"{f}:2:foobar", f"{f}-3-baz"]
+
+
+@_BOTH
+def test_max_count_counts_lines_not_matches(tmp_path: Path) -> None:
+    h2 = tmp_path / "h2"
+    h2.write_text("foo foo\nfoo\n")
+    query = Query(pattern="foo", output_mode="content", only_matching=True, max_count=1)
+    assert grep(h2, query) == [f"{h2}:1:foo", f"{h2}:1:foo"]
+    count = Query(pattern="foo", output_mode="count", only_matching=True, max_count=1)
+    assert grep(h2, count) == [f"{h2}:2"]
+
+
+@_BOTH
+def test_files_without_match_lists_what_a_walk_finds_no_match_in(
+    tmp_path: Path,
+) -> None:
+    """A walked binary file is skipped outright, so it is not listed either."""
+    (tmp_path / "bin").write_bytes(b"x\0zzz\n")
+    (tmp_path / "e").touch()
+    (tmp_path / "s").write_text("foo\n")
+    (tmp_path / "t").write_text("no\n")
+    query = Query(pattern="foo", output_mode="files_without_match")
+    assert grep(tmp_path, query) == [str(tmp_path / "e"), str(tmp_path / "t")]
+
+
+@_BOTH
+def test_search_ignored_walks_what_gitignore_names(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    query = Query(pattern="hit", search_ignored=True)
+    expected = [".hidden.py", "a.py", "b.txt", "build/gen.py"]
+    assert grep(root, query) == [str(root / name) for name in expected]
+
+
+@_BOTH
+def test_follow_walks_through_symlinks_and_past_broken_ones(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "x.txt").write_text("hit\n")
+    (tmp_path / "dir").symlink_to(tmp_path / "real")
+    (tmp_path / "file.txt").symlink_to(tmp_path / "real" / "x.txt")
+    (tmp_path / "broken").symlink_to(tmp_path / "nowhere")
+    (tmp_path / "real" / "up").symlink_to(tmp_path)
+    assert grep(tmp_path, Query(pattern="hit")) == [str(tmp_path / "real" / "x.txt")]
+    assert grep(tmp_path, Query(pattern="hit", follow=True)) == [
+        str(tmp_path / "dir" / "x.txt"),
+        str(tmp_path / "file.txt"),
+        str(tmp_path / "real" / "x.txt"),
+    ]
+
+
+@_BOTH
+def test_max_depth_bounds_the_walk(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    shallow = Query(pattern="hit", case_insensitive=True, max_depth=1)
+    assert grep(root, shallow) == [
+        str(root / n) for n in (".hidden.py", "a.py", "b.txt")
+    ]
+    deep = Query(pattern="hit", case_insensitive=True, max_depth=2)
+    assert grep(root, deep)[-1] == str(root / "sub" / "c.py")
+
+
+@_BOTH
+@pytest.mark.parametrize(
+    "query",
+    [
+        Query(pattern="x", multiline=True, invert=True),
+        Query(pattern="x", multiline=True, only_matching=True),
+        Query(pattern="x", multiline=True, max_count=1),
+        Query(pattern="x", invert=True, only_matching=True),
+    ],
+    ids=["multiline-invert", "multiline-only", "multiline-max", "invert-only"],
+)
+def test_combinations_ripgrep_answers_inconsistently_are_refused(
+    tmp_path: Path,
+    query: Query,
+) -> None:
+    (tmp_path / "f").write_text("x\n")
+    with pytest.raises(GrepError, match="cannot combine"):
+        grep(tmp_path, query)
+
+
+@contextlib.contextmanager
+def _locked(path: Path) -> Generator[None]:
+    """Make ``path`` unreadable for the block; skip under root, which reads all."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads every file")
+    mode = path.stat().st_mode
+    path.chmod(0)
+    try:
+        yield
+    finally:
+        path.chmod(mode)
+
+
+@_BOTH
+def test_an_unreadable_walked_file_is_skipped_in_every_backend(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.txt").write_text("hit\n")
+    (tmp_path / "b.txt").write_text("hit\n")
+    with _locked(tmp_path / "a.txt"):
+        found = grep(tmp_path, Query(pattern="hit"))
+    assert found == [str(tmp_path / "b.txt")]
+
+
+@_BOTH
+@pytest.mark.parametrize("follow", [False, True])
+def test_an_unreadable_walked_directory_is_skipped_in_every_backend(
+    tmp_path: Path,
+    follow: bool,
+) -> None:
+    (tmp_path / "locked").mkdir()
+    (tmp_path / "locked" / "a.txt").write_text("hit\n")
+    (tmp_path / "z.txt").write_text("hit\n")
+    with _locked(tmp_path / "locked"):
+        found = grep(tmp_path, Query(pattern="hit", follow=follow))
+    assert found == [str(tmp_path / "z.txt")]
+
+
+@_BOTH
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_an_unreadable_named_path_is_an_error_not_no_matches(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """A walk skips what it cannot read; a path the caller named is not skipped."""
+    named = tmp_path / "named"
+    if kind == "file":
+        named.write_text("hit\n")
+    else:
+        named.mkdir()
+        (named / "a.txt").write_text("hit\n")
+    with _locked(named), pytest.raises(GrepError) as raised:
+        grep(named, Query(pattern="hit"))
+    assert str(raised.value) == f"permission denied: {named}"
+
+
+@pytest.mark.parametrize(
+    ("field", "make"),
+    [
+        ("context_before", partial(Query, pattern="x", context_before=-1)),
+        ("context_after", partial(Query, pattern="x", context_after=-1)),
+        ("max_count", partial(Query, pattern="x", max_count=-1)),
+        ("max_depth", partial(Query, pattern="x", max_depth=-1)),
+    ],
+)
+def test_a_negative_count_is_refused_when_the_query_is_made(
+    field: str,
+    make: Callable[[], Query],
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must be at least 0, got -1"):
+        make()
+
+
+@_BOTH
+@pytest.mark.parametrize(
+    ("pattern", "lines"),
+    [
+        ("x*", [2, 3, 4, 5, 6]),
+        ("-", []),
+        ("foo-", [3, 4]),
+        ("b c", [1]),
+        ("", [2, 3, 4, 5, 6]),
+        (r"\.", [5]),
+        ("a?", [1, 2, 3, 4, 5, 6]),
+    ],
+)
+def test_word_agrees_with_ripgrep_where_a_match_can_be_empty_or_end_in_a_symbol(
+    tmp_path: Path,
+    pattern: str,
+    lines: list[int],
+) -> None:
+    f = tmp_path / "f"
+    f.write_text("a-b c\n-x\nfoo-\nfoo- bar\n.\n\nab ab\n")
+    query = Query(pattern=pattern, output_mode="content", word=True)
+    assert [int(row.split(":")[1]) for row in grep(f, query)] == lines
+
+
+@_BOTH
+def test_an_inverted_named_binary_file_splits_at_each_nul(tmp_path: Path) -> None:
+    f = tmp_path / "nb"
+    f.write_bytes(b"x\0foo\0bar\nbaz\n")
+    assert grep(f, Query(pattern="foo", output_mode="count", invert=True)) == [
+        f"{f}:3",
+    ]
+    text = Query(pattern="foo", output_mode="count", invert=True, text=True)
+    assert grep(f, text) == [f"{f}:1"]
+    content = Query(pattern="foo", output_mode="content", invert=True)
+    assert grep(f, content) == [
+        f'{f}: binary file matches (found "\\0" byte around offset 1)',
+    ]
 
 
 def test_a_name_outside_every_path_sorts_last() -> None:

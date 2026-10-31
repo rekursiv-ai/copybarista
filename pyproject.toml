@@ -30,7 +30,7 @@ dependencies = [
     "treekle>=0.4.1",
     "pyyaml>=6.0.3",
     "rignore>=0.8.1",
-    "tomlkit>=0.15.1",
+    "tomlkit>=0.15.2",
 ]
 
 [project.scripts]
@@ -40,29 +40,29 @@ copybarista = "copybarista.cli:main"
 # NEVER ADD MORE DEPENDENCIES!
 
 debug = [
-    "ipython",
-    "tqdm",
+    "ipython>=9.18.0",
+    "tqdm>=4.70.1",
 ]
 lint = [
-    "codespell>=2.2.4",
-    "ruff",
+    "codespell>=2.4.3",
+    "ruff>=0.17.3",
 ]
 test = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
-    "pytest>=7.0",
-    "hypothesis>=6.155.1",
-    "pytest-cov",
-    "typing_extensions>=4.10",
+    "pytest>=9.2.0",
+    "hypothesis>=6.170.14",
+    "pytest-cov>=7.1.0",
+    "typing_extensions>=4.16.0",
 ]
 typecheck = [
-    "basedpyright>=1.40.1",
+    "basedpyright>=1.40.2",
     "pyrefly>=1.4.0",
-    "ty>=0.0.84",
+    "ty>=0.0.95",
     "rekursiv-ai-typings>=0.1.11",
 ]
 "pre-commit" = [
-    "pre-commit>=4.6",
+    "pre-commit>=4.7.0",
     {include-group = "lint"},
     {include-group = "test"},
     {include-group = "typecheck"},
@@ -85,16 +85,6 @@ Changelog = "https://github.com/rekursiv-ai/copybarista/releases"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# Tool settings: single source of truth.
-# Preferred location for any tool setting, in order:
-#   pyproject.toml  >  .pre-commit-config.yaml  >  .github/workflows/ci.yml
-# Put a setting as high in this chain as the tool allows. Only drop to a lower
-# file when the higher one cannot express it (e.g. a CLI-only flag with no
-# config key). pyproject.toml holds tool config; .pre-commit-config.yaml is the
-# sole source for how hooks run (thread/worker counts, heap caps);
-# .github/workflows/ci.yml only invokes the hooks and must not redefine any
-# of these.
 
 [tool.hatch.build.targets.wheel]
 packages = ["copybarista"]
