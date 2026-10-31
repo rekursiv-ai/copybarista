@@ -19,6 +19,10 @@ All notable copybarista changes are documented here. This project follows
 
 ### Changed
 
+- Sync workflows and their jobs are named `loop→<package>` (export) and
+  `<package>→loop` (import), lowercase. The long `Loop to <Label> and update
+  public PR` names were hard to read in GitHub's Actions list. The export PR age
+  job is `export PR lands`, shown under its workflow's name.
 - Every package's CI runs the same commands, `sync_setup.CI_COMMANDS`: sync,
   then the package's pre-commit hooks at both stages. A check one package needs
   is a test in that package. Per-package command lists drifted apart, and the

@@ -1095,11 +1095,29 @@ def test_check_sync_config_rejects_a_permissions_escalation(tmp_path: Path):
         check_sync_config(root=tmp_path)
 
 
+@pytest.mark.parametrize(
+    "label",
+    ["Config→gle", "a\u2028b", "a\u2029b", "a\x85b", "a\x7fb", "a\x9fb"],
+)
+def test_import_workflow_keeps_the_sync_label_verbatim(label: str):
+    """YAML folds raw U+0085/U+2028/U+2029 and rejects raw DEL and C1 controls."""
+    parsed = from_plain(
+        yaml.safe_load(import_workflow(_settings(sync_label=label))),
+        dict[object, object],
+    )
+    job = from_plain(
+        from_plain(parsed["jobs"], dict[str, object])["import-change"],
+        dict[str, object],
+    )
+
+    assert from_plain(job["env"], dict[str, object])["COPYBARISTA_SYNC_LABEL"] == label
+
+
 def test_export_workflow_uses_metadata_without_package_specific_env_names():
     workflow = export_workflow(_settings(), inputs=())
 
-    assert 'name: "Loop to Configgle"' in workflow
-    assert 'name: "Loop to Configgle and update public PR"' in workflow
+    assert workflow.count('name: "loop→configgle"') == 2
+    assert 'name: "export PR lands"' in workflow
     assert "configgle/export/main" in workflow
     assert (
         "group: copybarista-export-${{ github.workflow }}-${{ github.ref }}" in workflow
@@ -1568,10 +1586,11 @@ def _scaffold_with_import_workflow(
     workflow.write_text(edit(workflow.read_text(encoding="utf-8")), encoding="utf-8")
 
 
-def test_check_sync_config_accepts_postgresql_as_the_pinned_server(tmp_path: Path):
+def test_check_sync_config_accepts_package_requests_as_rendered(tmp_path: Path):
+    """``postgresql`` is the pinned server; ``libturbojpeg`` is its installer."""
     _scaffold_with_import_workflow(
         tmp_path,
-        packages=("ripgrep", "postgresql"),
+        packages=("ripgrep", "postgresql", "libturbojpeg"),
         edit=lambda text: text,
     )
 
@@ -1580,7 +1599,11 @@ def test_check_sync_config_accepts_postgresql_as_the_pinned_server(tmp_path: Pat
 
 @pytest.mark.parametrize(
     ("dropped", "missing"),
-    [(f" postgresql-{PG_MAJOR} ", "postgresql"), (" ripgrep\n", "ripgrep")],
+    [
+        (f" postgresql-{PG_MAJOR} ", "postgresql"),
+        (" ripgrep\n", "ripgrep"),
+        (" public-head/install-libjpeg-turbo.sh", "libturbojpeg"),
+    ],
 )
 def test_check_sync_config_names_the_system_package_the_import_skips(
     tmp_path: Path,
@@ -1589,8 +1612,12 @@ def test_check_sync_config_names_the_system_package_the_import_skips(
 ):
     _scaffold_with_import_workflow(
         tmp_path,
-        packages=("ripgrep", "postgresql"),
-        edit=lambda text: text.replace(dropped, dropped.replace(missing, "other"), 1),
+        packages=("ripgrep", "postgresql", "libturbojpeg"),
+        edit=lambda text: text.replace(
+            dropped,
+            dropped.replace(dropped.strip(), "other"),
+            1,
+        ),
     )
 
     with pytest.raises(ConfigError) as error:
