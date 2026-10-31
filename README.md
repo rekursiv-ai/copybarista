@@ -26,6 +26,14 @@ Bidirectional source sync for publishing OSS-ready trees from a monorepo.
   <a href="https://rekursiv.ai/blog/i-built-copybarista-in-a-day/">Blog post</a>
 </p>
 
+## Quick Start
+
+```bash
+uvx copybarista@latest --help
+```
+
+See [Install](#install) for additional details.
+
 ## Why should I use this?
 
 Copybarista is for teams running Python that publish OSS packages from private or monorepo
@@ -105,14 +113,28 @@ workflow capabilities.
 ## Install
 
 ```bash
-uv tool install copybarista
-copybarista --help
+uv tool install copybarista && copybarista --help
+# Later: uv tool upgrade copybarista
 ```
 
-Other options:
+If you're missing `uvx`/`uv`,
+- Mac
+  ```bash
+  brew install uv
+  ```
+- Linux
+  ```bash
+  sudo apt install -y curl
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
 
+To add copybarista to your own project as a library,
 ```bash
 uv add copybarista
+```
+
+Or with pipx or pip,
+```bash
 pipx install copybarista
 pip install copybarista
 ```
@@ -120,7 +142,7 @@ pip install copybarista
 Copybarista requires Python 3.12. Git exports also require the system
 `git` executable.
 
-## Quick Start
+## First Export
 
 Create `copy.barista.toml` at the root of the source checkout:
 
