@@ -7,12 +7,6 @@ All notable copybarista changes are documented here. This project follows
 
 ### Added
 
-- The export workflow has a second job that fails while the public export PR
-  has been open over two hours. It runs after each export and hourly on a
-  schedule. An export that enables auto-merge used to pass even when the PR's
-  checks then failed, so a stuck export showed no red anywhere.
-  `scripts/check_export_pr.py` holds the check.
-
 - `system_packages` accepts `libturbojpeg`, installed by the package's shipped
   `install-libjpeg-turbo.sh`: no apt release carries the libjpeg-turbo 3 that
   pyturbojpeg 2 needs.
@@ -21,8 +15,7 @@ All notable copybarista changes are documented here. This project follows
 
 - Sync workflows and their jobs are named `loop→<package>` (export) and
   `<package>→loop` (import), lowercase. The long `Loop to <Label> and update
-  public PR` names were hard to read in GitHub's Actions list. The export PR age
-  job is `export PR lands`, shown under its workflow's name.
+  public PR` names were hard to read in GitHub's Actions list.
 - Every package's CI runs the same commands, `sync_setup.CI_COMMANDS`: sync,
   then the package's pre-commit hooks at both stages. A check one package needs
   is a test in that package. Per-package command lists drifted apart, and the
@@ -31,8 +24,11 @@ All notable copybarista changes are documented here. This project follows
 - The import gate runs `CI_COMMANDS` as one script in GitHub's default bash, as
   a workflow step does. It ran each command in its own shell, so a `cd` that
   leaked into the next command passed there and failed in CI.
-- The export runs no package checks of its own: the PR cannot merge until
-  public CI passes, and the stuck-PR job above reports when it does not.
+- The export runs no package checks of its own; public CI runs them on the
+  export PR and on `main`.
+- After merging its PR, the export waits for the public repository's package
+  validation on the merged commit and fails unless it passes. It exited green on
+  merging alone, so a public `main` that failed CI showed green in every export.
 
 ### Removed
 
@@ -41,10 +37,6 @@ All notable copybarista changes are documented here. This project follows
   `--smoke-import` and `sync_export_pr.py --smoke-import`. A sync config naming
   any key the loader does not read is now an error, so a leftover one cannot
   look like it still takes effect.
-- A `package-validation.yml` that validates on several Pythons adds a job named
-  `Lint, type-check, test, and build` that passes only when every version
-  passes. A matrix names each job `... (3.12)` and so on, so a ruleset requiring
-  the bare name blocked the export PR even with every check green.
 - `init-sync` writes a `.python-version` of 3.14, and `check-sync-config` requires
   one, unignored by `.gitignore`. Without it, uv in a public checkout picks the
   newest Python installed, which can be one a dependency has no wheels for yet.

@@ -2494,9 +2494,11 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     assert "Exported template placeholder" not in opened[0]
 
 
-def test_run_export_sync_skips_auto_merge_when_no_pr(
+@pytest.mark.parametrize("pr_open", [True, False], ids=["pr", "no-pr"])
+def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    pr_open: bool,
 ) -> None:
     """A no-op export (no PR) must not attempt auto-merge on a missing PR."""
     public_dir = tmp_path / "public"
@@ -2534,11 +2536,15 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         pr_plan: sync_export_pr.PrReplayPlan,
     ) -> bool:
         del request, pr_plan
-        return False  # No changes and no existing PR.
+        return pr_open
 
     def fake_enable_auto_merge(*, request: ExportRequest, pr_title: str) -> None:
         del request, pr_title
         merged.append("merge")
+
+    def fake_await_public_ci(*, request: ExportRequest) -> None:
+        del request
+        merged.append("public ci")
 
     monkeypatch.setattr(
         sync_export_pr,
@@ -2560,6 +2566,7 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         "_enable_export_pr_auto_merge",
         fake_enable_auto_merge,
     )
+    monkeypatch.setattr(sync_export_pr, "_await_public_ci", fake_await_public_ci)
 
     sync_export_pr.run_export_sync(
         replace(
@@ -2571,7 +2578,8 @@ def test_run_export_sync_skips_auto_merge_when_no_pr(
         ),
     )
 
-    assert merged == []
+    # A PR merges, then the export waits on public CI; no PR, nothing to wait on.
+    assert merged == (["merge", "public ci"] if pr_open else [])
 
 
 def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
@@ -2939,6 +2947,132 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
     workflows = _upstream_export_workflows(pyproject=pyproject, source_dir=source_dir)
 
     assert workflows == ("loop-to-treekle.yml", "loop-to-typings.yml")
+
+
+def _public_ci(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    prs: list[str],
+    runs: list[str],
+) -> list[list[str]]:
+    """Fake ``gh``: each ``pr view`` and ``run list`` answers its next reply."""
+    replies = {"pr": iter(prs), "run": iter(runs)}
+    calls: list[list[str]] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=next(replies[argv[1]]))
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+    return calls
+
+
+def _no_sleep(seconds: float) -> None:
+    del seconds
+
+
+_MERGED: Final = '{"state": "MERGED", "mergeCommit": {"oid": "c0ffee"}}'
+
+
+def test_the_export_waits_for_public_ci_on_what_it_merged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The export reports what public CI says, not just that it merged.
+
+    It went green on merging alone, so sagent's exports failed public CI for a
+    day with every export run green.
+    """
+    calls = _public_ci(
+        monkeypatch,
+        prs=['{"state": "OPEN", "mergeCommit": null}', _MERGED],
+        runs=[
+            "[]",
+            '[{"status": "in_progress", "conclusion": ""}]',
+            '[{"status": "completed", "conclusion": "success"}]',
+        ],
+    )
+
+    sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+
+    run_lists = [argv for argv in calls if argv[1] == "run"]
+    assert {"c0ffee", "package-validation.yml", "example/public"} <= set(run_lists[0])
+
+
+@pytest.mark.parametrize(
+    ("replies", "says"),
+    [
+        (
+            ([_MERGED], ['[{"status": "completed", "conclusion": "failure"}]']),
+            "failure",
+        ),
+        ((['{"state": "CLOSED", "mergeCommit": null}'], []), "closed"),
+    ],
+    ids=["ci-failed", "pr-closed"],
+)
+def test_the_export_fails_when_public_ci_does_not_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    replies: tuple[list[str], list[str]],
+    says: str,
+) -> None:
+    prs, runs = replies
+    _public_ci(monkeypatch, prs=prs, runs=runs)
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+
+    assert says in capsys.readouterr().out
+
+
+def test_public_ci_is_read_with_the_workflow_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync App holds no Actions permission; the workflow's token reads runs."""
+    tokens: list[str] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        tokens.append(from_plain(kwargs["env"], dict[str, str])["GH_TOKEN"])
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"status": "completed", "conclusion": "success"}]',
+        )
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setenv("GH_TOKEN", "sync-token")
+    monkeypatch.setenv("COPYBARISTA_ACTIONS_TOKEN", "actions-token")
+
+    sync_export_pr._await_ci(repo="example/public", sha="c0ffee", cwd=Path("/public"))
+
+    assert tokens == ["actions-token"]
+
+
+@pytest.mark.parametrize(
+    "run",
+    ['[{"status": "in_progress", "conclusion": ""}]', "[]"],
+    ids=["never-finishes", "never-starts"],
+)
+def test_the_export_fails_when_public_ci_does_not_finish_in_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run: str,
+) -> None:
+    """A run that never starts is red too, not a wait without end."""
+    sleeps: list[float] = []
+    _public_ci(monkeypatch, prs=[_MERGED], runs=[run] * 1000)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+
+    assert "did not finish" in capsys.readouterr().out
+    # One poll a minute keeps 11 exports inside the workflow token's hourly limit.
+    assert set(sleeps) == {sync_export_pr.PUBLIC_CI_POLL_SEC}
+    assert len(sleeps) == sync_export_pr.PUBLIC_CI_WAIT_SEC / 60
 
 
 def test_await_upstream_exports_waits_until_each_run_completes(

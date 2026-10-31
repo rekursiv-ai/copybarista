@@ -624,32 +624,8 @@ def package_validation_workflow(settings: SyncSettings) -> str:
             "PYTHON_SETUP": python_setup,
             "SYSTEM_DEPS": _system_deps_step(settings.system_packages, guarded=False),
             "CI_COMMANDS": "\n".join(f"          {command}" for command in CI_COMMANDS),
-            "VALIDATE_JOB_NAME": (
-                "Lint, type-check, test, and build (${{ matrix.python-version }})"
-                if strategy
-                else "Lint, type-check, test, and build"
-            ),
-            "MATRIX_GATE": _MATRIX_GATE if strategy else "",
         },
     )
-
-
-# A matrix suffixes each job's name with its Python version, but a public repo's
-# ruleset requires the check by the bare name, so without this job the export PR
-# passes every check and stays blocked. ``!cancelled()`` so a failed version runs
-# this job to red: a SKIPPED required check counts as passing.
-_MATRIX_GATE: Final = """
-
-  validated:
-    name: Lint, type-check, test, and build
-    needs: validate
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every version
-        run: |
-          test "${{ needs.validate.result }}" = success"""
 
 
 def publish_npm_workflow(settings: SyncSettings) -> str:
@@ -786,11 +762,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
         {
             "WORKFLOW_NAME": _yaml_str(f"loop→{settings.package_name}"),
             "JOB_NAME": _yaml_str(f"loop→{settings.package_name}"),
-            "AGE_JOB_NAME": _yaml_str("export PR lands"),
-            "AGE_SCRIPT_DIR": _yaml_str(
-                f"{settings.copybarista_project_path}/scripts",
-            ),
-            "AGE_SCRIPT": _sh(f"{project_path}/scripts/check_export_pr.py"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
