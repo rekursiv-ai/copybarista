@@ -784,11 +784,9 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
     return _render_template(
         "internal-to-external.yml.tmpl",
         {
-            "WORKFLOW_NAME": _yaml_str(f"Loop to {settings.sync_label}"),
-            "JOB_NAME": _yaml_str(
-                f"Loop to {settings.sync_label} and update public PR",
-            ),
-            "AGE_JOB_NAME": _yaml_str(f"{settings.sync_label} export PR lands"),
+            "WORKFLOW_NAME": _yaml_str(f"loop→{settings.package_name}"),
+            "JOB_NAME": _yaml_str(f"loop→{settings.package_name}"),
+            "AGE_JOB_NAME": _yaml_str("export PR lands"),
             "AGE_SCRIPT_DIR": _yaml_str(
                 f"{settings.copybarista_project_path}/scripts",
             ),
@@ -848,10 +846,8 @@ def import_workflow(settings: SyncSettings) -> str:
     return _render_template(
         "external-to-internal.yml.tmpl",
         {
-            "WORKFLOW_NAME": _yaml_str(f"{settings.sync_label} to Loop"),
-            "JOB_NAME": _yaml_str(
-                f"{settings.sync_label} to Loop into source",
-            ),
+            "WORKFLOW_NAME": _yaml_str(f"{settings.package_name}→loop"),
+            "JOB_NAME": _yaml_str(f"{settings.package_name}→loop"),
             "IMPORT_BRANCH_PREFIX": _yaml_str(settings.import_prefix),
             "SYNC_LABEL": _yaml_str(settings.sync_label),
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
@@ -1506,8 +1502,14 @@ def _toml_bool(value: bool) -> str:
 
 
 def _yaml_str(value: str) -> str:
-    """Return a YAML-compatible quoted string."""
-    return json.dumps(value)
+    """Return a YAML double-quoted string, keeping printable non-ASCII readable."""
+    # JSON escapes only C0 controls, ``"`` and ``\``; YAML also rejects raw DEL
+    # and C1 controls and treats raw U+0085/U+2028/U+2029 as line breaks.
+    return re.sub(
+        "[^\x20-\x7e\xa0-\u2027\u202a-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]",
+        lambda match: f"\\u{ord(match[0]):04x}",
+        json.dumps(value, ensure_ascii=False),
+    )
 
 
 def _github_expr_str(value: str) -> str:
