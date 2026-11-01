@@ -102,6 +102,19 @@ def test_clean_refuses_an_artifact_whose_directory_leaves_the_project(
     assert (outside / "__pycache__").is_dir()
 
 
+@pytest.mark.parametrize("target", ["..", "dist/.."])
+def test_clean_refuses_a_target_that_climbs_out_of_its_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    """Only the directory is resolved, so ``..`` must be refused as written."""
+    _project(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="outside project"):
+        clean._safe_project_path(target)
+
+
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the cleaner at a fresh project root under ``tmp_path`` and return it."""
     root = tmp_path.resolve() / "project"

@@ -18,7 +18,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
 import itertools
-import tomllib
 
 from copybarista.delta_render import DeltaError, render
 from copybarista.toml_layout import layout, uncommented
@@ -33,7 +32,6 @@ from copybarista.toml_lines import (
     spelled_key,
     split_entry,
     split_header,
-    value_key,
 )
 from copybarista.toml_lists import ListError, ListValue
 
@@ -89,10 +87,17 @@ def derive_values(base: str, target: str) -> str:
       delta: The value operations as delta text; empty when the contents agree.
 
     """
-    old = parse(uncommented(base))
-    new = _with_base_comments(parse(base), parse(uncommented(target)))
+    # Both sides take the base's comments, so an entry left as it stood is no edit,
+    # and one respelled, moved or changed is written with them. Comparing the
+    # commented target with an uncommented base made every commented entry an edit,
+    # and a merge restated it over the source's own change.
+    commented = parse(base)
+    old = _with_base_comments(commented, parse(uncommented(base)))
+    new = _with_base_comments(commented, parse(uncommented(target)))
     restated = _restated_arrays(old.blocks, new.blocks)
+    # pragma: no mutate start -- exact=None is falsy too.
     return _derived(old, new, restated=restated, listed=set(), exact=False)
+    # pragma: no mutate end
 
 
 # A table emptied of every key is stated whole, so it takes the lines above its header
@@ -144,12 +149,11 @@ def _with_remark(base: Entry, entry: Entry) -> Entry:
 
 def _commented(base: Entry | None, entry: Entry) -> Entry:
     """Return ``entry``'s new value written into ``base``'s comments, where it fits."""
-    # A kept value is no edit. Given its comments it would differ from the uncommented
-    # base and be written, and a merge would restate it over the source's own change.
-    if base is None or value_key(tomllib.loads(base.text)) == value_key(
-        tomllib.loads(entry.text),
-    ):
+    if base is None:
         return entry
+    # The comment lines above it travel with it, so an entry written elsewhere keeps
+    # them; ``uncommented`` took them from ``entry``.
+    entry = replace(entry, lead=base.lead)
     try:
         before, after = ListValue.parse(base.text), ListValue.parse(entry.text)
     except ListError:
