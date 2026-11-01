@@ -1788,7 +1788,9 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
             replay_base_digest=pr_plan.replay_base_digest,
             authors=pr_plan.state.authors,
         ),
-        encoding="utf-8",
+        # A test cannot change the process locale, so it cannot tell "UTF-8" or
+        # the default encoding from "utf-8".
+        encoding="utf-8",  # pragma: no mutate
     )
     _write_pr_body_file(request=request, body=pr_plan.body)
     _log(
