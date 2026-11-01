@@ -1473,6 +1473,11 @@ def test_strip_source_regions_names_a_malformed_block(
         )
 
 
+def _kind(transform: Transform) -> str:
+    """Name a case by its transform's type."""
+    return transform.type
+
+
 @pytest.mark.parametrize(
     "transform",
     [
@@ -1482,7 +1487,7 @@ def test_strip_source_regions_names_a_malformed_block(
         Transform(id="t", type="uncomment", path="*.txt", start="# EXT"),
         Transform(id="t", type="ruff_format", path="missing.py"),
     ],
-    ids=lambda transform: transform.type,
+    ids=_kind,
 )
 def test_a_required_transform_names_a_path_matching_no_files(
     tmp_path: Path,
@@ -1523,7 +1528,7 @@ def test_an_optional_ruff_format_of_a_missing_path_does_nothing(tmp_path: Path):
         ),
         Transform(id="t", type="uncomment", path="*.py", start="# S", required=False),
     ],
-    ids=lambda transform: transform.type,
+    ids=_kind,
 )
 def test_a_text_transform_leaves_a_symlink_and_its_target_alone(
     tmp_path: Path,

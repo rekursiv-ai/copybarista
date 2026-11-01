@@ -2176,7 +2176,7 @@ def test_a_command_is_logged_and_run_without_the_callers_virtualenv(
     tmp_path: Path,
 ) -> None:
     ran = RecordingRun()
-    monkeypatch.setattr(sync_import_change.subprocess, "run", ran)
+    monkeypatch.setattr(subprocess, "run", ran)
     monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere/.venv")
     monkeypatch.setenv("KEPT", "1")
 
@@ -2205,7 +2205,7 @@ def test_a_failed_checked_command_exits_with_its_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        sync_import_change.subprocess,
+        subprocess,
         "run",
         RecordingRun(returncode=3),
     )

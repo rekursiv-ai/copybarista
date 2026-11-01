@@ -6431,7 +6431,7 @@ def test_three_way_merge_needs_git_on_path(monkeypatch: pytest.MonkeyPatch):
     def no_git(name: str) -> None:
         assert name == "git"
 
-    monkeypatch.setattr(import_request.shutil, "which", no_git)
+    monkeypatch.setattr(shutil, "which", no_git)
 
     with pytest.raises(ImportRequestError, match="requires git on PATH"):
         _three_way_merge(current=b"a\n", base=b"a\n", incoming=b"b\n")

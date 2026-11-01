@@ -291,7 +291,7 @@ def test_cli_publish_git_exports_to_git_and_prints_the_manifest_on_request(
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(([], True, False, False), id="defaults"),
+        pytest.param((list[str](), True, False, False), id="defaults"),
         pytest.param(
             (["--no-verify", "--merge-import", "--json"], False, True, True),
             id="every-flag",

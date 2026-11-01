@@ -31,7 +31,7 @@ import itertools
 import math
 import tomllib
 
-from treekle import from_plain
+from treekle import PlainTree, from_plain
 
 
 type KeyPath = tuple[str, ...]
@@ -226,7 +226,7 @@ def remark(rest: str) -> str:
     return stripped if stripped.startswith("#") else ""
 
 
-def value_key(value: object) -> object:
+def value_key(value: PlainTree) -> object:
     """Return what a TOML value compares by: each scalar beside its type.
 
     Python's ``==`` holds ``true``, ``1`` and ``1.0`` equal, which TOML does not, so
@@ -256,7 +256,7 @@ def value_key(value: object) -> object:
 def spelled_key(spelled: str) -> object:
     """Return the ``value_key`` of the TOML value ``spelled`` writes."""
     return value_key(
-        from_plain(tomllib.loads(f"v = {spelled}"), dict[str, object])["v"],
+        from_plain(tomllib.loads(f"v = {spelled}"), dict[str, PlainTree])["v"],
     )
 
 
