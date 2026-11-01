@@ -1239,6 +1239,39 @@ def test_merge_keeps_source_drift_in_a_key_with_comments(
     assert replace(source, delta=delta).render() == current.replace("b = 1", "b = 9")
 
 
+def test_fold_takes_a_reorder_that_moves_each_comment_with_its_key(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[t]\n# Why a.\na = 1\n# Why b.\nb = 2\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    public = "[t]\n# Why b.\nb = 2\n# Why a.\na = 1\n"
+
+    assert replace(source, delta=source.fold(public)).render() == public
+
+
+def test_fold_refuses_a_reorder_that_drops_the_comments(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[t]\n# Why a.\na = 1\n# Why b.\nb = 2\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+
+    with pytest.raises(DeltaError, match="edits a comment"):
+        source.fold("[t]\nb = 2\na = 1\n")
+
+
+def test_fold_takes_a_requote_that_keeps_the_comment_beside_it(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('v = "3.12"  # Why.\n')
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    public = "v = '3.12'  # Why.\n"
+
+    assert replace(source, delta=source.fold(public)).render() == public
+
+
+def test_fold_refuses_a_requote_that_drops_the_comment_beside_it(tmp_path: Path):
+    """Quoting is spelling, but the comment comes from the source alone."""
+    (tmp_path / "pyproject.toml").write_text('v = "3.12"  # Why.\n')
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+
+    with pytest.raises(DeltaError, match="edits a comment"):
+        source.fold("v = '3.12'\n")
+
+
 @pytest.mark.parametrize("head", ["a = true\nb = 1\n", "a = 1.0\nb = 1\n"])
 def test_merge_replays_a_public_edit_to_a_value_of_a_new_type(
     tmp_path: Path,

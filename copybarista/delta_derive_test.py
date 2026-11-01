@@ -284,6 +284,35 @@ def test_derive_values_of_a_comment_edit_is_empty(base: str, target: str):
 @pytest.mark.parametrize(
     ("base", "target"),
     [
+        ('a = "x"  # Why.\nb = 1\n', "a = 'x'  # Why.\nb = 1\n"),
+        ("a = 1  # A.\nb = 2  # B.\n", "b = 2  # B.\na = 1  # A.\n"),
+        (
+            "[t]\n# Why a.\na = 1\n# Why b.\nb = 2\nc = 3\n",
+            "[t]\n# Why b.\nb = 2\n# Why a.\na = 1\nc = 3\n",
+        ),
+        # Beside them, a new key or table renders as ``derive`` writes one.
+        ("a = 1  # A.\n", "a = 1  # A.\nb = 2\n"),
+        ("a = 1  # A.\n", "a = 1  # A.\n\n[t]\nk = 1\n"),
+    ],
+    ids=[
+        "requoted",
+        "moved",
+        "moved under its comment lines",
+        "a key added",
+        "a table added",
+    ],
+)
+def test_derive_values_writes_a_value_it_respells_or_moves_with_its_comments(
+    base: str,
+    target: str,
+):
+    """Only a value left as it stood is no edit; one written keeps its comments."""
+    assert render(base, derive_values(base, target)) == target
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
         ("a = 1  # Why.\nb = 1\n", "a = true  # Why.\nb = 1\n"),
         ("a = 1  # Why.\nb = 1\n", "a = 1.0  # Why.\nb = 1\n"),
         ("w = [\n    # A.\n    1,\n]\n", "w = [\n    # A.\n    true,\n]\n"),

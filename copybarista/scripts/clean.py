@@ -88,9 +88,14 @@ def _safe_project_path(relative_target: str) -> Path:
     project_root = _CWD.parent
     target = project_root / relative_target
     # Resolve the directory only. Resolving the target too follows a symlinked
-    # artifact, so `main` would remove what it points to and keep the link.
+    # artifact, so `main` would remove what it points to and keep the link. A `..`
+    # left unresolved climbs out of that directory, so it is refused as written.
     target = target.parent.resolve() / target.name
-    if target == project_root or not target.is_relative_to(project_root):
+    if (
+        ".." in Path(relative_target).parts
+        or target == project_root
+        or not target.is_relative_to(project_root)
+    ):
         raise ValueError(f"Refusing to clean path outside project: {target}")
     return target
 
