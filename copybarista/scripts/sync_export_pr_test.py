@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final, TextIO
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from treekle import from_plain
@@ -3148,7 +3149,7 @@ def test_the_export_waits_for_public_ci_on_what_it_merged(
             ([_MERGED], ['[{"status": "completed", "conclusion": "failure"}]']),
             "failure",
         ),
-        ((['{"state": "CLOSED", "mergeCommit": null}'], []), "closed"),
+        ((['{"state": "CLOSED", "mergeCommit": null}'], list[str]()), "closed"),
     ],
     ids=["ci-failed", "pr-closed"],
 )
@@ -3942,7 +3943,7 @@ def test_a_command_is_logged_and_run_without_the_callers_virtualenv(
     tmp_path: Path,
 ) -> None:
     ran = RecordingRun()
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", ran)
+    monkeypatch.setattr(subprocess, "run", ran)
     monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere/.venv")
     monkeypatch.setenv("KEPT", "1")
 
@@ -3971,7 +3972,7 @@ def test_an_uncaptured_command_writes_where_told_with_the_env_given(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ran = RecordingRun()
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", ran)
+    monkeypatch.setattr(subprocess, "run", ran)
 
     sync_export_pr._run(["gh", "pr", "list"], stdout=subprocess.DEVNULL, env={"A": "1"})
 
@@ -3994,7 +3995,7 @@ def test_a_failed_checked_command_replays_its_output_and_exits_with_its_status(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", RecordingRun(returncode=3))
+    monkeypatch.setattr(subprocess, "run", RecordingRun(returncode=3))
 
     with pytest.raises(SystemExit) as exited:
         sync_export_pr._run(["git", "push"], capture=True)
@@ -4178,7 +4179,8 @@ def test_parser_defaults_each_flag_from_its_variable(
 def test_a_bare_auto_merge_flag_turns_it_on(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_parser_environment(monkeypatch)
 
-    assert sync_export_pr._parser().parse_args(["--auto-merge"]).auto_merge is True
+    flags = vars(sync_export_pr._parser().parse_args(["--auto-merge"]))
+    assert flags["auto_merge"] is True
 
 
 @pytest.mark.parametrize(
@@ -4417,7 +4419,7 @@ def test_project_discovery_reads_the_release_check_from_settings(
         assert argv == ["git", "rev-parse", "--show-toplevel"]
         return subprocess.CompletedProcess(argv, 0, f"{tmp_path}\n", "")
 
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", toplevel)
+    monkeypatch.setattr(subprocess, "run", toplevel)
     settings = SyncSettings(
         package_name="pkg",
         sync_label="Pkg",
@@ -4455,7 +4457,7 @@ def test_project_discovery_renders_every_setting_as_a_flag(
         assert kwargs["cwd"] == project
         return subprocess.CompletedProcess(argv, 0, f"{tmp_path}\n", "")
 
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", toplevel)
+    monkeypatch.setattr(subprocess, "run", toplevel)
     settings = SyncSettings(
         package_name="pkg",
         sync_label="Pkg",
@@ -4505,7 +4507,7 @@ def test_project_discovery_renders_every_setting_as_a_flag(
 def test_project_discovery_needs_a_git_checkout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sync_export_pr.subprocess, "run", RecordingRun(returncode=128))
+    monkeypatch.setattr(subprocess, "run", RecordingRun(returncode=128))
 
     with pytest.raises(SystemExit, match="Cannot find Git repository containing"):
         sync_export_pr._git_toplevel(Path("/elsewhere"))
@@ -4530,7 +4532,7 @@ def test_a_dry_run_clones_a_public_git_checkout(
             (["git", "clone", "--no-local", str(public), str(dry)], 0, ""),
         ],
     )
-    monkeypatch.setattr(sync_export_pr.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
     monkeypatch.setattr(sync_export_pr, "_run", answers)
 
     assert sync_export_pr._clone_public_checkout_for_dry_run(public_dir=public) == dry
