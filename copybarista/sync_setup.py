@@ -1623,7 +1623,7 @@ def _render_template(
 def _generated_banner(template_name: str) -> str:
     """Return the DO-NOT-EDIT header for a file rendered from ``template_name``."""
     # Names carry a ``.tmpl`` suffix, so test the type BEFORE it: every
-    # template rendered today is YAML, TOML, or shell, all ``#``-commented.
+    # template rendered today is YAML or TOML, both ``#``-commented.
     comment = "#"
     # Public-safe wording: these files ship to the public repositories, whose
     # leak check rejects both monorepo paths and the generator's own name.

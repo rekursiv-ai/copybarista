@@ -806,8 +806,9 @@ def _run_export_sync(request: ExportRequest) -> None:
             public_dir=request.public_dir,
             seed=request.source_dir / "uv.lock",
         )
-    # No package checks here: the PR cannot merge until public CI passes them, and
-    # a second runner here drifted from CI and passed what CI then failed.
+    # No package checks here: public CI runs them, and the export waits for its
+    # result after merging. A second runner here drifted from CI and passed what
+    # CI then failed.
     if request.dry_run:
         _log("Dry run complete; skipped public checkout and GitHub mutations.")
         return
