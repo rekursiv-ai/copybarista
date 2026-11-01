@@ -2002,31 +2002,41 @@ def _merged_sha(*, request: ExportRequest) -> str:
 # public repositories' runs are readable by any token.
 def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
     """Wait for ``repo``'s package validation on ``sha``; fail unless it passed."""
-    waited = 0.0
+    # Any start below one poll makes the same 45 polls, so no test tells 0 from 1.
+    waited = 0.0  # pragma: no mutate
     while True:
-        runs = from_plain(
-            _json_from_gh(
-                _run_gh(
-                    [
-                        "gh",
-                        "run",
-                        "list",
-                        "--repo",
-                        repo,
-                        "--commit",
-                        sha,
-                        "--workflow",
-                        "package-validation.yml",
-                        "--json",
-                        "status,conclusion",
-                    ],
-                    cwd=cwd,
-                    capture=True,
-                    env=_source_gh_env(),
-                ).stdout,
-                context="public CI runs",
-            ),
-            list[_RunState],
+        listed = _run_gh(
+            [
+                "gh",
+                "run",
+                "list",
+                "--repo",
+                repo,
+                "--commit",
+                sha,
+                "--workflow",
+                "package-validation.yml",
+                "--json",
+                "status,conclusion",
+            ],
+            cwd=cwd,
+            capture=True,
+            check=False,  # pragma: no mutate -- None reads as False.
+            env=_source_gh_env(),
+        )
+        # GitHub lists a workflow's runs only once it has read the workflow from the
+        # new main, so a merge that adds it is answered 404 for a moment: no run yet.
+        # The first website export merged its CI and failed on that answer.
+        if listed.returncode and "not found on the default branch" not in listed.stderr:
+            _write_process_output(listed)
+            raise SystemExit(listed.returncode)
+        runs = (
+            []
+            if listed.returncode
+            else from_plain(
+                _json_from_gh(listed.stdout, context="public CI runs"),
+                list[_RunState],
+            )
         )
         if runs and all(run["status"] == "completed" for run in runs):
             failed = [
