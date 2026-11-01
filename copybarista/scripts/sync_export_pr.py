@@ -144,7 +144,6 @@ def run(argv: list[str] | None = None) -> int:
         release_check_script=Path(flags.release_check_script)
         if flags.release_check_script
         else None,
-        type_check_targets=tuple(flags.type_check_target) or (".",),
         dry_run=flags.dry_run,
     )
     try:
@@ -192,7 +191,6 @@ class ExportRequest:
     skip_source_validation: bool
     runner_temp: Path
     release_check_script: Path | None
-    type_check_targets: tuple[str, ...]
     dry_run: bool
     import_branch_prefix: str = ""
     source_repo: str = ""
@@ -796,7 +794,6 @@ def _parser() -> argparse.ArgumentParser:
         "project_dir",
         nargs="?",
         type=Path,
-        default=None,
         help=(
             "Optional path to a project directory with copy.barista.toml and "
             "copybarista.sync.toml. When given (or when the current working "
@@ -906,8 +903,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--auto-merge",
         nargs="?",
-        const="true",
-        default=os.environ.get("COPYBARISTA_AUTO_MERGE", "false"),
+        # ``_string_bool`` casefolds, so no test can tell "TRUE" from "true".
+        const="true",  # pragma: no mutate
+        default=_env_bool("COPYBARISTA_AUTO_MERGE"),
         type=_string_bool,
         help="Enable GitHub PR auto-merge for the generated export branch.",
     )
@@ -942,12 +940,6 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("COPYBARISTA_RELEASE_CHECK_SCRIPT", ""),
         help="Optional project-relative release-tree checker script.",
     )
-    parser.add_argument(
-        "--type-check-target",
-        action="append",
-        default=[],
-        help="Path passed to basedpyright. Repeat for multiple targets.",
-    )
     return parser
 
 
@@ -964,7 +956,7 @@ def _apply_project_discovery(argv: list[str]) -> list[str]:
 def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[str]:
     """Render sync settings as argv defaults to prepend before explicit args."""
     source_dir = _git_toplevel(project_dir)
-    public_dir = source_dir.parent / settings.public_repo.rsplit("/", 1)[-1]
+    public_dir = source_dir.parent / Path(settings.public_repo).name
     argv = [
         "--source-dir",
         str(source_dir),
@@ -1001,10 +993,10 @@ def _argv_from_settings(*, project_dir: Path, settings: SyncSettings) -> list[st
     ]
     if settings.refresh_public_lockfile:
         argv.append("--refresh-public-lockfile")
+    if settings.skip_source_validation:
+        argv.append("--skip-source-validation")
     if settings.release_check_script:
         argv.extend(["--release-check-script", settings.release_check_script])
-    for target in settings.type_check_targets:
-        argv.extend(["--type-check-target", target])
     for term in settings.forbidden_pr_text:
         argv.extend(["--forbidden-pr-text", term])
     return argv
@@ -1053,10 +1045,6 @@ def _postleakcheck_validation(*, project: Path) -> None:
     """Run the slow source checks after the export+leak-check has passed."""
     uv_run = _uv_project_run(project)
     _run([*uv_run, "ty", "check", "."], cwd=project)
-    # Source checkout: the package sits directly in ``project``. type_check_targets
-    # are export-relative (e.g. ``madcatter``, which only exists as a subdir in the
-    # exported tree), so basedpyright the source against ``.`` like ``ty`` above.
-    # The exported tree's own basedpyright run is public CI's.
     _run_basedpyright(project=project, targets=(".",))
     _run([*uv_run, "pytest", "-q"], cwd=project)
 
@@ -3031,7 +3019,6 @@ class _Flags(Protocol):
     workflow: str
     runner_temp: str
     release_check_script: str
-    type_check_target: list[str]
 
 
 if __name__ == "__main__":

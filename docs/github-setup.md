@@ -48,9 +48,7 @@ copybarista init-sync . \
   --source-root packages/configgle \
   --public-repo example/configgle \
   --source-repo example/source \
-  --copybarista-project-path tools/copybarista \
-  --type-check-target configgle \
-  --type-check-target tests
+  --copybarista-project-path tools/copybarista
 copybarista check-sync-config .
 ```
 
@@ -58,7 +56,7 @@ The generated public files are:
 
 - `copy.barista.toml` -- the deterministic export config.
 - `copybarista.sync.toml` -- package metadata such as package name, source path,
-  public repo, branch prefixes, type-check targets, and validation Pythons.
+  public repo, branch prefixes, and validation Pythons.
 - `.github/workflows/configgle-to-loop.yml` -- public-to-source import
   workflow, named `<package>-to-loop.yml` (the generator calls the source side
   `loop`).

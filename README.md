@@ -215,9 +215,7 @@ copybarista init-sync . \
   --source-root packages/configgle \
   --public-repo example/configgle \
   --source-repo example/source \
-  --copybarista-project-path tools/copybarista \
-  --type-check-target configgle \
-  --type-check-target tests
+  --copybarista-project-path tools/copybarista
 ```
 
 This writes `copy.barista.toml`, `copybarista.sync.toml`, the public import
@@ -398,7 +396,6 @@ copybarista init-sync ROOT --package-name NAME --source-root PATH \
   --public-repo OWNER/REPO --source-repo OWNER/REPO \
   --copybarista-project-path PATH \
   [--sync-label LABEL] [--release-check-script PATH] \
-  [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] [--validation-python-version VERSION] \
   [--sync-user-name NAME] \
   [--sync-user-email EMAIL] [--overwrite]

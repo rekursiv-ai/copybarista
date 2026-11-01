@@ -21,7 +21,11 @@ from copybarista.errors import (
 )
 from copybarista.import_request import ImportResult
 from copybarista.manifest import ExportManifest
-from copybarista.sync_setup import DEFAULT_SYNC_USER_EMAIL, DEFAULT_SYNC_USER_NAME
+from copybarista.sync_setup import (
+    DEFAULT_SYNC_USER_EMAIL,
+    DEFAULT_SYNC_USER_NAME,
+    load_sync_settings,
+)
 
 
 if TYPE_CHECKING:
@@ -469,7 +473,6 @@ _INIT_SYNC_REQUIRED = (
                 "source_repo": "so",
                 "copybarista_project_path": "cp",
                 "release_check_script": "",
-                "type_check_target": [],
                 "forbidden_pr_text": [],
                 "validation_python_version": [],
                 "refresh_public_lockfile": False,
@@ -500,7 +503,6 @@ def test_cli_sets_every_flag_by_its_documented_name():
                 "init-sync",
                 "r",
                 *_INIT_SYNC_REQUIRED,
-                *("--type-check-target", "a", "--type-check-target", "b"),
                 *("--forbidden-pr-text", "c", "--forbidden-pr-text", "d"),
                 *("--validation-python-version", "3.12"),
                 *("--validation-python-version", "3.13"),
@@ -508,7 +510,6 @@ def test_cli_sets_every_flag_by_its_documented_name():
         ),
     )
 
-    assert parsed["type_check_target"] == ["a", "b"]
     assert parsed["forbidden_pr_text"] == ["c", "d"]
     assert parsed["validation_python_version"] == ["3.12", "3.13"]
     assert vars(
@@ -614,10 +615,6 @@ def test_cli_init_sync_writes_generic_scaffold(tmp_path: Path):
             "example/source",
             "--copybarista-project-path",
             "tools/copybarista",
-            "--type-check-target",
-            "configgle",
-            "--type-check-target",
-            "tests",
         ],
     )
 
@@ -859,6 +856,59 @@ def test_cli_write_public_workflows_adds_the_npm_workflow_only_when_enabled(
     assert "npm publish" in (
         tmp_path / "npm/.export/.github/workflows/publish-npm.yml"
     ).read_text(encoding="utf-8")
+
+
+def test_cli_init_sync_writes_its_identity_and_overwrites_only_on_request(
+    tmp_path: Path,
+):
+    argv = [
+        "init-sync",
+        str(tmp_path),
+        *_INIT_SYNC_REQUIRED,
+        *("--sync-user-name", "bot", "--sync-user-email", "bot@example.org"),
+    ]
+    assert main(argv) == 0
+
+    settings = load_sync_settings(tmp_path / "copybarista.sync.toml")
+    assert (settings.sync_user_name, settings.sync_user_email) == (
+        "bot",
+        "bot@example.org",
+    )
+    assert main(argv) == 1
+    assert main([*argv, "--overwrite"]) == 0
+
+
+def test_cli_write_public_workflows_keeps_the_ci_a_tree_owns(tmp_path: Path):
+    """A tree that is no Python package writes its own CI; regenerating keeps it."""
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "site",
+            "--source-root",
+            "packages/site",
+            "--public-repo",
+            "example/site",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+        ],
+    )
+    sync = tmp_path / "copybarista.sync.toml"
+    sync.write_text(
+        sync.read_text(encoding="utf-8")
+        .replace("python_package = true", "python_package = false")
+        .replace("skip_source_validation = false", "skip_source_validation = true"),
+        encoding="utf-8",
+    )
+    owned = tmp_path / ".github/workflows/package-validation.yml"
+    owned.write_text("name: Package validation\n", encoding="utf-8")
+
+    main(["write-public-workflows", str(sync)])
+
+    assert owned.read_text(encoding="utf-8") == "name: Package validation\n"
 
 
 if __name__ == "__main__":

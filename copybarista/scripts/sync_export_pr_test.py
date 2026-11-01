@@ -102,7 +102,6 @@ def _export_request(tmp_path: Path) -> ExportRequest:
         skip_source_validation=False,
         runner_temp=tmp_path,
         release_check_script=None,
-        type_check_targets=(".",),
         dry_run=False,
     )
 
@@ -137,16 +136,11 @@ def test_main_accepts_generic_project_validation_args(
             "main",
             "--release-check-script",
             "scripts/check_release_tree.py",
-            "--type-check-target",
-            "configgle",
-            "--type-check-target",
-            "tests",
         ],
     )
 
     assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].release_check_script == Path("scripts/check_release_tree.py")
-    assert captured[0].type_check_targets == ("configgle", "tests")
 
 
 def test_main_accepts_dry_run(
@@ -197,7 +191,6 @@ def test_main_derives_request_from_project_positional(
     assert request.project_path == Path("packages/sagent")
     assert request.public_dir == source_dir.parent / "sagent"
     assert request.target_repo == "rekursiv-ai/sagent"
-    assert request.type_check_targets == (".",)
     assert request.forbidden_pr_text == ("src",)
     assert request.refresh_public_lockfile
     assert request.sync_label == "Sagent"
@@ -244,7 +237,6 @@ source_root = "packages/sagent"
 public_repo = "rekursiv-ai/sagent"
 source_repo = "rekursiv-ai/src"
 copybarista_project_path = "packages/copybarista"
-type_check_targets = ["."]
 forbidden_pr_text = ["src"]
 refresh_public_lockfile = true
 
@@ -3089,7 +3081,6 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
                 public_repo=f"rekursiv-ai/{repo}",
                 source_repo="example/source",
                 copybarista_project_path="src/tool",
-                type_check_targets=(".",),
                 forbidden_pr_text=("private",),
             ),
         )
@@ -3452,8 +3443,6 @@ def test_postleakcheck_validation_runs_ty_check(
         "check",
         ".",
     ] in calls
-    # Source-side basedpyright targets ``.`` (source layout), not the
-    # export-relative type_check_targets.
     assert ["basedpyright", "/repo/pkg", "."] in calls
 
 
@@ -4080,7 +4069,238 @@ def test_run_requires_a_project_path(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit, match="2"):
         sync_export_pr.run(["--source-branch", "main"])
 
-    assert "--project-path is required" in capsys.readouterr().err
+    assert capsys.readouterr().err.endswith(": error: --project-path is required\n")
+
+
+# Each flag the parser defaults from the environment: (variable, flag dest, the
+# variable's value, the parsed value).
+_PARSER_ENVIRONMENT: Final = (
+    ("TARGET_REPO", "target_repo", "o/public", "o/public"),
+    ("BASE_BRANCH", "base_branch", "dev", "dev"),
+    ("GITHUB_SHA", "source_sha", "abc123", "abc123"),
+    ("COPYBARISTA_SYNC_USER_NAME", "sync_user_name", "bot", "bot"),
+    ("COPYBARISTA_SYNC_USER_EMAIL", "sync_user_email", "b@x.org", "b@x.org"),
+    ("GITHUB_REF_NAME", "source_branch", "feature", "feature"),
+    ("COPYBARISTA_EXPORT_BRANCH", "branch", "p/export/x", "p/export/x"),
+    ("COPYBARISTA_EXPORT_BRANCH_PREFIX", "branch_prefix", "p/export/", "p/export/"),
+    ("COPYBARISTA_SYNC_LABEL", "sync_label", "Label", "Label"),
+    ("COPYBARISTA_IMPORT_BRANCH_PREFIX", "import_branch_prefix", "p/i/", "p/i/"),
+    ("COPYBARISTA_SOURCE_REPO", "source_repo", "o/source", "o/source"),
+    ("COPYBARISTA_PR_TITLE", "pr_title", "Title", "Title"),
+    ("COPYBARISTA_PR_BODY", "pr_body", "Body.", "Body."),
+    ("COPYBARISTA_PR_DEFAULT_TITLE", "pr_default_title", "Default", "Default"),
+    ("COPYBARISTA_PR_DEFAULT_BODY", "pr_default_body", "Default.", "Default."),
+    ("COPYBARISTA_PR_SCOPE", "pr_scope", "pkg", "pkg"),
+    ("COPYBARISTA_REQUIRE_PR_METADATA", "require_pr_metadata", "true", True),
+    ("COPYBARISTA_REPLAY_BOOTSTRAP_BASE", "replay_bootstrap_base", "v1", "v1"),
+    ("COPYBARISTA_PUBLISH_SOURCE_REV", "publish_source_rev", "true", True),
+    ("COPYBARISTA_SOURCE_MESSAGE", "source_message", "Message", "Message"),
+    ("GITHUB_EVENT_HEAD_COMMIT_MESSAGE", "source_message", "Pushed", "Pushed"),
+    (
+        "COPYBARISTA_USE_SOURCE_MESSAGE_PR_TEXT",
+        "use_source_message_pr_text",
+        "true",
+        True,
+    ),
+    ("COPYBARISTA_AUTO_MERGE", "auto_merge", "true", True),
+    ("GITHUB_WORKFLOW", "workflow", "ci", "ci"),
+    ("RUNNER_TEMP", "runner_temp", "/runner", "/runner"),
+    ("COPYBARISTA_RELEASE_CHECK_SCRIPT", "release_check_script", "c.py", "c.py"),
+)
+
+
+def _clear_parser_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset every variable the parser reads, as on a workstation."""
+    for variable, *_ in _PARSER_ENVIRONMENT:
+        monkeypatch.delenv(variable, raising=False)
+
+
+def test_parser_defaults_without_its_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_parser_environment(monkeypatch)
+
+    assert vars(sync_export_pr._parser().parse_args([])) == {
+        "project_dir": None,
+        "source_dir": "source",
+        "project_path": "",
+        "public_dir": "public",
+        "target_repo": "",
+        "base_branch": "main",
+        "source_sha": "manual",
+        "sync_user_name": "copybarista",
+        "sync_user_email": "copybarista@example.com",
+        "source_branch": "",
+        "branch": "",
+        "branch_prefix": "copybarista/export/",
+        "sync_label": "Copybarista",
+        "import_branch_prefix": "",
+        "source_repo": "",
+        "pr_title": "",
+        "pr_body": "",
+        "pr_default_title": "Update public export",
+        "pr_default_body": "Updates the generated public repository export.",
+        "pr_scope": "",
+        "require_pr_metadata": False,
+        "replay_bootstrap_base": "",
+        "publish_source_rev": False,
+        "source_message": "",
+        "use_source_message_pr_text": False,
+        "forbidden_pr_text": [],
+        "auto_merge": False,
+        "refresh_public_lockfile": False,
+        "dry_run": False,
+        "skip_source_validation": False,
+        "workflow": "manual",
+        "runner_temp": str(sync_export_pr.DEFAULT_RUNNER_TEMP),
+        "release_check_script": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("variable", "dest", "value", "parsed"),
+    _PARSER_ENVIRONMENT,
+    ids=[variable for variable, *_ in _PARSER_ENVIRONMENT],
+)
+def test_parser_defaults_each_flag_from_its_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    dest: str,
+    value: str,
+    parsed: object,
+) -> None:
+    _clear_parser_environment(monkeypatch)
+    monkeypatch.setenv(variable, value)
+
+    assert vars(sync_export_pr._parser().parse_args([]))[dest] == parsed
+
+
+def test_a_bare_auto_merge_flag_turns_it_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_parser_environment(monkeypatch)
+
+    assert sync_export_pr._parser().parse_args(["--auto-merge"]).auto_merge is True
+
+
+@pytest.mark.parametrize(
+    ("invocation", "text"),
+    [
+        ("project_dir", "Optional path to a project directory with"),
+        ("--pr-scope PR_SCOPE", "Package or repository scope used to"),
+        ("--source-message SOURCE_MESSAGE", "Source commit message used when"),
+        (
+            "--use-source-message-pr-text, --no-use-source-message-pr-text",
+            "Use the source commit first line and",
+        ),
+        ("--forbidden-pr-text FORBIDDEN_PR_TEXT", "Comma- or newline-separated"),
+        ("--auto-merge [AUTO_MERGE]", "Enable GitHub PR auto-merge for the"),
+        ("--refresh-public-lockfile", "Run uv lock in the exported public"),
+        ("--dry-run", "Run against a temporary public checkout and"),
+        ("--skip-source-validation", "Skip source checkout lint/type/test"),
+        ("--release-check-script RELEASE_CHECK_SCRIPT", "Optional project-relative"),
+    ],
+)
+def test_parser_help_explains_each_documented_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    invocation: str,
+    text: str,
+) -> None:
+    """Each flag's help directly follows its invocation in ``--help``.
+
+    Matched on whitespace-collapsed output: argparse moves the help of a long
+    invocation to the next line. Wide columns keep it from breaking a
+    hyphenated word.
+    """
+    monkeypatch.setenv("COLUMNS", "1000")
+
+    shown = " ".join(sync_export_pr._parser().format_help().split())
+
+    assert f"{invocation} {text}" in shown
+
+
+@pytest.mark.parametrize(
+    ("docstring", "description"),
+    [
+        (
+            "#!/bin/sh\nexec uv run\nFirst line.\n\nSecond paragraph.\n",
+            "First line.\n\nSecond paragraph.\n",
+        ),
+        (None, None),
+    ],
+    ids=["docstring", "optimized away"],
+)
+def test_parser_describes_the_script_from_its_docstring_after_the_shebang(
+    monkeypatch: pytest.MonkeyPatch,
+    docstring: str | None,
+    description: str | None,
+) -> None:
+    """The docstring's first two lines are the polyglot shell preamble."""
+    monkeypatch.setattr(sync_export_pr, "__doc__", docstring)
+
+    assert sync_export_pr._parser().description == description
+
+
+def test_run_builds_the_request_from_every_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every flag reaches the request: one dropped falls back to its default."""
+    _clear_parser_environment(monkeypatch)
+    captured: list[ExportRequest] = []
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", captured.append)
+
+    sync_export_pr.run(
+        [
+            *("--project-path", "pkg", "--source-dir", "src"),
+            *("--public-dir", "pub", "--target-repo", "o/pub"),
+            *("--base-branch", "dev", "--source-sha", "abc123"),
+            *("--branch", "p/export/main", "--branch-prefix", "p/export/"),
+            *("--sync-label", "Label", "--import-branch-prefix", "p/import/"),
+            *("--source-repo", "o/src", "--sync-user-name", "bot"),
+            *("--sync-user-email", "b@x.org", "--pr-default-title", "Title"),
+            *("--pr-default-body", "Body.", "--pr-scope", "pkg"),
+            *("--require-pr-metadata", "--replay-bootstrap-base", "v1"),
+            *("--publish-source-rev", "--forbidden-pr-text", "zork,quux"),
+            *("--auto-merge", "true", "--refresh-public-lockfile"),
+            *("--skip-source-validation", "--runner-temp", str(tmp_path)),
+            "--dry-run",
+        ],
+    )
+
+    assert captured == [
+        ExportRequest(
+            source_dir=Path("src"),
+            project_path=Path("pkg"),
+            public_dir=Path("pub"),
+            target_repo="o/pub",
+            base_branch="dev",
+            source_sha="abc123",
+            branch="p/export/main",
+            sync_label="Label",
+            sync_user_name="bot",
+            sync_user_email="b@x.org",
+            pr_title="Title",
+            pr_body="Body.",
+            manual_pr_title="",
+            manual_pr_body="",
+            replay_settings=sync_export_pr.PrReplaySettings(
+                scope="pkg",
+                default_title="Title",
+                default_body="Body.",
+                require_metadata=True,
+                bootstrap_base="v1",
+                publish_source_rev=True,
+            ),
+            forbidden_pr_text=("zork", "quux"),
+            auto_merge=True,
+            refresh_public_lockfile=True,
+            skip_source_validation=True,
+            runner_temp=tmp_path,
+            release_check_script=None,
+            dry_run=True,
+            import_branch_prefix="p/import/",
+            source_repo="o/src",
+        ),
+    ]
 
 
 def test_run_exits_2_on_a_replay_error(
@@ -4205,7 +4425,6 @@ def test_project_discovery_reads_the_release_check_from_settings(
         public_repo="example/pkg",
         source_repo="example/source",
         copybarista_project_path="tools/copybarista",
-        type_check_targets=("pkg",),
         forbidden_pr_text=(),
         release_check_script="scripts/check.py",
     )
@@ -4217,6 +4436,70 @@ def test_project_discovery_reads_the_release_check_from_settings(
 
     assert argv[argv.index("--release-check-script") + 1] == "scripts/check.py"
     assert argv[argv.index("--project-path") + 1] == "pkg"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_project_discovery_renders_every_setting_as_a_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enabled: bool,
+) -> None:
+    """A local run reads the sync config exactly as the CI export renders it."""
+    project = tmp_path / "pkg"
+
+    def toplevel(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        assert argv == ["git", "rev-parse", "--show-toplevel"]
+        assert kwargs["cwd"] == project
+        return subprocess.CompletedProcess(argv, 0, f"{tmp_path}\n", "")
+
+    monkeypatch.setattr(sync_export_pr.subprocess, "run", toplevel)
+    settings = SyncSettings(
+        package_name="pkg",
+        sync_label="Pkg",
+        source_root="pkg",
+        public_repo="example/public",
+        source_repo="example/source",
+        copybarista_project_path="tools/copybarista",
+        forbidden_pr_text=("zork", "quux"),
+        sync_user_name="bot",
+        sync_user_email="b@x.org",
+        replay_bootstrap_base="v1",
+        require_pr_metadata=enabled,
+        publish_source_rev=enabled,
+        refresh_public_lockfile=enabled,
+        skip_source_validation=enabled,
+        release_check_script="check.py" if enabled else "",
+    )
+
+    assert sync_export_pr._argv_from_settings(
+        project_dir=project,
+        settings=settings,
+    ) == [
+        *("--source-dir", str(tmp_path), "--project-path", "pkg"),
+        *("--public-dir", str(tmp_path.parent / "public")),
+        *("--target-repo", "example/public", "--source-branch", "dry-run"),
+        *("--branch-prefix", "pkg/export/", "--sync-label", "Pkg"),
+        *("--sync-user-name", "bot", "--sync-user-email", "b@x.org"),
+        *("--pr-default-title", "Update Pkg export"),
+        *("--pr-default-body", "Updates the generated Pkg public repository export."),
+        *("--pr-scope", "pkg", "--replay-bootstrap-base", "v1"),
+        "--require-pr-metadata" if enabled else "--no-require-pr-metadata",
+        "--publish-source-rev" if enabled else "--no-publish-source-rev",
+        *(
+            (
+                "--refresh-public-lockfile",
+                "--skip-source-validation",
+                "--release-check-script",
+                "check.py",
+            )
+            if enabled
+            else ()
+        ),
+        *("--forbidden-pr-text", "zork", "--forbidden-pr-text", "quux"),
+    ]
 
 
 def test_project_discovery_needs_a_git_checkout(
