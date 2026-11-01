@@ -3169,6 +3169,145 @@ def test_the_export_fails_when_public_ci_does_not_pass(
     assert says in capsys.readouterr().out
 
 
+def _run_lists(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    first: subprocess.CompletedProcess[str],
+) -> list[list[str]]:
+    """Fake ``gh run list``: ``first`` answers once, then a passed run does."""
+    replies = iter(
+        [
+            first,
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout='[{"status": "completed", "conclusion": "success"}]',
+                stderr="",
+            ),
+        ],
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        assert kwargs["cwd"] == Path("/public")
+        calls.append(argv)
+        return next(replies)
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+    return calls
+
+
+_SHA: Final = "0123456789abcdef0123456789abcdef01234567"
+_RUN_LIST: Final = [
+    "gh",
+    "run",
+    "list",
+    "--repo",
+    "example/public",
+    "--commit",
+    _SHA,
+    "--workflow",
+    "package-validation.yml",
+    "--json",
+    "status,conclusion",
+]
+
+
+def test_public_ci_names_each_conclusion_that_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _run_lists(
+        monkeypatch,
+        first=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='[{"status": "completed", "conclusion": "failure"},'
+            ' {"status": "completed", "conclusion": "cancelled"}]',
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._await_ci(repo="example/public", sha=_SHA, cwd=Path("/public"))
+
+    assert capsys.readouterr().out == (
+        "::error::public CI on example/public@0123456789ab: failure, cancelled\n"
+    )
+
+
+def test_public_ci_names_a_listing_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run_lists(
+        monkeypatch,
+        first=subprocess.CompletedProcess([], 0, stdout="not json", stderr=""),
+    )
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^public CI runs was not valid JSON\.$",
+    ):
+        sync_export_pr._await_ci(repo="example/public", sha=_SHA, cwd=Path("/public"))
+
+
+def test_public_ci_waits_for_a_workflow_the_merge_just_added(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """GitHub lists a workflow's runs only once it has read it from the new main.
+
+    The first website export merged the commit adding its CI workflow, asked for
+    that workflow's runs a second later, and failed on the 404 that answered.
+    """
+    calls = _run_lists(
+        monkeypatch,
+        first=subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="HTTP 404: workflow package-validation.yml not found on the "
+            "default branch (https://api.github.com/repos/o/r/actions/workflows/"
+            "package-validation.yml)\n",
+        ),
+    )
+
+    sync_export_pr._await_ci(repo="example/public", sha=_SHA, cwd=Path("/public"))
+
+    assert calls == [_RUN_LIST, _RUN_LIST]
+    # The listing is read, not echoed: the log line is the only output.
+    assert (
+        capsys.readouterr().out == "Public CI passed on example/public@0123456789ab.\n"
+    )
+
+
+def test_public_ci_fails_on_any_other_listing_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _run_lists(
+        monkeypatch,
+        first=subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="HTTP 403: Resource not accessible by integration\n",
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        sync_export_pr._await_ci(
+            repo="example/public",
+            sha="c0ffee",
+            cwd=Path("/public"),
+        )
+
+    assert len(calls) == 1
+
+
 def test_public_ci_is_read_with_the_workflow_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3211,7 +3350,10 @@ def test_the_export_fails_when_public_ci_does_not_finish_in_time(
     with pytest.raises(SystemExit):
         sync_export_pr._await_public_ci(request=_export_request(tmp_path))
 
-    assert "did not finish" in capsys.readouterr().out
+    assert (
+        "public CI on example/public did not finish in 45 minutes"
+        in capsys.readouterr().out
+    )
     # One poll a minute keeps 11 exports inside the workflow token's hourly limit.
     assert set(sleeps) == {sync_export_pr.PUBLIC_CI_POLL_SEC}
     assert len(sleeps) == sync_export_pr.PUBLIC_CI_WAIT_SEC / 60
