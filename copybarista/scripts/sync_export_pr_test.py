@@ -1070,6 +1070,104 @@ def test_base_pr_state_drops_stale_entry_markers(
     assert "Recovered PR entry author:" in output
 
 
+def _marked_pr(*, body: str) -> sync_export_pr.CurrentPr:
+    """Return an open export PR titled apart from the request's default title."""
+    return sync_export_pr.CurrentPr(
+        title="Current title",
+        body=body,
+        number=7,
+        url="https://example.test/pr/7",
+    )
+
+
+def test_base_pr_state_reads_the_open_pr_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every field comes from the open PR, its title over the default."""
+    previous = "1111111"
+    rendered = PrReplayState(
+        title="Public title",
+        authors=(),
+        body_intro="Public summary.",
+        body_entries=(PrBodyEntry(commit_sha=previous, text="Old update."),),
+        applied_source_rev=previous,
+        applied_source_digest=_source_rev_digest(previous),
+        metadata_count=1,
+    )
+    body = _render_pr_body(
+        state=rendered,
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+    )
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["cwd"] == tmp_path
+        if argv[:2] == ["git", "rev-list"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{previous}\n")
+        return subprocess.CompletedProcess(argv, 0, stdout="Author\0author@x.org\n")
+
+    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+
+    state = _base_pr_state(
+        request=_export_request(tmp_path),
+        current_pr=_marked_pr(body=body),
+        current_source_rev="2222222",
+        current_source_digest=_source_rev_digest("2222222"),
+    )
+
+    assert state == replace(
+        _state_from_pr_body(title="Current title", body=body, default_body=""),
+        authors=(SourceAuthor(name="Author", email="author@x.org"),),
+    )
+    assert state.title == "Current title"
+    assert state.body_intro == "Public summary."
+    assert state.applied_source_digest == _source_rev_digest(previous)
+
+
+def test_base_pr_state_falls_back_to_the_default_body_for_an_empty_summary(
+    tmp_path: Path,
+) -> None:
+    previous = "1111111"
+    body = (
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        f"<!-- copybarista:pr-state version=1 "
+        f"applied=sha256:{_source_rev_digest(previous)} -->"
+    )
+
+    state = _base_pr_state(
+        request=_export_request(tmp_path),
+        current_pr=_marked_pr(body=body),
+        current_source_rev="2222222",
+        current_source_digest=_source_rev_digest("2222222"),
+    )
+
+    assert state.body_intro == "Public body."
+
+
+def test_base_pr_state_without_an_open_pr_starts_from_the_defaults(
+    tmp_path: Path,
+) -> None:
+    state = _base_pr_state(
+        request=_export_request(tmp_path),
+        current_pr=None,
+        current_source_rev="2222222",
+        current_source_digest=_source_rev_digest("2222222"),
+    )
+
+    assert state == PrReplayState(
+        title="Public title",
+        authors=(),
+        body_intro="Public body.",
+        body_entries=(),
+        applied_source_rev="2222222",
+        applied_source_digest=_source_rev_digest("2222222"),
+        metadata_count=0,
+    )
+
+
 def test_resolve_pr_replay_plan_logs_replay_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1899,6 +1997,69 @@ def test_no_diff_exits_when_no_pr_and_no_tree_change(
     assert not pr_open
 
 
+def _no_diff_plan(*, title: str) -> sync_export_pr.PrReplayPlan:
+    """Return a plan whose open PR has ``title`` and the plan's own body."""
+    return sync_export_pr.PrReplayPlan(
+        state=_pr_state(),
+        body="body\n",
+        replay_base="",
+        replay_base_digest="",
+        current_pr=sync_export_pr.CurrentPr(
+            title=title,
+            body="body\n",
+            number=12,
+            url="https://example.test/pr/12",
+        ),
+    )
+
+
+def test_no_diff_retitles_an_open_pr_whose_title_alone_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _export_request(tmp_path)
+    edits: list[tuple[ExportRequest, str]] = []
+
+    def record_edit(*, request: ExportRequest, title: str) -> None:
+        edits.append((request, title))
+
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", _no_tree_change)
+    monkeypatch.setattr(sync_export_pr, "_edit_export_pr", record_edit)
+
+    assert _open_or_update_export_pr(
+        request=request,
+        pr_plan=_no_diff_plan(title="Old title"),
+    )
+
+    assert edits == [(request, "Public title")]
+
+
+def test_no_diff_leaves_an_unchanged_open_pr_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Auto-merge still has the open PR to act on."""
+    monkeypatch.setattr(sync_export_pr, "_git_has_changes", _no_tree_change)
+    monkeypatch.setattr(sync_export_pr, "_edit_export_pr", _refuse_edit)
+
+    assert _open_or_update_export_pr(
+        request=_export_request(tmp_path),
+        pr_plan=_no_diff_plan(title="Public title"),
+    )
+
+    assert capsys.readouterr().out == "Export produced no target repository changes.\n"
+
+
+def _refuse_edit(*, request: ExportRequest, title: str) -> None:
+    raise AssertionError((request, title))
+
+
+def _no_tree_change(path: Path) -> bool:
+    del path
+    return False
+
+
 def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1923,7 +2084,7 @@ def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
     )
     monkeypatch.setattr(sync_export_pr, "_run", git)
     created: list[list[str]] = []
-    _stub_pr_calls(monkeypatch, created)
+    _stub_pr_calls(monkeypatch, created, public_dir=tmp_path)
 
     assert _open_or_update_export_pr(
         request=_export_request(tmp_path),
@@ -1931,12 +2092,13 @@ def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
     )
 
     assert git.left == []
-    assert [argv[2] for argv in created] == ["create"]
+    assert created == [_created(tmp_path)]
 
 
 def test_an_export_main_already_holds_opens_no_pr(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Rebuilt on main, the export changes nothing: the branch is main, and no PR.
 
@@ -1953,7 +2115,7 @@ def test_an_export_main_already_holds_opens_no_pr(
     )
     monkeypatch.setattr(sync_export_pr, "_run", git)
     created: list[list[str]] = []
-    _stub_pr_calls(monkeypatch, created)
+    _stub_pr_calls(monkeypatch, created, public_dir=tmp_path)
 
     assert not _open_or_update_export_pr(
         request=_export_request(tmp_path),
@@ -1962,6 +2124,89 @@ def test_an_export_main_already_holds_opens_no_pr(
 
     assert git.left == []
     assert created == []
+    assert capsys.readouterr().out.endswith(
+        "\nmain already holds this export; no PR needed.\n",
+    )
+
+
+def test_an_open_export_pr_is_edited_rather_than_created(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With no source author, the sync identity writes the commit."""
+    git = _ScriptedGit(
+        cwd=tmp_path,
+        left=[*_staged(tmp_path), *_pushed(holds_main=True)],
+    )
+    monkeypatch.setattr(sync_export_pr, "_run", git)
+    created: list[list[str]] = []
+    _stub_pr_calls(monkeypatch, created, public_dir=tmp_path, open_pr=True)
+
+    assert _open_or_update_export_pr(
+        request=_export_request(tmp_path),
+        pr_plan=_merged_pr_plan(),
+    )
+
+    assert git.left == []
+    assert created == [_edited(tmp_path)]
+    assert capsys.readouterr().out == (
+        "Generated export commit attribution: "
+        "author=copybarista <copybarista@example.com> coauthors=<none>\n"
+    )
+
+
+def test_the_export_commit_is_written_by_its_source_authors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The first author writes the commit, the rest co-author it, and the log says so."""
+    authors = (
+        SourceAuthor(name="Primary Author", email="primary@example.com"),
+        SourceAuthor(name="Second Author", email="second@example.com"),
+        SourceAuthor(name="Third Author", email="third@example.com"),
+    )
+    state = replace(_pr_state(), authors=authors)
+    git = _ScriptedGit(
+        cwd=tmp_path,
+        left=[
+            *_staged(tmp_path, author="Primary Author <primary@example.com>"),
+            *_pushed(holds_main=True),
+        ],
+    )
+    monkeypatch.setattr(sync_export_pr, "_run", git)
+    _stub_pr_calls(monkeypatch, [], public_dir=tmp_path)
+
+    assert _open_or_update_export_pr(
+        request=_export_request(tmp_path),
+        pr_plan=sync_export_pr.PrReplayPlan(
+            state=state,
+            body="body\n",
+            replay_base="",
+            replay_base_digest="base-digest",
+            current_pr=None,
+        ),
+    )
+
+    assert git.left == []
+    assert (tmp_path / "copybarista-commit-message.txt").read_text(
+        encoding="utf-8",
+    ) == _export_commit_message(
+        title="Public title",
+        sync_label="Copybarista",
+        branch="copybarista/export/main",
+        source_digest=state.applied_source_digest,
+        replay_base_digest="base-digest",
+        authors=authors,
+    )
+    assert (tmp_path / "copybarista-pr-body.md").read_text(encoding="utf-8") == "body\n"
+    assert capsys.readouterr().out == (
+        "Generated export commit attribution: "
+        "author=Primary Author <primary@example.com> "
+        "coauthors=Second Author <second@example.com>, "
+        "Third Author <third@example.com>\n"
+    )
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1997,6 +2242,16 @@ def _pushed_before_main_moved(
     fetched: int = 0,
 ) -> list[tuple[list[str], int]]:
     """Answer the export's commit and its first push, which main moved past."""
+    return [*_staged(cwd, fetched=fetched), *_pushed(holds_main=False)]
+
+
+def _staged(
+    cwd: Path,
+    *,
+    fetched: int = 0,
+    author: str = "copybarista <copybarista@example.com>",
+) -> list[tuple[list[str], int]]:
+    """Answer the export's identity, its branch, and its commit by ``author``."""
     branch = "copybarista/export/main"
     return [
         (["git", "status", "--porcelain"], 0),
@@ -2013,19 +2268,22 @@ def _pushed_before_main_moved(
         ),
         (["git", "switch", "-C", branch], 0),
         (["git", "add", "-A"], 0),
-        _committed(cwd),
-        *_pushed(holds_main=False),
+        _committed(cwd, author=author),
     ]
 
 
-def _committed(cwd: Path) -> tuple[list[str], int]:
-    """Answer the export commit, its message in ``cwd``."""
+def _committed(
+    cwd: Path,
+    *,
+    author: str = "copybarista <copybarista@example.com>",
+) -> tuple[list[str], int]:
+    """Answer the export commit by ``author``, its message in ``cwd``."""
     return (
         [
             "git",
             "commit",
             "--author",
-            "copybarista <copybarista@example.com>",
+            author,
             "--file",
             str(cwd / "copybarista-commit-message.txt"),
         ],
@@ -2054,19 +2312,48 @@ def _pushed(*, holds_main: bool) -> list[tuple[list[str], int]]:
     ]
 
 
-def _stub_pr_calls(monkeypatch: pytest.MonkeyPatch, created: list[list[str]]) -> None:
-    """Make the merged PR read as closed, and record every other ``gh`` call."""
+def _stub_pr_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    created: list[list[str]],
+    *,
+    public_dir: Path,
+    open_pr: bool = False,
+) -> None:
+    """Say whether the export PR is open, and record every other ``gh`` call."""
 
-    def no_open_pr(*, branch: str, repo: str, cwd: Path) -> bool:
-        del branch, repo, cwd
-        return False
+    def pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+        assert (branch, repo, cwd) == (
+            "copybarista/export/main",
+            "example/public",
+            public_dir,
+        )
+        return open_pr
 
-    def run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def run_gh(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["cwd"] == public_dir
         created.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(sync_export_pr, "_gh_pr_exists", no_open_pr)
+    monkeypatch.setattr(sync_export_pr, "_gh_pr_exists", pr_exists)
     monkeypatch.setattr(sync_export_pr, "_run_gh", run_gh)
+
+
+def _created(tmp_path: Path) -> list[str]:
+    """Return the ``gh pr create`` call for ``_export_request(tmp_path)``."""
+    return [
+        *("gh", "pr", "create", "--repo", "example/public", "--base", "main"),
+        *("--head", "copybarista/export/main", "--title", "Public title"),
+        *("--body-file", str(tmp_path / "copybarista-pr-body.md")),
+    ]
+
+
+def _edited(tmp_path: Path) -> list[str]:
+    """Return the ``gh pr edit`` call for ``_export_request(tmp_path)``."""
+    return [
+        *("gh", "pr", "edit", "copybarista/export/main", "--repo", "example/public"),
+        *("--title", "Public title"),
+        *("--body-file", str(tmp_path / "copybarista-pr-body.md")),
+    ]
 
 
 def _merged_pr_plan() -> sync_export_pr.PrReplayPlan:
@@ -5020,6 +5307,101 @@ def test_auto_merge_relays_what_gh_printed(
 def test_metadata_parsing_refuses_a_malformed_record(log: str, message: str) -> None:
     with pytest.raises(sync_export_pr.PrMetadataError, match=message):
         _parse_pr_metadata_log(log, forbidden_text=("internal.example",))
+
+
+_COMMIT: Final = "abcdef1234567890abcdef1234567890abcdef12"
+_AUTHOR: Final = SourceAuthor(name="Dev", email="dev@example.com")
+
+
+def _patch(
+    values: dict[str, str],
+    *,
+    body: str = "Body.",
+    forbidden_text: tuple[str, ...] = (),
+) -> PrMetadataPatch | None:
+    """Build the patch of one unscoped metadata block of ``_COMMIT``."""
+    return sync_export_pr._patch_from_metadata_block(
+        commit_sha=_COMMIT,
+        commit_author=_AUTHOR,
+        values=values,
+        body=body,
+        block_scope="",
+        target_scope="pkg",
+        forbidden_text=forbidden_text,
+    )
+
+
+def test_a_metadata_block_can_replace_the_body() -> None:
+    assert _patch(
+        {"Title": "New title", "Body-Mode": "replace", "Body": "Body."},
+    ) == PrMetadataPatch(
+        commit_sha=_COMMIT,
+        scope="",
+        title="New title",
+        author=_AUTHOR,
+        body="Body.",
+        body_mode="replace",
+    )
+
+
+def test_a_metadata_block_without_a_title_appends_under_none() -> None:
+    patch = _patch({"Body": "Body."})
+
+    assert patch is not None
+    assert (patch.title, patch.body_mode) == ("", "append")
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (
+            {"Body-Mode": "merge", "Body": "x"},
+            "Commit abcdef1 Copybarista-PR-Body-Mode: must be append or replace.",
+        ),
+        (
+            {"Body-Mode": "append"},
+            "Commit abcdef1 Copybarista-PR-Body-Mode: requires Copybarista-PR-Body.",
+        ),
+    ],
+    ids=["an unknown mode", "a mode with no body"],
+)
+def test_a_metadata_block_names_its_commit_and_field_in_a_refusal(
+    values: dict[str, str],
+    message: str,
+) -> None:
+    with pytest.raises(sync_export_pr.PrMetadataError) as raised:
+        _patch(values)
+
+    assert str(raised.value) == message
+
+
+def test_a_metadata_block_names_its_commit_for_a_private_author() -> None:
+    with pytest.raises(sync_export_pr.PrMetadataError) as raised:
+        _patch({"Title": "Title"}, forbidden_text=("example.com",))
+
+    assert str(raised.value) == (
+        "Commit abcdef1 Copybarista-PR-Author: contains restricted source-specific "
+        "text."
+    )
+
+
+def test_a_metadata_block_drops_a_private_title_and_body_and_says_which(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch = _patch(
+        {"Title": "Edit loop/x", "Body": "b"},
+        body="See loop/y.",
+        forbidden_text=("loop/",),
+    )
+
+    assert patch is not None
+    assert (patch.title, patch.body) == ("", "")
+    assert capsys.readouterr().out == "".join(
+        f"::warning::Commit {_COMMIT} Copybarista-PR-{field} names a private path "
+        "no export transform rewrites; dropping it and using the default text. "
+        "Describe changes with bare module names to keep the field.\n"
+        for field in ("Title", "Body")
+    )
 
 
 def test_metadata_closes_a_block_at_the_next_scope() -> None:
