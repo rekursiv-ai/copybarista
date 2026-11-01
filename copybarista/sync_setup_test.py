@@ -19,6 +19,7 @@ from treekle import from_plain
 import pytest
 import yaml
 
+from copybarista import sync_setup
 from copybarista.action_pins import GITHUB_ACTION_PINS, action_ref
 from copybarista.errors import ConfigError
 from copybarista.sync_setup import (
@@ -608,6 +609,45 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
 
     with pytest.raises(ConfigError, match=rf"sync\.{key} is not a setting"):
         load_sync_settings(config)
+
+
+def test_a_push_to_main_never_cancels_or_replaces_its_ci_run():
+    """The export waits on public CI for the commit it merged.
+
+    Grouped by ref, a later push to ``main`` cancelled that run (or replaced it
+    while pending), and the export reported a red it never earned. PR runs still
+    cancel the run they supersede.
+    """
+    workflow = from_plain(
+        yaml.safe_load(package_validation_workflow(_settings())),
+        dict[object, object],
+    )
+    concurrency = from_plain(workflow["concurrency"], dict[str, object])
+
+    assert concurrency["group"] == (
+        "package-validation-${{ github.workflow }}-"
+        "${{ github.event_name == 'pull_request' && github.ref || github.sha }}"
+    )
+    assert concurrency["cancel-in-progress"] is True
+
+
+def test_load_sync_settings_rejects_a_key_it_stops_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The accepted keys are the keys the loader reads, not a list kept beside it."""
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    reader = sync_setup._optional_sync_bool
+
+    def skip_one(sync: dict[str, object], key: str, *, default: bool) -> bool:
+        if key == "skip_source_validation":
+            return default
+        return reader(sync, key, default=default)
+
+    monkeypatch.setattr(sync_setup, "_optional_sync_bool", skip_one)
+
+    with pytest.raises(ConfigError, match=r"sync\.skip_source_validation is not"):
+        load_sync_settings(tmp_path / "copybarista.sync.toml")
 
 
 def test_every_package_validates_with_the_ci_commands():
