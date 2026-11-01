@@ -45,24 +45,34 @@ if TYPE_CHECKING:
 class _SyncSettingsFields(TypedDict, total=False, closed=True):
     """The ``SyncSettings`` fields a test overrides."""
 
+    copybarista_project_path: str
+    export_branch_prefix: str
     export_watch_paths: tuple[str, ...]
+    forbidden_pr_text: tuple[str, ...]
     import_branch_prefix: str
     npm_build_commands: tuple[str, ...]
     npm_packages: tuple[str, ...]
     package_name: str
     pr_default_body: str
     pr_default_title: str
+    pr_metadata_source: str
+    public_repo: str
     publish_source_rev: bool
+    python_package: bool
     refresh_public_lockfile: bool
     release_check_script: str
     replay_bootstrap_base: str
     replay_bootstrap_base_comment: tuple[str, ...]
     require_pr_metadata: bool
     skip_source_validation: bool
+    source_repo: str
+    source_root: str
+    sync_app_slug: str
     sync_label: str
     sync_token_login: str
+    sync_user_email: str
+    sync_user_name: str
     system_packages: tuple[str, ...]
-    type_check_targets: tuple[str, ...]
     validation_python_versions: tuple[str, ...]
 
 
@@ -74,7 +84,6 @@ def _settings(**fields: Unpack[_SyncSettingsFields]) -> SyncSettings:
         public_repo="example/configgle",
         source_repo="example/source",
         copybarista_project_path="tools/copybarista",
-        type_check_targets=("configgle", "tests"),
         forbidden_pr_text=("loop",),
     )
     return dataclasses.replace(built, **fields)
@@ -93,10 +102,20 @@ def test_sync_toml_round_trips_every_setting(tmp_path: Path):
     incompleteness that let the gap open; quantifying over the dataclass
     means a field added later cannot escape.
     """
+    # Two entries in every list, so each list's separator is rendered too.
     original = _settings(
+        export_watch_paths=("docs/**", "# why docs"),
+        forbidden_pr_text=("loop", "secret"),
+        npm_build_commands=("node a.js", "node b.js"),
+        npm_packages=("npm/a", "npm/b"),
+        publish_source_rev=True,
+        python_package=False,
+        refresh_public_lockfile=True,
+        replay_bootstrap_base_comment=("why this base", "not that one"),
+        require_pr_metadata=True,
         skip_source_validation=True,
-        system_packages=("git",),
-        replay_bootstrap_base_comment=("why this base",),
+        system_packages=("git", "ripgrep"),
+        validation_python_versions=("3.12", "3.13"),
     )
     path = tmp_path / "copybarista.sync.toml"
     path.write_text(sync_toml(original), encoding="utf-8")
@@ -104,11 +123,73 @@ def test_sync_toml_round_trips_every_setting(tmp_path: Path):
     assert load_sync_settings(path) == original
 
 
+def _site_settings() -> SyncSettings:
+    """Return settings for a tree that is no Python package, such as a site."""
+    return _settings(
+        python_package=False,
+        skip_source_validation=True,
+    )
+
+
+def test_a_tree_that_is_no_python_package_scaffolds_no_python_ci(tmp_path: Path):
+    written = write_sync_scaffold(root=tmp_path, settings=_site_settings())
+
+    assert sorted(path.relative_to(tmp_path).as_posix() for path in written) == [
+        "copy.barista.toml",
+        "copybarista.sync.toml",
+    ]
+
+
+def test_check_sync_config_accepts_the_ci_a_tree_owns(tmp_path: Path):
+    """Its own ``package-validation.yml`` is the public CI the export waits on."""
+    write_sync_scaffold(root=tmp_path, settings=_site_settings())
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "package-validation.yml").write_text(
+        "name: Package validation\n",
+        encoding="utf-8",
+    )
+
+    check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_requires_the_ci_a_tree_owns(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_site_settings())
+
+    with pytest.raises(
+        ConfigError,
+        match=r"Missing sync files: \.github/workflows/package-validation\.yml$",
+    ):
+        check_sync_config(root=tmp_path)
+
+
+def test_a_tree_with_no_import_workflow_turns_off_the_export_import_guard():
+    """The guard waits for imports, and a tree with no import workflow has none.
+
+    Left on, its public history (every commit foreign to the export) would
+    block the first export and every one after it.
+    """
+    settings = _site_settings()
+    run = _step_run(
+        export_workflow(settings, inputs=()),
+        job="export-pr",
+        name="Open export PR",
+    )
+
+    assert settings.import_prefix == ""
+    assert "--import-branch-prefix '' \\\n" in run
+    assert "--skip-source-validation" in run
+    assert [line for line in run.splitlines() if line.strip() == "\\"] == []
+
+
 def test_write_sync_scaffold_uses_stable_public_file_names(tmp_path: Path):
     written = write_sync_scaffold(root=tmp_path, settings=_settings())
 
     assert tmp_path / "copy.barista.toml" in written
     assert tmp_path / "copybarista.sync.toml" in written
+    # Compared as paths, not looked up on disk: a case-insensitive filesystem
+    # would find ``.PYTHON-VERSION`` under this name.
+    assert tmp_path / ".python-version" in written
     assert tmp_path / ".github/workflows/configgle-to-loop.yml" in written
     assert tmp_path / ".github/workflows/package-validation.yml" in written
     assert not (tmp_path / "private").exists()
@@ -280,7 +361,7 @@ def test_the_scaffold_pins_a_checkout_to_the_newest_supported_python(tmp_path: P
 @pytest.mark.parametrize(
     ("name", "text", "message"),
     [
-        (".python-version", None, "Missing sync files"),
+        (".python-version", None, r"Missing sync files: \.python-version$"),
         (".python-version", "3.15\n", r"\.python-version must hold 3\.14"),
         (
             ".gitignore",
@@ -629,7 +710,6 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
         public_repo = "rekursiv-ai/configgle"
         source_repo = "example/source"
         copybarista_project_path = "tools/copybarista"
-        type_check_targets = ["configgle"]
         forbidden_pr_text = []
         """,
         encoding="utf-8",
@@ -667,7 +747,6 @@ def test_load_sync_settings_reads_pull_request_defaults(tmp_path: Path):
         public_repo = "rekursiv-ai/configgle"
         source_repo = "example/source"
         copybarista_project_path = "tools/copybarista"
-        type_check_targets = ["configgle"]
         forbidden_pr_text = []
 
         [pull_request]
@@ -721,13 +800,12 @@ def test_load_sync_settings_rejects_wrong_array_shape(tmp_path: Path):
         copybarista_project_path = "tools/copybarista"
         export_branch_prefix = "configgle/export/"
         import_branch_prefix = "configgle/import/"
-        type_check_targets = "configgle"
-        forbidden_pr_text = []
+        forbidden_pr_text = "loop"
         """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="type_check_targets"):
+    with pytest.raises(ConfigError, match="forbidden_pr_text"):
         load_sync_settings(config)
 
 
@@ -788,14 +866,9 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
             r"\[pull_request\]\.require_pr_metadata must be a boolean\.",
         ),
         (
-            '  "configgle",\n  "tests",\n',
-            '  "configgle",\n  1,\n',
-            r"sync\.type_check_targets must be a list of strings\.",
-        ),
-        (
-            '  "configgle",\n  "tests",\n',
-            "",
-            r"sync\.type_check_targets cannot be empty\.",
+            '  "loop",\n',
+            "  1,\n",
+            r"sync\.forbidden_pr_text must be a list of strings\.",
         ),
     ],
     ids=[
@@ -805,7 +878,6 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
         "a number for a title",
         "a string for a pull request flag",
         "a number in a list",
-        "no type check target",
     ],
 )
 def test_load_sync_settings_names_a_setting_of_the_wrong_type(
@@ -829,66 +901,124 @@ def test_load_sync_settings_names_a_setting_of_the_wrong_type(
     [
         (
             _SyncSettingsFields(package_name="--"),
-            "package_name must contain at least one alphanumeric",
+            "sync.package_name must contain at least one alphanumeric character.",
         ),
-        (_SyncSettingsFields(sync_label=" "), r"sync\.sync_label cannot be empty\."),
         (
-            _SyncSettingsFields(type_check_targets=()),
-            r"sync\.type_check_targets cannot be empty\.",
+            _SyncSettingsFields(sync_app_slug="Example-App"),
+            "sync.sync_app_slug must be a GitHub App slug.",
+        ),
+        (_SyncSettingsFields(package_name=" "), "sync.package_name cannot be empty."),
+        (_SyncSettingsFields(sync_label=" "), "sync.sync_label cannot be empty."),
+        (
+            _SyncSettingsFields(sync_user_name=" "),
+            "sync.sync_user_name cannot be empty.",
+        ),
+        (
+            _SyncSettingsFields(sync_user_email=" "),
+            "sync.sync_user_email cannot be empty.",
+        ),
+        (_SyncSettingsFields(source_root=" "), "sync.source_root cannot be empty."),
+        (_SyncSettingsFields(public_repo=" "), "sync.public_repo cannot be empty."),
+        (_SyncSettingsFields(source_repo=" "), "sync.source_repo cannot be empty."),
+        (
+            _SyncSettingsFields(copybarista_project_path=" "),
+            "sync.copybarista_project_path cannot be empty.",
+        ),
+        (
+            _SyncSettingsFields(python_package=False),
+            (
+                "sync.python_package = false needs skip_source_validation = true: "
+                "source validation runs Python tools on the tree."
+            ),
         ),
         (
             _SyncSettingsFields(export_watch_paths=("../shared/**",)),
-            r"sync\.export_watch_paths must be a project-relative path\.",
+            "sync.export_watch_paths must be a project-relative path.",
+        ),
+        (
+            _SyncSettingsFields(export_watch_paths=("# a note", "../shared/**")),
+            "sync.export_watch_paths must be a project-relative path.",
         ),
         (
             _SyncSettingsFields(release_check_script="scripts/check\x01.py"),
-            r"sync\.release_check_script must not contain control characters\.",
+            "sync.release_check_script must not contain control characters.",
         ),
         (
             _SyncSettingsFields(system_packages=("ripgrep; sh",)),
-            r"sync\.system_packages entries must be Debian package names",
+            (
+                "sync.system_packages entries must be Debian package names "
+                "([a-z0-9][a-z0-9+.-]*); got 'ripgrep; sh'."
+            ),
         ),
         (
             _SyncSettingsFields(validation_python_versions=()),
-            r"sync\.validation_python_versions cannot be empty\.",
+            "sync.validation_python_versions cannot be empty.",
         ),
         (
             _SyncSettingsFields(validation_python_versions=("3.13",)),
-            r"must include the published floor '3\.12'; got \('3\.13',\)\.",
+            (
+                "sync.validation_python_versions must include the published floor "
+                "'3.12'; got ('3.13',)."
+            ),
         ),
         (
             _SyncSettingsFields(pr_default_title=" "),
-            r"\[pull_request\]\.default_title cannot be empty\.",
+            "copybarista.sync.toml [pull_request].default_title cannot be empty.",
         ),
         (
             _SyncSettingsFields(pr_default_body=" "),
-            r"\[pull_request\]\.default_body cannot be empty\.",
+            "copybarista.sync.toml [pull_request].default_body cannot be empty.",
+        ),
+        (
+            _SyncSettingsFields(pr_metadata_source="intent_file"),
+            (
+                "copybarista.sync.toml [pull_request].metadata_source must be "
+                "'commit_messages'."
+            ),
         ),
         (
             _SyncSettingsFields(replay_bootstrap_base="main\n"),
-            r"replay_bootstrap_base must not contain control characters\.",
+            (
+                "copybarista.sync.toml [pull_request].replay_bootstrap_base must not "
+                "contain control characters."
+            ),
+        ),
+        (
+            _SyncSettingsFields(export_branch_prefix="sync..x/"),
+            "sync.export_branch_prefix is not a safe generated branch prefix.",
         ),
         (
             _SyncSettingsFields(import_branch_prefix="sync..x/"),
-            r"sync\.import_branch_prefix is not a safe generated branch prefix\.",
+            "sync.import_branch_prefix is not a safe generated branch prefix.",
         ),
         (
             _SyncSettingsFields(import_branch_prefix="sync/.x/"),
-            r"sync\.import_branch_prefix is not a safe generated branch prefix\.",
+            "sync.import_branch_prefix is not a safe generated branch prefix.",
         ),
     ],
     ids=[
         "a name with no letter",
+        "an app slug with a capital",
+        "a blank name",
         "a blank label",
-        "no type check target",
+        "a blank user name",
+        "a blank user email",
+        "a blank source root",
+        "a blank public repo",
+        "a blank source repo",
+        "a blank copybarista path",
+        "python validation of a tree that is no python package",
         "a watch path outside the package",
+        "a watch path outside the package after a comment",
         "a control character in a path",
         "shell in a package name",
         "no python",
         "no floor python",
         "a blank title",
         "a blank body",
+        "an unknown metadata source",
         "a control character in the base",
+        "an export prefix with dot-dot",
         "a prefix with dot-dot",
         "a prefix with a dot-led component",
     ],
@@ -897,8 +1027,16 @@ def test_sync_settings_are_refused_before_they_render(
     fields: _SyncSettingsFields,
     message: str,
 ):
-    with pytest.raises(ConfigError, match=message):
+    """Each refusal names its setting in full; a fragment would pass a garbled one."""
+    with pytest.raises(ConfigError) as raised:
         sync_toml(_settings(**fields))
+
+    assert str(raised.value) == message
+
+
+def test_a_replay_base_may_hold_the_first_printable_character():
+    """Control characters are the ones below the space, not the space itself."""
+    sync_toml(_settings(replay_bootstrap_base="main "))
 
 
 def test_a_commented_watch_path_is_not_read_as_a_path():
@@ -1592,7 +1730,10 @@ def test_app_settings_reject_conflicting_personal_identity(tmp_path: Path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="only one"):
+    with pytest.raises(
+        ConfigError,
+        match=r"^Set only one of sync_app_slug and sync_token_login\.$",
+    ):
         load_sync_settings(config)
 
 
@@ -2040,8 +2181,15 @@ def test_export_workflow_watches_additional_source_paths():
 def test_write_sync_scaffold_refuses_to_overwrite_without_force(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
-    with pytest.raises(ConfigError, match="Refusing to overwrite"):
+    with pytest.raises(ConfigError) as raised:
         write_sync_scaffold(root=tmp_path, settings=_settings())
+
+    assert str(raised.value) == (
+        "Refusing to overwrite existing sync files: copy.barista.toml, "
+        "copybarista.sync.toml, .python-version, "
+        ".github/workflows/package-validation.yml, "
+        ".github/workflows/configgle-to-loop.yml"
+    )
 
 
 def test_write_sync_scaffold_can_overwrite_with_force(tmp_path: Path):

@@ -480,7 +480,6 @@ copybarista init-sync ROOT \
   --copybarista-project-path PATH \
   [--sync-label LABEL] \
   [--release-check-script PATH] \
-  [--type-check-target PATH] \
   [--forbidden-pr-text TEXT] \
   [--validation-python-version VERSION] \
   [--sync-user-name NAME] \

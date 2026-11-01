@@ -120,7 +120,6 @@ class SyncSettings:
       source_repo: Source repository in ``owner/name`` form.
       copybarista_project_path: Source path containing the Copybarista project.
       release_check_script: Optional project-relative release tree checker.
-      type_check_targets: Paths passed to source-side basedpyright.
       forbidden_pr_text: Public PR title/body terms rejected before export.
       export_watch_paths: Additional source-repository paths that trigger export.
       validation_python_versions: Python versions used by public package validation.
@@ -141,6 +140,10 @@ class SyncSettings:
       replay_bootstrap_base_comment: Lines explaining WHY that revision was
         chosen, rendered above the env var in the generated workflow.
       publish_source_rev: Whether public markers may include raw source SHAs.
+      python_package: Whether the tree is a Python package. Any other tree, such
+          as a static site, writes its own ``package-validation.yml`` (the public
+          CI the export waits on) and gets no import workflow, since an import
+          validates with the Python ``CI_COMMANDS``.
       refresh_public_lockfile: Whether export runs generate a public uv.lock.
       skip_source_validation: Whether export runs skip source-side validation.
       npm_packages: Public-repository directories of npm packages the generated
@@ -157,7 +160,6 @@ class SyncSettings:
     public_repo: str
     source_repo: str
     copybarista_project_path: str
-    type_check_targets: tuple[str, ...]
     forbidden_pr_text: tuple[str, ...]
     export_watch_paths: tuple[str, ...] = ()
     release_check_script: str = ""
@@ -176,6 +178,7 @@ class SyncSettings:
     replay_bootstrap_base: str = ""
     replay_bootstrap_base_comment: tuple[str, ...] = ()
     publish_source_rev: bool = False
+    python_package: bool = True
     refresh_public_lockfile: bool = False
     skip_source_validation: bool = False
     npm_packages: tuple[str, ...] = ()
@@ -208,8 +211,15 @@ class SyncSettings:
 
     @property
     def import_prefix(self) -> str:
-        """Return the repo-to-loop (import) branch prefix."""
-        return self.import_branch_prefix or f"{self.branch_slug}/import/"
+        """Return the repo-to-loop (import) branch prefix; empty with no import."""
+        # Empty turns off the export's guard against reverting unimported public
+        # work. With no import workflow nothing is ever imported, so the guard
+        # would block the first export and every one after it.
+        return (
+            self.import_branch_prefix or f"{self.branch_slug}/import/"
+            if self.python_package
+            else ""
+        )
 
 
 def _branch_slug(value: str) -> str:
@@ -254,7 +264,6 @@ def load_sync_settings(path: Path) -> SyncSettings:
         source_repo=_required_str(sync, "source_repo"),
         copybarista_project_path=_required_str(sync, "copybarista_project_path"),
         release_check_script=_optional_str(sync, "release_check_script", default=""),
-        type_check_targets=_required_str_tuple(sync, "type_check_targets"),
         forbidden_pr_text=_required_str_tuple(sync, "forbidden_pr_text"),
         export_watch_paths=_optional_str_tuple(
             sync,
@@ -271,6 +280,7 @@ def load_sync_settings(path: Path) -> SyncSettings:
             "system_packages",
             default=DEFAULT_SYSTEM_PACKAGES,
         ),
+        python_package=_optional_sync_bool(sync, "python_package", default=True),
         refresh_public_lockfile=_optional_sync_bool(
             sync,
             "refresh_public_lockfile",
@@ -366,26 +376,15 @@ def write_sync_scaffold(
     files = {
         root / "copy.barista.toml": copy_barista_toml(settings),
         root / "copybarista.sync.toml": sync_toml(settings),
-        root / ".python-version": f"{CHECKOUT_PYTHON_VERSION}\n",
-        root
-        / ".github"
-        / "workflows"
-        / import_workflow_filename(settings): import_workflow(
-            settings,
-        ),
-        root / ".github" / "workflows" / "package-validation.yml": (
-            package_validation_workflow(settings)
-        ),
         **(
-            {
-                root
-                / ".github"
-                / "workflows"
-                / NPM_WORKFLOW_FILENAME: publish_npm_workflow(settings),
-            }
-            if settings.npm_packages
+            {root / ".python-version": f"{CHECKOUT_PYTHON_VERSION}\n"}
+            if settings.python_package
             else {}
         ),
+        **{
+            root / ".github" / "workflows" / name: text
+            for name, text in public_workflows(settings).items()
+        },
     }
     existing = [str(path.relative_to(root)) for path in files if path.exists()]
     if existing and not force:
@@ -395,7 +394,9 @@ def write_sync_scaffold(
     written: list[Path] = []
     for path, content in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        # A test cannot change the process locale, so it cannot tell "UTF-8" or
+        # the default encoding from "utf-8".
+        path.write_text(content, encoding="utf-8")  # pragma: no mutate
         written.append(path)
     return written
 
@@ -428,9 +429,6 @@ def check_sync_config(*, root: Path) -> None:
     if missing:
         raise ConfigError("Missing sync files: " + ", ".join(missing))
     config = load_config(barista_toml_path)
-    workflow_text = (workflow_dir(root) / import_workflow_filename(settings)).read_text(
-        encoding="utf-8",
-    )
     # Managed configs opt into the shared Python-artifact default rather than
     # enumerating caches/venvs; without it the export would leak them.
     if not config.files.use_default_python_excludes:
@@ -444,15 +442,21 @@ def check_sync_config(*, root: Path) -> None:
             raise ConfigError(f"copy.barista.toml must exclude {path}.")
     if not config.leak_check.forbidden_path:
         raise ConfigError("copy.barista.toml must define forbidden path leak checks.")
-    _validate_python_pin(public_root(root))
-    _validate_import_workflow_yaml(workflow_text=workflow_text, settings=settings)
-    _assert_generated(
-        name="package-validation.yml",
-        workflow_text=(workflow_dir(root) / "package-validation.yml").read_text(
-            encoding="utf-8",
-        ),
-        expected=package_validation_workflow(settings),
-    )
+    if settings.python_package:
+        _validate_python_pin(public_root(root))
+        _validate_import_workflow_yaml(
+            workflow_text=(
+                workflow_dir(root) / import_workflow_filename(settings)
+            ).read_text(encoding="utf-8"),
+            settings=settings,
+        )
+        _assert_generated(
+            name="package-validation.yml",
+            workflow_text=(workflow_dir(root) / "package-validation.yml").read_text(
+                encoding="utf-8",
+            ),
+            expected=package_validation_workflow(settings),
+        )
     if settings.npm_packages:
         _assert_generated(
             name=NPM_WORKFLOW_FILENAME,
@@ -498,9 +502,6 @@ def sync_toml(settings: SyncSettings) -> str:
 
     """
     _validate_settings(settings)
-    targets = "\n".join(
-        f"  {_toml_str(target)}," for target in settings.type_check_targets
-    )
     forbidden = "\n".join(
         f"  {_toml_str(term)}," for term in settings.forbidden_pr_text
     )
@@ -549,13 +550,13 @@ def sync_toml(settings: SyncSettings) -> str:
             "PR_METADATA_SOURCE": _toml_str(settings.pr_metadata_source),
             "REPLAY_BOOTSTRAP_BASE": _toml_str(settings.replay_bootstrap_base),
             "PUBLISH_SOURCE_REV": _toml_bool(settings.publish_source_rev),
+            "PYTHON_PACKAGE": _toml_bool(settings.python_package),
             "REFRESH_PUBLIC_LOCKFILE": _toml_bool(settings.refresh_public_lockfile),
             "SKIP_SOURCE_VALIDATION": _toml_bool(settings.skip_source_validation),
             "NPM_PACKAGES": npm_packages,
             "NPM_BUILD_COMMANDS": npm_build_commands,
             "SYSTEM_PACKAGES": packages,
             "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_comment,
-            "TYPE_CHECK_TARGETS": targets,
             "FORBIDDEN_PR_TEXT": forbidden,
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "VALIDATION_PYTHON_VERSIONS": python_versions,
@@ -638,6 +639,36 @@ def publish_npm_workflow(settings: SyncSettings) -> str:
     )
 
 
+# The one list of what is generated: the scaffold and ``write-public-workflows`` each
+# kept their own, so a workflow added to one would go missing from the other.
+def public_workflows(settings: SyncSettings) -> dict[str, str]:
+    """Return each generated public workflow's text, keyed by its file name.
+
+    Args:
+      settings: Sync settings used to render the workflows.
+
+    Returns:
+      workflows: The Python package's validation and import workflows, plus the
+        npm workflow when ``npm_packages`` asks for one.
+
+    """
+    return {
+        **(
+            {
+                "package-validation.yml": package_validation_workflow(settings),
+                import_workflow_filename(settings): import_workflow(settings),
+            }
+            if settings.python_package
+            else {}
+        ),
+        **(
+            {NPM_WORKFLOW_FILENAME: publish_npm_workflow(settings)}
+            if settings.npm_packages
+            else {}
+        ),
+    }
+
+
 def export_inputs(
     settings: SyncSettings,
     *,
@@ -695,14 +726,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
         ),
     )
     unwatched = [path for path in dict.fromkeys(inputs) if not watched.matches(path)]
-    type_targets = _shell_lines(
-        [
-            part
-            for target in settings.type_check_targets
-            for part in ("--type-check-target", target)
-        ],
-        indent="            ",
-    )
     pr_replay_flags = _shell_args(
         _pr_replay_args(settings),
         indent="            ",
@@ -766,7 +789,6 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "PR_REPLAY_FLAGS": pr_replay_flags,
             "RELEASE_CHECK_ARG": release_check_arg,
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
-            "TYPE_TARGETS": type_targets,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
             **_sync_auth(settings, importing=False),
         },
@@ -895,11 +917,17 @@ def import_workflow_filename(settings: SyncSettings) -> str:
 def _required_paths(root: Path, settings: SyncSettings) -> tuple[Path, ...]:
     """Return generated public sync files that must stay present."""
     workflows = workflow_dir(root)
+    # The two TOML files are not listed: ``check_sync_config`` read them already.
     return (
-        root / "copy.barista.toml",
-        root / "copybarista.sync.toml",
-        public_root(root) / ".python-version",
-        workflows / import_workflow_filename(settings),
+        *(
+            (
+                public_root(root) / ".python-version",
+                workflows / import_workflow_filename(settings),
+            )
+            if settings.python_package
+            else ()
+        ),
+        # Every tree has one, generated or not: the export waits on its run.
         workflows / "package-validation.yml",
         *((workflows / NPM_WORKFLOW_FILENAME,) if settings.npm_packages else ()),
     )
@@ -1253,12 +1281,7 @@ def _required_str_tuple(sync: Mapping[str, object], key: str) -> tuple[str, ...]
         raise ConfigError(
             f"copybarista.sync.toml sync.{key} must be a list of strings.",
         )
-    strings = [item for item in value if isinstance(item, str)]
-    if not strings and key == "type_check_targets":
-        raise ConfigError(
-            "copybarista.sync.toml sync.type_check_targets cannot be empty.",
-        )
-    return tuple(strings)
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _validate_settings(settings: SyncSettings) -> None:
@@ -1280,8 +1303,12 @@ def _validate_settings(settings: SyncSettings) -> None:
     ):
         if not value.strip():
             raise ConfigError(f"sync.{name} cannot be empty.")
-    if not settings.type_check_targets:
-        raise ConfigError("sync.type_check_targets cannot be empty.")
+    # Source validation is ruff, ty, basedpyright and pytest run on the tree.
+    if not settings.python_package and not settings.skip_source_validation:
+        raise ConfigError(
+            "sync.python_package = false needs skip_source_validation = true: "
+            "source validation runs Python tools on the tree.",
+        )
     for path in settings.export_watch_paths:
         # A ``#`` entry is a rendered YAML comment, not a path to validate.
         if path.startswith("#"):

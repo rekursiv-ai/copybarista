@@ -34,16 +34,13 @@ from copybarista.sync_setup import (
     DEFAULT_SYNC_USER_EMAIL,
     DEFAULT_SYNC_USER_NAME,
     DEFAULT_VALIDATION_PYTHON_VERSIONS,
-    NPM_WORKFLOW_FILENAME,
     SyncSettings,
     check_sync_config,
     export_inputs,
     export_workflow,
-    import_workflow,
-    import_workflow_filename,
     load_sync_settings,
-    package_validation_workflow,
-    publish_npm_workflow,
+    public_workflows,
+    workflow_dir,
     write_sync_scaffold,
 )
 
@@ -108,7 +105,6 @@ class _Flags(Protocol):
     source_repo: str
     copybarista_project_path: str
     release_check_script: str
-    type_check_target: list[str]
     forbidden_pr_text: list[str]
     validation_python_version: list[str]
     refresh_public_lockfile: bool
@@ -188,7 +184,6 @@ def _parser() -> argparse.ArgumentParser:
     init_sync.add_argument("--source-repo", required=True)
     init_sync.add_argument("--copybarista-project-path", required=True)
     init_sync.add_argument("--release-check-script", default="")
-    init_sync.add_argument("--type-check-target", action="append", default=[])
     init_sync.add_argument("--forbidden-pr-text", action="append", default=[])
     init_sync.add_argument("--validation-python-version", action="append", default=[])
     init_sync.add_argument("--refresh-public-lockfile", action="store_true")
@@ -300,8 +295,6 @@ def _run_init_sync(flags: _Flags) -> None:
         source_repo=flags.source_repo,
         copybarista_project_path=flags.copybarista_project_path,
         release_check_script=flags.release_check_script,
-        type_check_targets=tuple(flags.type_check_target)
-        or (flags.package_name, "tests"),
         forbidden_pr_text=tuple(flags.forbidden_pr_text),
         validation_python_versions=tuple(flags.validation_python_version)
         or DEFAULT_VALIDATION_PYTHON_VERSIONS,
@@ -347,19 +340,12 @@ def _run_write_export_workflow(flags: _Flags) -> None:
 def _run_write_public_workflows(flags: _Flags) -> None:
     """Rewrite the generated workflows under a package's ``.export/``."""
     config = Path(flags.sync_config)
-    settings = load_sync_settings(config)
-    workflows = config.parent / ".export/.github/workflows"
-    for path, text in (
-        (workflows / "package-validation.yml", package_validation_workflow(settings)),
-        (workflows / import_workflow_filename(settings), import_workflow(settings)),
-        *(
-            ((workflows / NPM_WORKFLOW_FILENAME, publish_npm_workflow(settings)),)
-            if settings.npm_packages
-            else ()
-        ),
-    ):
-        path.write_text(text, encoding="utf-8")
-        sys.stdout.write(f"wrote {path}\n")
+    workflows = workflow_dir(config.parent)
+    for name, text in public_workflows(load_sync_settings(config)).items():
+        # A test cannot change the process locale, so it cannot tell "UTF-8" or
+        # the default encoding from "utf-8".
+        (workflows / name).write_text(text, encoding="utf-8")  # pragma: no mutate
+        sys.stdout.write(f"wrote {workflows / name}\n")
 
 
 def _exit_code(err: CopybaristaError) -> int:

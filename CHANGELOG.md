@@ -10,8 +10,17 @@ All notable copybarista changes are documented here. This project follows
 - `system_packages` accepts `libturbojpeg`, installed by the package's shipped
   `install-libjpeg-turbo.sh`: no apt release carries the libjpeg-turbo 3 that
   pyturbojpeg 2 needs.
+- `sync.python_package = false` exports a tree that is not a Python package,
+  such as a static site. The tree writes its own `package-validation.yml`, which
+  the export still waits on; no Python validation workflow, import workflow or
+  `.python-version` is generated or required, and `skip_source_validation` must
+  be true. With no import workflow the export skips its guard against
+  overwriting unimported public commits, which nothing could ever clear.
 
 ### Changed
+
+- `write-public-workflows` writes where `check-sync-config` reads:
+  `.export/.github/workflows` when it exists, else `.github/workflows`.
 
 - Sync workflows and their jobs are named `loop→<package>` (export) and
   `<package>→loop` (import), lowercase. The long `Loop to <Label> and update
@@ -43,6 +52,15 @@ All notable copybarista changes are documented here. This project follows
   `requires-python` is unchanged, so 3.12 still installs.
 - Every generated workflow passes its validation Python to setup-uv, which
   outranks the checkout's `.python-version`; the 3.12 jobs ran 3.14 otherwise.
+- `sync.type_check_targets`, with `init-sync --type-check-target` and
+  `sync_export_pr.py --type-check-target`. No step read them: source
+  validation type-checks the whole checkout.
+
+### Fixed
+
+- `sync_export_pr.py PROJECT_DIR`, which reads the sync config, passes
+  `--skip-source-validation` when the config sets `skip_source_validation`, as
+  the generated workflow does. It ran the source checks the CI export skips.
 
 ## 0.1.8 - 2026-10-26
 
