@@ -103,6 +103,23 @@ def test_without_drops_entries_and_the_comments_only_they_used(
     assert _list(base).without(removed).text() == expected
 
 
+@pytest.mark.parametrize(
+    ("base", "removed", "expected"),
+    [
+        ("a = [true, 1.0, 1]\n", ["1"], "a = [true, 1.0]\n"),
+        ("a = [1, 1.0]\n", ["1.0"], "a = [1]\n"),
+        ("a = [1, nan]\n", ["nan"], "a = [1]\n"),
+    ],
+)
+def test_without_matches_an_entry_by_its_type_too(
+    base: str,
+    removed: list[str],
+    expected: str,
+):
+    """TOML's ``true``, ``1`` and ``1.0`` differ, and NaN is an entry like any other."""
+    assert _list(base).without(removed).text() == expected
+
+
 def test_without_rejects_an_entry_the_list_lacks():
     with pytest.raises(ListError, match="'\"z\"'"):
         _list('a = ["x"]\n').without(['"z"'])
@@ -124,6 +141,18 @@ def test_editing_a_layout_without_one_entry_per_line_is_rejected(text: str):
 def test_parse_rejects_a_value_that_is_not_a_list():
     with pytest.raises(ListError):
         ListValue.parse('a = "x"\n')
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('a = ["""x"""]\n', "an entry spans lines"),
+        ("a = [1", "a list does not close"),
+    ],
+)
+def test_parse_rejects_a_one_line_list_it_cannot_split(text: str, message: str):
+    with pytest.raises(ListError, match=message):
+        ListValue.parse(text)
 
 
 if __name__ == "__main__":

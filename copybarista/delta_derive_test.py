@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from copybarista.delta_derive import derive
+from copybarista.delta_derive import _renders, derive, derive_values
 from copybarista.delta_render import render
 
 
@@ -92,6 +92,66 @@ def test_derive_then_render_reproduces_each_edit(name: str, target: str):
     del name
     delta = derive(_BASE, target)
     assert render(_BASE, delta) == target
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
+        pytest.param("a = 1\nb = 2\nc = 3\n", "c = 3\na = 1\nb = 2\n", id="top-level"),
+        pytest.param(
+            "[x]\n# About a.\na = 1\nb = 2\nc = 3\n",
+            "[x]\nc = 3\n# About a.\na = 1\nb = 2\n",
+            id="in-a-table",
+        ),
+        pytest.param(
+            "[x]\na = 1\nb = 2\nc = 3\n",
+            "[x]\na = 1\nc = 4\nb = 2\n",
+            id="edited",
+        ),
+    ],
+)
+def test_derive_then_render_reproduces_a_reorder(base: str, target: str):
+    assert render(base, derive(base, target)) == target
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
+        pytest.param('["-t"]\nk = 1\n', '["-t"]\nk = 2\n', id="edited-table"),
+        pytest.param("a = 1\n", 'a = 1\n\n["!t"]\nk = 1\n', id="new-table"),
+        pytest.param('["-t"]\nk = 1\n', '["-t"]  # Why.\nk = 1\n', id="header-remark"),
+        pytest.param("a = 1\n", 'a = 1\n\n[["-i"]]\nn = 1\n', id="new-array"),
+        pytest.param("b = 1\n", '"-a" = 2\nb = 1\n', id="key-placed-first"),
+        pytest.param('"-a" = 1\n', '"-a" = 2\n', id="edited-key"),
+    ],
+)
+def test_derive_escapes_a_name_spelled_like_an_operation(base: str, target: str):
+    assert render(base, derive(base, target)) == target
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
+        pytest.param("a = 1\n", "a = 1\n\n# Footer.\n", id="footer-only"),
+        pytest.param(
+            "# Top.\n\na = 1\n",
+            "# New top.\n\na = 1\n\n# Footer.\n",
+            id="preamble-and-footer",
+        ),
+        pytest.param(
+            "[[i]]\nn = 1\n",
+            "[[i]]\nn = 1\n\n# About two.\n[[i]]\nn = 2\n",
+            id="commented-element",
+        ),
+    ],
+)
+def test_derive_then_render_reproduces_a_comment_only_change(base: str, target: str):
+    assert render(base, derive(base, target)) == target
+
+
+def test_renders_is_false_for_a_delta_the_base_cannot_take():
+    assert not _renders("a = 1\n", '"!b" = true\n', target="a = 1\n")
+    assert _renders("a = 1\n", "a = 2\n", target="a = 2\n")
 
 
 def test_derive_of_the_base_itself_is_empty():
@@ -205,6 +265,108 @@ def test_derive_writes_only_the_header_a_change_lies_under():
 
 def test_derive_keeps_the_preamble_apart_from_the_first_operation():
     assert derive("# Top.\n\na = 1\n", "# New.\n\na = 2\n") == "# New.\n\na = 2\n"
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
+        ("# A.\na = 1\n", "# B.\na = 1\n"),
+        ("a = 1  # A.\n", "a = 1\n"),
+        ('w = [\n    # A.\n    "x",\n]\n', 'w = [\n    "x",\n]\n'),
+        # A table the base already holds empty keeps its comments to the base.
+        ("# About t.\n[t]  # Why.\n\n[t.u]\nb = 1\n", "[t]\n\n[t.u]\nb = 1\n"),
+    ],
+)
+def test_derive_values_of_a_comment_edit_is_empty(base: str, target: str):
+    assert derive_values(base, target) == ""
+
+
+@pytest.mark.parametrize(
+    ("base", "target"),
+    [
+        ("a = 1  # Why.\nb = 1\n", "a = true  # Why.\nb = 1\n"),
+        ("a = 1  # Why.\nb = 1\n", "a = 1.0  # Why.\nb = 1\n"),
+        ("w = [\n    # A.\n    1,\n]\n", "w = [\n    # A.\n    true,\n]\n"),
+    ],
+)
+def test_derive_values_keeps_the_comments_beside_a_value_of_a_new_type(
+    base: str,
+    target: str,
+):
+    """``1`` to ``true`` or ``1.0`` is a value edit, though Python's ``==`` disagrees."""
+    assert render(base, derive_values(base, target)) == target
+
+
+@pytest.mark.parametrize(
+    ("base", "target", "rendered"),
+    [
+        pytest.param(
+            "w = [\n    # A.\n    1,\n    # B.\n    2,\n]\n",
+            "w = [1]\n",
+            "w = [\n    # A.\n    1,\n]\n",
+            id="removed",
+        ),
+        pytest.param(
+            "w = [\n    # A.\n    1,\n]\n",
+            "w = [1, 2]\n",
+            "w = [\n    # A.\n    1,\n    2,\n]\n",
+            id="appended",
+        ),
+    ],
+)
+def test_derive_values_keeps_each_kept_entry_s_comments_as_a_list_changes_length(
+    base: str,
+    target: str,
+    rendered: str,
+):
+    """A removed entry takes the comments only it used; a kept one keeps its own."""
+    assert render(base, derive_values(base, target)) == rendered
+
+
+@pytest.mark.parametrize(
+    ("base", "target", "rendered"),
+    [
+        pytest.param(
+            "a = 1\nb = 1\n",
+            "a = 2\nb = 1\n",
+            "a = 2\nb = 1\n",
+            id="no-remark",
+        ),
+        # A remark beside a multi-line value has no one line to sit on in a new one.
+        pytest.param(
+            'a = """x\ny"""  # Why.\n',
+            'a = "z"\n',
+            'a = "z"\n',
+            id="multi-line",
+        ),
+        # A one-line list keeps its remark through a by-entry edit.
+        pytest.param(
+            "w = [1, 2]  # Why.\n",
+            "w = [1, 3]\n",
+            "w = [1, 3]  # Why.\n",
+            id="one-line-list",
+        ),
+        # Repeated or reordered entries cannot say whose comments are whose.
+        pytest.param(
+            'w = [\n    # A.\n    "x",\n    "x",\n]\n',
+            'w = ["x"]\n',
+            'w = ["x"]\n',
+            id="repeated",
+        ),
+        pytest.param(
+            'w = [\n    # A.\n    "x",\n    "y",\n]\n',
+            'w = ["y", "z", "x"]\n',
+            'w = ["y", "z", "x"]\n',
+            id="reordered",
+        ),
+    ],
+)
+def test_derive_values_drops_comments_it_cannot_place(
+    base: str,
+    target: str,
+    rendered: str,
+):
+    assert render(base, derive_values(base, target)) == rendered
 
 
 if __name__ == "__main__":

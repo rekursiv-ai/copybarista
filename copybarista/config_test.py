@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import re
 import tomllib
 
 import pytest
 
 from copybarista.config import (
     DEFAULT_PYTHON_EXCLUDES,
+    FileMove,
+    Transform,
     load_config,
     parse_config,
+    reverse_file_moves,
+    reverse_move_transforms,
     workflow_to_toml,
 )
 from copybarista.errors import ConfigError
@@ -1183,6 +1188,315 @@ def test_rejects_move_empty_destination(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="non-empty"):
         load_config(config_path)
+
+
+def test_workflow_to_toml_round_trips_every_optional_field():
+    config = parse_config(
+        tomllib.loads(
+            '[workflow]\nname = "demo"\nmode = "squash"\n'
+            'source_root = "project"\nglobstar = "zero_or_more"\n\n'
+            "[destination.git]\n"
+            'url = "https://example.com/demo.git"\n'
+            'branch = "main"\n'
+            'committer_name = "Copybarista"\n'
+            'committer_email = "copybarista@example.com"\n\n'
+            '[files]\ninclude = ["**"]\n\n'
+            "[[leak_check.forbidden_text]]\n"
+            'id = "monorepo"\n'
+            'pattern = "internal[.]"\n'
+            'paths = ["**/*.py"]\n'
+            'exclude = ["docs/**"]\n'
+            'message = "Rewrite internal imports."\n\n'
+            "[[transform]]\n"
+            'type = "replace"\n'
+            'path = "**/*.py"\n'
+            'id = "imports"\n'
+            "required = false\n"
+            'before = "internal.pkg"\n'
+            'after = "pkg"\n'
+            'reverse_before = "pkg"\n'
+            'reverse_after = "internal.pkg"\n'
+            "reversible = false\n\n"
+            '[[transform]]\ntype = "move"\npath = "docs"\ndestination = "site"\n\n'
+            "[[transform]]\n"
+            'type = "strip_block"\n'
+            'path = "**/*.py"\n'
+            'start = "# internal:start"\n'
+            'end = "# internal:end"\n'
+            'else = "# internal:else"\n'
+            "inclusive = false\n\n"
+            "[[transform]]\n"
+            'type = "internal_lines"\npath = "**/*.py"\nstart = "# internal"\n\n'
+            "[[transform]]\n"
+            'type = "uncomment"\n'
+            'path = "**/*.py"\n'
+            'start = "# public:start"\n'
+            'end = "# public:end"\n',
+        ),
+    )
+
+    assert parse_config(tomllib.loads(workflow_to_toml(config))) == config
+    # Each field is set away from its default, so equality needs the writer.
+    assert (config.globstar, config.git.committer_name, config.git.committer_email) == (
+        "zero_or_more",
+        "Copybarista",
+        "copybarista@example.com",
+    )
+    assert config.leak_check.forbidden_text[0].message == "Rewrite internal imports."
+    replace, move, strip_block, internal_lines, uncomment = config.transforms
+    assert (replace.required, replace.reversible, replace.reverse_before) == (
+        False,
+        False,
+        "pkg",
+    )
+    assert move.destination == "site"
+    assert (strip_block.else_marker, strip_block.inclusive) == (
+        "# internal:else",
+        False,
+    )
+    assert internal_lines.start == "# internal"
+    assert uncomment.end == "# public:end"
+
+
+@pytest.mark.parametrize(
+    ("tail", "message"),
+    [
+        pytest.param(
+            'copy = ["x"]\n',
+            "Each files.copy entry must be a table",
+            id="copy-not-table",
+        ),
+        pytest.param(
+            '[[files.copy]]\nsource = ""\ndestination = "d"\n',
+            "files.copy source must be non-empty",
+            id="copy-empty-source",
+        ),
+        pytest.param(
+            '[[files.copy]]\nsource = "s"\ndestination = ""\n',
+            "files.copy destination must be non-empty",
+            id="copy-empty-destination",
+        ),
+        pytest.param(
+            'relocated = ["x"]\n',
+            "Each files.relocated entry must be a table",
+            id="relocated-not-table",
+        ),
+        pytest.param(
+            'moves = ["x"]\n',
+            "Each files.moves entry must be a table",
+            id="moves-not-table",
+        ),
+        pytest.param(
+            '[[files.relocated]]\npublic = ""\nsource = "x"\n',
+            "needs a non-empty public and source",
+            id="relocated-empty-public",
+        ),
+        pytest.param(
+            'write = ["x"]\n',
+            "Each files.write entry must be a table",
+            id="write-not-table",
+        ),
+        pytest.param(
+            '[[files.write]]\npath = ""\ncontent = ""\n',
+            "files.write path must be non-empty",
+            id="write-empty-path",
+        ),
+        pytest.param(
+            'copy = "x"\n',
+            "copy must be a list",
+            id="copy-not-list",
+        ),
+        pytest.param(
+            'exclude = "**"\n',
+            "exclude must be a list of strings",
+            id="exclude-not-list",
+        ),
+        pytest.param(
+            "exclude = [1]\n",
+            "exclude must be a list of strings",
+            id="exclude-not-strings",
+        ),
+        pytest.param(
+            'exclude = ["[ab"]\n',
+            "files.exclude: Unbalanced glob syntax",
+            id="exclude-bad-glob",
+        ),
+        pytest.param(
+            '[destination]\nfolder = "x"\n',
+            "destination.folder must be a table",
+            id="folder-not-table",
+        ),
+        pytest.param(
+            '[destination]\ngit = "x"\n',
+            "destination.git must be a table",
+            id="git-not-table",
+        ),
+        pytest.param(
+            '[leak_check]\nforbidden_text = ["x"]\n',
+            "Each leak_check.forbidden_text entry must be a table",
+            id="forbidden-text-not-table",
+        ),
+        pytest.param(
+            '[[leak_check.forbidden_text]]\npattern = ""\n',
+            "leak_check.forbidden_text pattern must be non-empty",
+            id="forbidden-text-empty-pattern",
+        ),
+        pytest.param(
+            '[leak_check]\nforbidden_path = ["x"]\n',
+            "Each leak_check.forbidden_path entry must be a table",
+            id="forbidden-path-not-table",
+        ),
+        pytest.param(
+            "[[leak_check.forbidden_path]]\npaths = []\n",
+            "leak_check.forbidden_path paths must be non-empty",
+            id="forbidden-path-empty-paths",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "move"\npath = "[ab"\ndestination = "d"\n',
+            "Unbalanced glob syntax",
+            id="transform-bad-glob",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = 7\npath = "a"\n',
+            "type must be a string",
+            id="type-not-string",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "move"\npath = "a"\nrequired = "yes"\n',
+            "required must be a boolean",
+            id="required-not-bool",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "replace"\npath = "a"\nbefore = "x"\n'
+            'after = "y"\nregex_groups = "s"\n',
+            "replace regex_groups must be a table",
+            id="regex-groups-not-table",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "replace"\npath = "a"\nbefore = "x"\n'
+            'after = "y"\nreverse_before = "y"\n',
+            "reverse_before and reverse_after must be set together",
+            id="reverse-before-alone",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "replace"\npath = "a"\nbefore = "x"\n'
+            'after = "y"\nreverse_before = ""\nreverse_after = ""\n',
+            "replace reverse_before must be non-empty",
+            id="reverse-before-empty",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "ruff_format"\npath = "**/*.py"\n',
+            "ruff_format path must be an exact file or directory",
+            id="ruff-format-glob",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "internal_lines"\npath = "a"\nstart = ""\n',
+            "internal_lines start marker must be non-empty",
+            id="internal-lines-empty-start",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "uncomment"\npath = "a"\nstart = ""\n',
+            "uncomment start marker must be non-empty",
+            id="uncomment-empty-start",
+        ),
+    ],
+)
+def test_parse_config_names_each_malformed_field(tail: str, message: str):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        parse_config(tomllib.loads(_workflow(tail)))
+
+
+def test_parse_config_rejects_a_transform_that_is_not_a_table():
+    # A top-level key must precede every table, so it leads the document.
+    with pytest.raises(ConfigError, match="Each transform entry must be a table"):
+        parse_config(tomllib.loads('transform = ["x"]\n' + _workflow("")))
+
+
+@pytest.mark.parametrize(
+    ("public", "source"),
+    [
+        ("pkg/__init__.py", "_stubs/pkg/__init__.py"),
+        ("pkg", "_stubs/pkg"),
+        ("other.py", "other.py"),
+    ],
+)
+def test_reverse_move_transforms_undoes_each_move_transform(public: str, source: str):
+    transforms = (
+        Transform(id="r", type="replace", path="**", before="a", after="b"),
+        Transform(id="m", type="move", path="_stubs/pkg", destination="pkg"),
+    )
+
+    assert reverse_move_transforms(public_path=public, transforms=transforms) == source
+
+
+@pytest.mark.parametrize(
+    ("public", "source", "moved"),
+    [
+        # Back-moved to the root, then under the whole-tree move: source-root relative.
+        ("README.md", "README.md", True),
+        ("pkg/core.py", "core.py", True),
+        ("docs/a.md", "docs/a.md", True),
+        ("outside.txt", "outside.txt", False),
+    ],
+)
+def test_reverse_file_moves_undoes_the_moves_in_reverse_order(
+    public: str,
+    source: str,
+    moved: bool,
+):
+    moves = (
+        FileMove(path="", destination="pkg"),
+        FileMove(path="pkg/README.md", destination="README.md"),
+        FileMove(path="pkg/docs", destination="docs"),
+    )
+
+    assert reverse_file_moves(public, moves) == (source, moved)
+
+
+def test_load_config_reads_a_copy_bara_sky_workflow(tmp_path: Path):
+    sky = tmp_path / "copy.bara.sky"
+    sky.write_text(
+        "core.workflow(\n"
+        '    name = "publish",\n'
+        "    origin = folder.origin(),\n"
+        "    destination = folder.destination(),\n"
+        '    origin_files = glob(["**"]),\n'
+        '    destination_files = glob(["**"]),\n'
+        '    authoring = authoring.pass_thru("Demo <demo@copybarista.test>"),\n'
+        '    mode = "SQUASH",\n'
+        ")\n",
+        encoding="utf-8",
+    )
+
+    assert load_config(sky, workflow_name="publish").name == "publish"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        pytest.param(None, "Cannot read config", id="missing"),
+        pytest.param("[workflow\n", "Invalid TOML in config", id="invalid-toml"),
+    ],
+)
+def test_load_config_names_a_file_it_cannot_read(
+    tmp_path: Path,
+    text: str | None,
+    message: str,
+):
+    config_path = tmp_path / "copy.barista.toml"
+    if text is not None:
+        config_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path)
+
+
+def _workflow(tail: str) -> str:
+    """Return minimal ``[workflow]`` and ``[files]`` tables, then ``tail``."""
+    return (
+        '[workflow]\nname = "demo"\nmode = "squash"\nsource_root = "project"\n'
+        '[files]\ninclude = ["**"]\n' + tail
+    )
 
 
 if __name__ == "__main__":

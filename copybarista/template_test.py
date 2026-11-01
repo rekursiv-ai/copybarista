@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from copybarista.errors import ConfigError
-from copybarista.template import compile_module_replace, compile_replace
+from copybarista.template import (
+    compile_module_replace,
+    compile_replace,
+    literal_segments,
+    replace_template,
+)
 
 
 _NAMESPACE_GROUPS = (("s", "[A-Za-z_]"),)
@@ -253,6 +258,52 @@ def test_module_replace_rejects_a_non_dotted_path() -> None:
         compile_module_replace(before="acme.internal.lib.userdirs", after="widget")
     with pytest.raises(ConfigError, match="dotted module path"):
         compile_module_replace(before="acme.internal.lib.user-dirs", after="w.x")
+
+
+def test_rejects_a_group_name_bound_twice() -> None:
+    with pytest.raises(ConfigError, match="names must be unique"):
+        compile_replace(
+            before="a${s}",
+            after="b${s}",
+            regex_groups=(("s", "[a-z]"), ("s", "[0-9]")),
+        )
+
+
+def test_replace_template_compiles_a_module_rename() -> None:
+    template = replace_template(
+        before="acme.lib.paths",
+        after="pkg.lib.paths",
+        regex_groups=(),
+        module=True,
+    )
+
+    assert template is not None
+    assert (
+        template.apply("from acme.lib import paths\n") == "from pkg.lib import paths\n"
+    )
+
+
+def test_replace_template_compiles_regex_groups() -> None:
+    template = replace_template(
+        before="acme.${s}",
+        after="pkg.${s}",
+        regex_groups=(("s", "[a-z]+"),),
+        module=False,
+    )
+
+    assert template is not None
+    assert template.apply("import acme.io\n") == "import pkg.io\n"
+
+
+def test_replace_template_leaves_a_literal_to_str_replace() -> None:
+    assert (
+        replace_template(before="a", after="b", regex_groups=(), module=False) is None
+    )
+
+
+def test_literal_segments_joins_the_text_between_groups() -> None:
+    assert literal_segments("start${a}mid${b}end", separator="|") == "start|mid|end"
+    assert literal_segments("no groups", separator="|") == "no groups"
 
 
 if __name__ == "__main__":

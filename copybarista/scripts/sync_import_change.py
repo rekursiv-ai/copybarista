@@ -84,12 +84,10 @@ def run(argv: list[str] | None = None) -> int:
     ]
     if missing:
         _parser().error(f"{missing[0]} is required for an import")
-    if flags.project_path is None:
-        raise ValueError("Expected flags.project_path is not None.")
-    if flags.public_base_ref is None:
-        raise ValueError("Expected flags.public_base_ref is not None.")
-    if flags.public_head_ref is None:
-        raise ValueError("Expected flags.public_head_ref is not None.")
+    # The check above exits on any of the three left unset.
+    assert isinstance(flags.project_path, str)
+    assert isinstance(flags.public_base_ref, str)
+    assert isinstance(flags.public_head_ref, str)
     # Resolve filesystem inputs to absolute paths. Copybarista subprocesses run
     # with cwd=target_dir; relative path args would otherwise be resolved a
     # second time against that cwd (target/target/...).
@@ -253,9 +251,9 @@ def import_change_pr_body(
 def import_branch_name(*, explicit: str, public_sha: str, prefix: str) -> str:
     """Return the public-to-source sync branch name."""
     if explicit.strip():
-        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
-    branch = f"{prefix}sha-{_branch_component(public_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix=prefix)
+        return validated_generated_branch(branch=explicit.strip(), prefix=prefix)
+    branch = f"{prefix}sha-{branch_component(public_sha[:12])}"
+    return validated_generated_branch(branch=branch, prefix=prefix)
 
 
 class ImportBaseError(RuntimeError):
@@ -399,72 +397,54 @@ def last_synced_public_sha(
     )
 
 
-def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
-    """Return whether GitHub has an open PR for a branch."""
-    result = _run_gh(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--head",
-            branch,
-            "--json",
-            "number",
-        ],
-        cwd=cwd,
-        capture=True,
-    )
-    # Gh emits a JSON array; "[]" means no open PR. Compare the compact form
-    # rather than parsing, so this standalone helper needs no typed JSON codec.
-    return json.dumps(json.loads(result.stdout), separators=(",", ":")) != "[]"
-
-
-def _fetch_branch(*, branch: str, cwd: Path) -> None:
-    """Fetch a remote branch if it exists without failing on first import."""
-    _run(
-        [
-            "git",
-            "fetch",
-            "origin",
-            f"refs/heads/{branch}:refs/remotes/origin/{branch}",
-        ],
-        cwd=cwd,
-        check=False,
-    )
-
-
-def _string_bool(value: str) -> bool:
-    """Parse Action-style boolean strings."""
-    return value.lower() in {"1", "true", "yes"}
-
-
-def _branch_component(value: str) -> str:
+# The import workflow runs this file alone, copied out of the target checkout, so it
+# owns the branch rules and ``sync_export_pr`` and ``sync_setup`` import them. Three
+# copies had drifted: only the export's refused a ``.``-led or ``.lock`` component.
+def branch_component(value: str) -> str:
     """Sanitize arbitrary run metadata for use in a Git branch name."""
     return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
 
 
-def _validated_generated_branch(*, branch: str, prefix: str) -> str:
-    """Return a safe generated branch name or exit with a usage error."""
+def validated_generated_branch(*, branch: str, prefix: str) -> str:
+    """Return a safe generated branch name or exit with a usage error.
+
+    Args:
+      branch: Branch name to check.
+      prefix: Prefix every generated branch carries.
+
+    Returns:
+      branch: ``branch`` unchanged.
+
+    """
     if not branch.startswith(prefix):
         sys.stderr.write(f"Branch must start with {prefix}\n")
         raise SystemExit(2)
-    if not _valid_git_branch_name(branch):
+    if not valid_git_branch_name(branch):
         sys.stderr.write(f"Invalid generated branch name: {branch}\n")
         raise SystemExit(2)
     return branch
 
 
-def _valid_git_branch_name(branch: str) -> bool:
-    """Return whether a branch name is safe for force-updated sync branches."""
+def valid_git_branch_name(branch: str) -> bool:
+    """Return whether a branch name is safe for force-updated sync branches.
+
+    Args:
+      branch: Branch name to check.
+
+    Returns:
+      valid: Whether git accepts the name and it is not ``main`` or ``master``.
+
+    """
     if branch in {"main", "master"} or branch.startswith(("-", "/")):
         return False
-    if branch.endswith(("/", ".", ".lock")):
+    if branch.endswith(("/", ".")):
         return False
     if ".." in branch or "//" in branch or "@{" in branch:
+        return False
+    if any(
+        component.startswith(".") or component.endswith(".lock")
+        for component in branch.split("/")
+    ):
         return False
     forbidden = set(" ~^:?*[\\")
     return not any(
@@ -519,7 +499,8 @@ def _run_gh(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a GitHub CLI command with retries for transient API failures."""
-    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
+    attempt = 1
+    while True:
         result = _run(argv, cwd=cwd, check=False, capture=True)
         if result.returncode == 0:
             if not capture:
@@ -536,7 +517,7 @@ def _run_gh(
             f"({attempt}/{GITHUB_RETRY_ATTEMPTS}).",
         )
         time.sleep(GITHUB_RETRY_DELAY_SEC)
-    raise AssertionError("unreachable")
+        attempt += 1
 
 
 def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
@@ -1241,7 +1222,7 @@ def _export_branch_from_message(*, message: str, sync_label: str) -> str:
         return ""
     branch = match[1].strip()
     assert isinstance(branch, str)
-    if "/export/" not in branch or not _valid_git_branch_name(branch):
+    if "/export/" not in branch or not valid_git_branch_name(branch):
         return ""
     return branch
 
@@ -1283,6 +1264,49 @@ def _log_missing_import(request: ImportRequest) -> None:
         f"{request.sync_label} export and the public repository stops receiving "
         "updates.",
     )
+
+
+def _gh_pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+    """Return whether GitHub has an open PR for a branch."""
+    result = _run_gh(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
+        cwd=cwd,
+        capture=True,
+    )
+    # Gh emits a JSON array; "[]" means no open PR. Compare the compact form
+    # rather than parsing, so this standalone helper needs no typed JSON codec.
+    return json.dumps(json.loads(result.stdout), separators=(",", ":")) != "[]"
+
+
+def _fetch_branch(*, branch: str, cwd: Path) -> None:
+    """Fetch a remote branch if it exists without failing on first import."""
+    _run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"refs/heads/{branch}:refs/remotes/origin/{branch}",
+        ],
+        cwd=cwd,
+        check=False,
+    )
+
+
+def _string_bool(value: str) -> bool:
+    """Parse Action-style boolean strings."""
+    return value.lower() in {"1", "true", "yes"}
 
 
 if __name__ == "__main__":

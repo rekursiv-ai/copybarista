@@ -36,7 +36,9 @@ from treekle import ReadError, from_plain, json_loads
 from copybarista.config import Transform, load_config
 from copybarista.scripts.sync_import_change import (
     ImportBaseError,
+    branch_component,
     last_synced_public_sha,
+    validated_generated_branch,
 )
 from copybarista.sync_setup import (
     SyncSettings,
@@ -52,7 +54,6 @@ DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_EXPORT_TITLE: Final = "Update public export"
 DEFAULT_EXPORT_DESCRIPTION: Final = "Updates the generated public repository export."
-CONTROL_CHAR_BOUND: Final = 32
 PR_STATE_VERSION: Final = "1"
 PR_MARKER_PREFIX: Final = "<!-- copybarista:pr-state "
 PR_ENTRY_PREFIX: Final = "<!-- copybarista:pr-entry "
@@ -471,17 +472,17 @@ def export_branch_name(
 
     """
     if explicit.strip():
-        return _validated_generated_branch(branch=explicit.strip(), prefix=prefix)
+        return validated_generated_branch(branch=explicit.strip(), prefix=prefix)
     if source_branch.strip():
-        branch = f"{prefix}{_branch_component(source_branch)}"
+        branch = f"{prefix}{branch_component(source_branch)}"
     else:
         if source_sha == "manual":
             sys.stderr.write(
                 "--branch or --source-branch is required for manual runs.\n",
             )
             raise SystemExit(2)
-        branch = f"{prefix}sha-{_branch_component(source_sha[:12])}"
-    return _validated_generated_branch(branch=branch, prefix=prefix)
+        branch = f"{prefix}sha-{branch_component(source_sha[:12])}"
+    return validated_generated_branch(branch=branch, prefix=prefix)
 
 
 def _commit_author(name: str, email: str) -> str:
@@ -600,41 +601,6 @@ def _string_bool(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def _branch_component(value: str) -> str:
-    """Sanitize arbitrary run metadata for use in a Git branch name."""
-    return "".join(char if char.isalnum() or char in "-._" else "-" for char in value)
-
-
-def _validated_generated_branch(*, branch: str, prefix: str) -> str:
-    """Return a safe generated branch name or exit with a usage error."""
-    if not branch.startswith(prefix):
-        sys.stderr.write(f"Branch must start with {prefix}\n")
-        raise SystemExit(2)
-    if not _valid_git_branch_name(branch):
-        sys.stderr.write(f"Invalid generated branch name: {branch}\n")
-        raise SystemExit(2)
-    return branch
-
-
-def _valid_git_branch_name(branch: str) -> bool:
-    """Return whether a branch name is safe for force-updated sync branches."""
-    if branch in {"main", "master"} or branch.startswith(("-", "/")):
-        return False
-    if branch.endswith(("/", ".", ".lock")):
-        return False
-    if ".." in branch or "//" in branch or "@{" in branch:
-        return False
-    if any(
-        component.startswith(".") or component.endswith(".lock")
-        for component in branch.split("/")
-    ):
-        return False
-    forbidden = set(" ~^:?*[\\")
-    return not any(
-        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
-    )
-
-
 # Every command here runs through ``uv``, which re-derives the environment from the
 # target ``--project`` / cwd. An inherited ``VIRTUAL_ENV`` (e.g. the operator's
 # activated loop venv) only triggers uv's "does not match the project environment"
@@ -692,7 +658,8 @@ def _run_gh(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a GitHub CLI command with retries for transient API failures."""
-    for attempt in range(1, GITHUB_RETRY_ATTEMPTS + 1):
+    attempt = 1
+    while True:
         result = _run(argv, cwd=cwd, check=False, capture=True, env=env)
         if result.returncode == 0:
             if not capture:
@@ -709,7 +676,7 @@ def _run_gh(
             f"({attempt}/{GITHUB_RETRY_ATTEMPTS}).",
         )
         time.sleep(GITHUB_RETRY_DELAY_SEC)
-    raise AssertionError("unreachable")
+        attempt += 1
 
 
 def _retryable_github_failure(result: subprocess.CompletedProcess[str]) -> bool:
@@ -1777,29 +1744,27 @@ def _base_pr_state(
     current_source_digest: str,
 ) -> PrReplayState:
     """Return the state used before applying replay patches."""
-    if current_pr:
-        if _applied_marker_from_pr_body(current_pr.body):
-            state = _state_from_pr_body(
-                title=current_pr.title or request.replay_settings.default_title,
-                body=current_pr.body,
-                default_body=request.replay_settings.default_body,
-            )
-            body_entries, authors = _recover_body_entries(
-                source_dir=request.source_dir,
-                entries=state.body_entries,
-                forbidden_text=request.forbidden_pr_text,
-            )
-            return PrReplayState(
-                title=state.title,
-                authors=authors,
-                body_intro=state.body_intro,
-                body_entries=body_entries,
-                applied_source_rev=state.applied_source_rev,
-                applied_source_digest=state.applied_source_digest,
-                metadata_count=state.metadata_count,
-            )
-        if not request.replay_settings.bootstrap_base:
-            raise PrReplayError("Existing generated PR body has no Copybarista marker.")
+    if current_pr and _applied_marker_from_pr_body(current_pr.body):
+        state = _state_from_pr_body(
+            title=current_pr.title or request.replay_settings.default_title,
+            body=current_pr.body,
+            default_body=request.replay_settings.default_body,
+        )
+        body_entries, authors = _recover_body_entries(
+            source_dir=request.source_dir,
+            entries=state.body_entries,
+            forbidden_text=request.forbidden_pr_text,
+        )
+        return PrReplayState(
+            title=state.title,
+            authors=authors,
+            body_intro=state.body_intro,
+            body_entries=body_entries,
+            applied_source_rev=state.applied_source_rev,
+            applied_source_digest=state.applied_source_digest,
+            metadata_count=state.metadata_count,
+        )
+    # ``_resolved_replay_base`` refused an unmarked PR without a bootstrap base.
     return PrReplayState(
         title=request.replay_settings.default_title,
         authors=(),
@@ -2186,9 +2151,8 @@ def _parse_pr_metadata_message(
             block_scope = value.strip()
             idx += 1
             continue
+        # A body ends its block, so ``values`` never already holds one here.
         if line.startswith("Copybarista-PR-Body:"):
-            if "Body" in values:
-                raise _metadata_error(commit_sha, "Body", "duplicate field")
             body_lines, next_idx = _body_lines_until_next_scope(lines, start=idx + 1)
             for body_line in body_lines:
                 if body_line.startswith("Copybarista-PR-") and not body_line.startswith(
@@ -2571,9 +2535,8 @@ def _checked_template_line(line: str) -> str:
 
 def _state_from_pr_body(*, title: str, body: str, default_body: str) -> PrReplayState:
     """Parse Copybarista-owned PR body state from the current public PR."""
+    # ``_base_pr_state`` reads only a body that carries the marker.
     marker = _applied_marker_from_pr_body(body)
-    if not marker:
-        raise PrReplayError("Existing generated PR body has no Copybarista marker.")
     content = _body_before_footer(body).strip()
     content = _summary_section(content) or content
     if not content:
@@ -2762,9 +2725,8 @@ def _load_pr_text_transforms(
 # filesystem.
 def _rewrite_public_text(value: str, transforms: tuple[Transform, ...]) -> str:
     """Apply each ``replace`` transform to ``value`` as the export does to files."""
+    # The config refuses a ``replace`` with an empty ``before``.
     for transform in transforms:
-        if not transform.before:
-            continue
         template = replace_template(
             before=transform.before,
             after=transform.after,
@@ -2813,8 +2775,6 @@ def _validate_metadata_text(
     forbidden_text: tuple[str, ...],
 ) -> None:
     """Reject source-specific text in one public metadata field."""
-    if not value:
-        return
     lowered = value.casefold()
     if any(
         _forbidden_term_present(term.casefold(), lowered) for term in forbidden_text
@@ -2872,12 +2832,9 @@ def _replace_pr_state(
 def _body_before_footer(body: str) -> str:
     """Return the managed body before the generated footer."""
     lines = body.splitlines()
-    marker_indexes = [
+    marker_idx = max(
         idx for idx, line in enumerate(lines) if line.startswith(PR_MARKER_PREFIX)
-    ]
-    if not marker_indexes:
-        raise PrReplayError("PR body is missing the Copybarista export footer.")
-    marker_idx = marker_indexes[-1]
+    )
     separator_idx = marker_idx - 1
     while separator_idx >= 0 and lines[separator_idx] != "----":
         separator_idx -= 1
@@ -2946,9 +2903,8 @@ def _append_parsed_body_entry(
 
 def _render_body_entry(text: str) -> tuple[str, ...]:
     """Render one append entry as a stable Markdown bullet."""
+    # Parsed and replayed entries both carry text.
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    if not lines:
-        return ()
     return (f"- {lines[0]}", *(f"  {line}" for line in lines[1:]))
 
 

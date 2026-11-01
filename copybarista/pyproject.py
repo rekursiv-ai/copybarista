@@ -81,7 +81,7 @@ from copybarista.config import load_config
 from copybarista.delta_derive import derive, derive_values
 from copybarista.delta_render import SETTINGS, DeltaError, render
 from copybarista.toml_layout import LayoutError, layout
-from copybarista.toml_lines import Document, LinesError, parse
+from copybarista.toml_lines import Document, LinesError, parse, value_key
 
 
 if TYPE_CHECKING:
@@ -355,17 +355,9 @@ def _one_newline(text: str) -> str:
     return text.rstrip("\n") + "\n"
 
 
-# NaN equals nothing, itself included, so a file holding one would never match its
-# own copy.
-def _content(text: str) -> dict[str, object]:
-    """Return ``text``'s TOML content, every NaN read as the string ``"nan"``."""
-    return from_plain(
-        tomllib.loads(
-            text,
-            parse_float=lambda spelled: "nan" if "nan" in spelled else float(spelled),
-        ),
-        dict[str, object],
-    )
+def _content(text: str) -> object:
+    """Return what ``text``'s TOML content compares by."""
+    return value_key(tomllib.loads(text))
 
 
 # Spacing within a line never fails the check, so it names a line only when nothing

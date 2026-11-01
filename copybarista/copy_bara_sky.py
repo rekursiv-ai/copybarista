@@ -301,7 +301,11 @@ class _CopyBaraSkyParser:
         if _call_name(call) == "core.workflow":
             return [self._workflow_from_call(call, self.env)]
         if isinstance(call.func, ast.Name) and call.func.id in self.functions:
-            return self._evaluate_helper_call(call, self.env)
+            return self._evaluate_helper_call(
+                call,
+                self.functions[call.func.id],
+                self.env,
+            )
         raise ConfigError(
             f"Unsupported top-level call in copy.bara.sky: {_call_name(call)}",
         )
@@ -309,12 +313,10 @@ class _CopyBaraSkyParser:
     def _evaluate_helper_call(
         self,
         call: ast.Call,
+        function: ast.FunctionDef,
         env: dict[str, object],
     ) -> list[TranslatedWorkflow]:
-        """Evaluate a simple helper function that emits workflow calls."""
-        if not isinstance(call.func, ast.Name):
-            raise ConfigError("Unsupported helper call")
-        function = self.functions[call.func.id]
+        """Evaluate a call of ``function``, a helper that emits workflow calls."""
         local_env = dict(env)
         params = [arg.arg for arg in function.args.args]
         if len(call.args) > len(params):
@@ -430,8 +432,16 @@ class _CopyBaraSkyParser:
             copies=origin_copies,
             transforms=transforms,
         )
+        # A file relocated out of an extra origin root must leave that root's copy
+        # too, as Copybara's move takes it out of the selection.
+        relocated = tuple(
+            f"{item.source}/{pattern}" if item.source else pattern
+            for item in transformations
+            if isinstance(item, CopySpec) and item.relocate
+            for pattern in item.include
+        )
         copies = (
-            *origin_copies,
+            *_bind_subtree_excludes(origin_copies, relocated),
             *_bind_subtree_excludes(subtree_copies, origin_files.exclude),
         )
         if source_root and not include:
@@ -1070,7 +1080,9 @@ def _bind_subtree_excludes(
 # ``source_root`` the excludes are emitted source-root-relative. A whole-subtree copy
 # (include ``("**",)``, e.g. ``<root>/.export``) excludes the subtree (``.export/**``);
 # a relocate of a glob subset from the root itself (e.g. ``*_test.py``) excludes exactly
-# that glob so no original remains under the prefix.
+# that glob so no original remains under the prefix. With no source root the sweep
+# selects the whole tree, so every source lies under it: skipping that case shipped a
+# relocated file twice, at its source and at its destination.
 def _add_sweep_exclude(
     excludes: list[str],
     copy_source: str,
@@ -1078,18 +1090,11 @@ def _add_sweep_exclude(
     include: tuple[str, ...],
 ) -> None:
     """Add main-sweep excludes for a copy whose files must not also be swept."""
-    prefix = f"{source_root.rstrip('/')}/" if source_root else ""
-    if source_root and copy_source == source_root:
-        # Relocate of a glob subset from the package root: exclude the glob(s).
-        excludes.extend(include)
+    root = source_root.rstrip("/")
+    if root and copy_source != root and not copy_source.startswith(f"{root}/"):
         return
-    if not (prefix and copy_source.startswith(prefix)):
-        return
-    rel = copy_source.removeprefix(prefix)
-    if include == ("**",):
-        excludes.append(f"{rel}/**")
-    else:
-        excludes.extend(f"{rel}/{pattern}" for pattern in include)
+    rel = copy_source.removeprefix(root).removeprefix("/") if root else copy_source
+    excludes.extend(f"{rel}/{pattern}" if rel else pattern for pattern in include)
 
 
 # A ``core.move(ROOT, PREFIX)`` names its source as the package root that origin_files
@@ -1250,8 +1255,6 @@ def _git_author_fields(
     destination: DestinationSpec,
 ) -> tuple[str, str]:
     """Return author fields only for Git destinations."""
-    if authoring is None:
-        return "", ""
     if not isinstance(authoring, AuthorSpec):
         raise ConfigError("core.workflow.authoring must be authoring.pass_thru")
     if destination.kind != "git":
@@ -1326,8 +1329,9 @@ def _strip_prefixes_and_file_copies(
     copies: list[FileCopy] = []
     for pattern in patterns:
         if pattern == source_root:
-            stripped.append("**")
-        elif pattern.startswith(prefix):
+            # A glob matches files, and the root is a directory: no file.
+            continue
+        if pattern.startswith(prefix):
             stripped.append(pattern.removeprefix(prefix))
         else:
             copies.append(_file_copy_from_origin_pattern(pattern))
@@ -1407,8 +1411,10 @@ def _strip_prefixes(patterns: tuple[str, ...], source_root: str) -> tuple[str, .
     stripped: list[str] = []
     for pattern in patterns:
         if pattern == source_root:
-            stripped.append("**")
-        elif pattern.startswith(prefix):
+            # As in ``_strip_prefixes_and_file_copies``: it excludes no file. Read
+            # as ``**`` it excluded every one, and the export shipped nothing.
+            continue
+        if pattern.startswith(prefix):
             stripped.append(pattern.removeprefix(prefix))
         else:
             raise ConfigError(
@@ -1438,19 +1444,17 @@ _MARKER_LINE = re.compile(
 )
 
 
-def _marker_lines(before: str) -> list[str]:
-    """Return the marker lines of a replacement's literal skeleton, in order."""
-    return [line for line in before.splitlines() if _MARKER_LINE.match(line)]
-
-
-def _marker_kind(line: str) -> str:
-    """Return the marker's namespace segment (``internal``, ``external``, ...)."""
-    match = _MARKER_LINE.match(line)
-    if match is None:
-        return ""
-    kind = match["kind"]
-    assert isinstance(kind, str)
-    return kind.split(":")[0]
+# The kind is the marker's namespace segment (``internal``, ``external``, ...).
+def _markers(before: str) -> list[tuple[str, str]]:
+    """Return each marker line of a replacement's literal skeleton and its kind."""
+    found: list[tuple[str, str]] = []
+    for line in before.splitlines():
+        match = _MARKER_LINE.match(line)
+        if match is not None:
+            kind = match["kind"]
+            assert isinstance(kind, str)
+            found.append((line, kind.split(":")[0]))
+    return found
 
 
 # The marker namespace -- not the mere presence of a marker -- decides the semantics,
@@ -1469,10 +1473,11 @@ def _marker_transform(
     conditional_kinds: tuple[str, str, str] = ("if", "else", "endif"),
 ) -> Transform | None:
     """Return the native transform a marker replacement means, or ``None``."""
-    markers = _marker_lines(before)
-    if not markers:
+    found = _markers(before)
+    if not found:
         return None
-    kinds = {_marker_kind(line) for line in markers}
+    markers = [line for line, _ in found]
+    kinds = {kind for _, kind in found}
     conditional = kinds <= set(conditional_kinds)
     # Validated for EVERY shape, before any branch claims the markers. Both
     # checks used to sit below the early returns: a membership test let an
@@ -1519,7 +1524,7 @@ def _marker_transform(
     if after:
         return None
     if conditional and kinds:
-        return _conditional_transform(markers, conditional_kinds=conditional_kinds)
+        return _conditional_transform(found, conditional_kinds=conditional_kinds)
     if len(markers) == 1:
         return Transform(id="", type="internal_lines", path="", start=markers[0])
     return Transform(
@@ -1533,12 +1538,12 @@ def _marker_transform(
 
 
 def _conditional_transform(
-    markers: list[str],
+    found: list[tuple[str, str]],
     *,
     conditional_kinds: tuple[str, str, str],
 ) -> Transform:
     """Return the ``if``/``else``/``endif`` strip that keeps the else branch."""
-    by_kind = {_marker_kind(line): line for line in markers}
+    by_kind = {kind: line for line, kind in found}
     missing = [kind for kind in conditional_kinds if kind not in by_kind]
     if missing:
         raise ConfigError(

@@ -3,9 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import tomllib
+
 import pytest
 
-from copybarista.toml_lines import Block, Entry, LinesError, parse
+from copybarista.toml_lines import (
+    Block,
+    Entry,
+    LinesError,
+    parse,
+    remark,
+    spell,
+    spelled_key,
+    split_entry,
+    split_header,
+    split_key,
+    value_key,
+)
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -131,6 +145,70 @@ def test_parse_keeps_a_multiline_string_in_one_entry():
     assert [entry.key for entry in doc.blocks[0].entries] == [("a",), ("b",)]
 
 
+def test_parse_ends_a_multiline_string_after_the_quotes_it_holds():
+    # TOML lets up to two quotes sit just before the closing three.
+    doc = parse('a = """x"""""  # c\nb = """y""""\n')
+    assert [(entry.key, entry.text) for entry in doc.blocks[0].entries] == [
+        (("a",), 'a = """x"""""  # c\n'),
+        (("b",), 'b = """y""""\n'),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "parts"),
+    [
+        ("a = 1", ("a ", " 1")),
+        ('"a=b" = 1', ('"a=b" ', " 1")),
+        ("'a=b'.c = 2", ("'a=b'.c ", " 2")),
+        ('"a\\"=" = 3', ('"a\\"=" ', " 3")),
+    ],
+)
+def test_split_entry_splits_at_the_first_equals_outside_a_quoted_key(
+    text: str,
+    parts: tuple[str, str],
+):
+    assert split_entry(text) == parts
+
+
+@pytest.mark.parametrize(
+    ("line", "parts"),
+    [
+        ('[a."b]c"]  # note', ('[a."b]c"]', "  # note")),
+        ("  [[tool.x]]", ("  [[tool.x]]", "")),
+    ],
+)
+def test_split_header_splits_after_the_closing_bracket(
+    line: str,
+    parts: tuple[str, str],
+):
+    assert split_header(line) == parts
+
+
+@pytest.mark.parametrize(
+    ("keys", "spelled"),
+    [
+        (("tool", "uv"), "tool.uv"),
+        (("a.b", "-x", ""), '"a.b"."-x".""'),
+        (('q"\\', "é"), '"q\\"\\\\"."é"'),
+    ],
+)
+def test_spell_quotes_only_what_a_bare_key_cannot_hold(
+    keys: tuple[str, ...],
+    spelled: str,
+):
+    assert spell(keys) == spelled
+    assert split_key(spelled) == keys
+    assert tomllib.loads(f"{spelled} = 1") == _nested(keys, 1)
+
+
+@pytest.mark.parametrize(
+    ("rest", "comment"),
+    [("  # note ", "# note"), (" ,", ""), ("", "")],
+)
+def test_remark_returns_only_a_comment(rest: str, comment: str):
+    assert remark(rest) == comment
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -168,6 +246,42 @@ def _parent_name(path: Path) -> str:
 def test_parse_round_trips_every_real_file_byte_for_byte(path: Path):
     text = path.read_text(encoding="utf-8")
     assert parse(text).text() == text
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [
+        ("1", "1", True),
+        ("1", "1.0", False),
+        ("1", "true", False),
+        ("1.0", "1.00", True),
+        ("1.0", "2.0", False),
+        ("nan", "nan", True),
+        ("nan", '"nan"', False),
+        ("[1, true]", "[1, true]", True),
+        ("[1, true]", "[true, 1]", False),
+        ("[[1]]", "[[1.0]]", False),
+        ("{a = 1, b = 2}", "{b = 2, a = 1}", True),
+        ("{a = 1}", "{a = true}", False),
+        ('{a = {b = "x"}}', "{a = {b = 'x'}}", True),
+    ],
+)
+def test_value_key_is_equal_exactly_when_toml_holds_the_values_equal(
+    left: str,
+    right: str,
+    same: bool,
+):
+    keys = [value_key(tomllib.loads(f"v = {spelled}")) for spelled in (left, right)]
+    assert (keys[0] == keys[1]) is same
+
+
+def test_spelled_key_keys_a_spelled_value_as_value_key_keys_it_read():
+    assert spelled_key("[1, {n = true}]") == value_key([1, {"n": True}])
+
+
+def _nested(keys: tuple[str, ...], value: object) -> object:
+    """Return ``value`` under the tables ``keys`` names, as TOML reads it."""
+    return {keys[0]: _nested(keys[1:], value)} if keys else value
 
 
 if __name__ == "__main__":

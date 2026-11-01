@@ -889,7 +889,8 @@ def test_render_ignores_the_settings_table():
 
 
 def test_render_rejects_removing_an_absent_entry():
-    with pytest.raises(DeltaError, match="'z'"):
+    # Named as the delta spells it.
+    with pytest.raises(DeltaError, match="removes \"z\" from 'a'"):
         render(_doc('a = ["x"]\n'), _doc('"-a" = ["z"]\n'))
 
 
@@ -1214,6 +1215,43 @@ def test_merge_replays_the_public_edit_past_source_drift(
 
 
 @pytest.mark.parametrize(
+    ("base", "current"),
+    [
+        # The source changed a value with a comment at the end of its line.
+        ("a = 1  # A.\nb = 1\n", "a = 2  # A.\nb = 1\n"),
+        # The source changed only that comment.
+        ("a = 1  # A.\nb = 1\n", "a = 1  # B.\nb = 1\n"),
+        # The source changed an entry of a list holding a comment.
+        (
+            'w = [\n    # A.\n    "x",\n]\nb = 1\n',
+            'w = [\n    # A.\n    "y",\n]\nb = 1\n',
+        ),
+    ],
+)
+def test_merge_keeps_source_drift_in_a_key_with_comments(
+    tmp_path: Path,
+    base: str,
+    current: str,
+):
+    (tmp_path / "pyproject.toml").write_text(current)
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    delta = source.merge(base=base, head=base.replace("b = 1", "b = 9"))
+    assert replace(source, delta=delta).render() == current.replace("b = 1", "b = 9")
+
+
+@pytest.mark.parametrize("head", ["a = true\nb = 1\n", "a = 1.0\nb = 1\n"])
+def test_merge_replays_a_public_edit_to_a_value_of_a_new_type(
+    tmp_path: Path,
+    head: str,
+):
+    """The source's ``a = 1`` does not already make the public ``true`` or ``1.0``."""
+    (tmp_path / "pyproject.toml").write_text("a = 1\nb = 1\n")
+    source = PyprojectSource.load(_delta(tmp_path, body=""), source_ref=tmp_path)
+    delta = source.merge(base="a = 1\nb = 1\n", head=head)
+    assert replace(source, delta=delta).render() == head
+
+
+@pytest.mark.parametrize(
     ("current", "head", "match"),
     [
         (
@@ -1273,6 +1311,18 @@ def test_fold_of_an_unchanged_render_keeps_only_the_delta(tmp_path: Path):
         "b": 3,
         "pyproject": {"base": "pyproject.toml"},
     }
+
+
+def test_fold_spells_an_entry_appended_to_a_base_list_as_an_addition(
+    tmp_path: Path,
+):
+    (tmp_path / "pyproject.toml").write_text('a = [\n    "x",\n]\nb = 1\n')
+    delta = _delta(tmp_path, body="b = 2\n")
+    source = PyprojectSource.load(delta, source_ref=tmp_path)
+    public = source.render().replace('"x",\n', '"x",\n    "added",\n')
+    folded = source.fold(public)
+    assert _plain(folded)["+a"] == ["added"]
+    assert replace(source, delta=folded).render() == public
 
 
 @pytest.mark.parametrize(
@@ -1371,6 +1421,10 @@ def test_render_reads_a_comment_only_delta_as_the_comment_it_spells():
         ("[t]\na = 1\n\n[u]\nb = 1\n", "[u]\nb = 1\n\n[t]\na = 1\n", False),
         ("[t]  # N.\na = 1\n", "[t]\n# N.\na = 1\n", False),
         ("a = [1, 2]\n", "a = [\n    1,\n    2,\n]\n", True),
+        # ``1``, ``1.0`` and ``true`` are three values, and NaN is not a string.
+        ("x = 1\n", "x = 1.0\n", False),
+        ("x = 1\n", "x = true\n", False),
+        ("x = nan\n", 'x = "nan"\n', False),
     ],
 )
 def test_same_render_ignores_spelling_but_not_comments(

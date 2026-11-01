@@ -207,9 +207,8 @@ def _glob_to_regex(
 
 def _char_class_regex(*, pattern: str, start: int) -> tuple[str, int]:
     """Translate one supported character class."""
+    # No missing-``]`` check: ``validate_pattern`` balanced every unescaped ``[``.
     end = pattern.find("]", start + 1)
-    if end < 0:
-        raise GlobError(f"Unbalanced glob syntax in pattern: {pattern}")
     raw = pattern[start + 1 : end]
     if not raw:
         raise GlobError(f"Empty character class in glob pattern: {pattern}")
@@ -240,9 +239,8 @@ def _brace_regex(
     min_brace_choices: int,
 ) -> tuple[str, int]:
     """Translate one supported brace alternation."""
+    # No missing-``}`` check: ``validate_pattern`` balanced every unescaped ``{``.
     end = pattern.find("}", start + 1)
-    if end < 0:
-        raise GlobError(f"Unbalanced glob syntax in pattern: {pattern}")
     choices = pattern[start + 1 : end].split(",")
     if len(choices) < min_brace_choices or any(choice == "" for choice in choices):
         raise GlobError(f"Invalid brace alternation in glob pattern: {pattern}")

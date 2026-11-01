@@ -12,7 +12,7 @@ import pytest
 
 from copybarista import transforms
 from copybarista.config import Transform
-from copybarista.errors import TransformError
+from copybarista.errors import ExportError, TransformError
 from copybarista.manifest import ManifestEntry
 from copybarista.transforms import (
     apply_transforms,
@@ -1439,6 +1439,207 @@ def test_apply_transform_alone_walks_root_and_defaults_to_one_or_more(
     assert (tmp_path / "m.py").read_text(encoding="utf-8") == "X\n"
     assert (tmp_path / "sub" / "m.py").read_text(encoding="utf-8") == "Y\n"
     assert (report.id, report.type, report.path) == ("swap", "replace", "**/m.py")
+
+
+def test_strip_source_regions_refuses_a_transform_with_no_regions():
+    with pytest.raises(
+        TransformError,
+        match="does not support transform type 'replace'",
+    ):
+        strip_source_regions(
+            "a\n",
+            Transform(id="r", type="replace", path="m", before="a", after="b"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "start", "message"),
+    [
+        ("a\n", "", "markers must be non-empty"),
+        ("# E\n# S\nx\n# E\n", "# S", "found end marker before start marker"),
+        ("# S\nx\n", "# S", "did not find end marker"),
+        ("# S\n# S\nx\n# E\n", "# S", "found nested start marker"),
+    ],
+)
+def test_strip_source_regions_names_a_malformed_block(
+    text: str,
+    start: str,
+    message: str,
+):
+    with pytest.raises(TransformError, match=message):
+        strip_source_regions(
+            text,
+            Transform(id="s", type="strip_block", path="m", start=start, end="# E"),
+        )
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        Transform(id="t", type="replace", path="*.txt", before="a", after="b"),
+        Transform(id="t", type="strip_block", path="*.txt", start="# S", end="# E"),
+        Transform(id="t", type="internal_lines", path="*.txt", start="# INT"),
+        Transform(id="t", type="uncomment", path="*.txt", start="# EXT"),
+        Transform(id="t", type="ruff_format", path="missing.py"),
+    ],
+    ids=lambda transform: transform.type,
+)
+def test_a_required_transform_names_a_path_matching_no_files(
+    tmp_path: Path,
+    transform: Transform,
+):
+    (tmp_path / "module.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(TransformError, match="matched no files"):
+        apply_transforms(tmp_path, (transform,))
+
+
+def test_an_optional_ruff_format_of_a_missing_path_does_nothing(tmp_path: Path):
+    (result,) = apply_transforms(
+        tmp_path,
+        (Transform(id="t", type="ruff_format", path="missing.py", required=False),),
+    )
+
+    assert (result.changed, result.count, result.files) == (0, 0, ())
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        Transform(
+            id="t",
+            type="strip_block",
+            path="*.py",
+            start="# S",
+            end="# E",
+            required=False,
+        ),
+        Transform(
+            id="t",
+            type="internal_lines",
+            path="*.py",
+            start="# S",
+            required=False,
+        ),
+        Transform(id="t", type="uncomment", path="*.py", start="# S", required=False),
+    ],
+    ids=lambda transform: transform.type,
+)
+def test_a_text_transform_leaves_a_symlink_and_its_target_alone(
+    tmp_path: Path,
+    transform: Transform,
+):
+    target = tmp_path / "target.txt"
+    target.write_text("# S\n# x\n# E\n", encoding="utf-8")
+    (tmp_path / "link.py").symlink_to(target)
+
+    apply_transforms(tmp_path, (transform,))
+
+    assert (tmp_path / "link.py").is_symlink()
+    assert target.read_text(encoding="utf-8") == "# S\n# x\n# E\n"
+
+
+def test_ruff_format_reports_a_failed_ruff_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FailingRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            raise ExportError(f"{argv[3]} exited 2")
+
+    monkeypatch.setattr(transforms, "CommandRunner", FailingRunner)
+    (tmp_path / "module.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(TransformError, match="ruff_format failed: check exited 2"):
+        apply_transforms(
+            tmp_path,
+            (Transform(id="ruff", type="ruff_format", path="module.py"),),
+        )
+
+
+def test_ruff_format_of_one_file_reports_it_when_ruff_changes_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    module = tmp_path / "module.py"
+    module.write_text("x=1\n", encoding="utf-8")
+
+    class FormattingRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            if argv[3] == "format":
+                module.write_text("x = 1\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", FormattingRunner)
+
+    (result,) = apply_transforms(
+        tmp_path,
+        (Transform(id="ruff", type="ruff_format", path="module.py"),),
+    )
+
+    assert [entry.destination for entry in result.files] == ["module.py"]
+
+
+def test_strip_block_if_else_uncomments_each_comment_form(tmp_path: Path):
+    path = tmp_path / "config.py"
+    path.write_text(
+        "# copybarista:if internal\n"
+        "x = 1\n"
+        "# copybarista:else\n"
+        "# y = 2\n"
+        "#z = 3\n"
+        "w = 4\n"
+        "# copybarista:endif\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(tmp_path, (_if_else("config.py"),))
+
+    assert path.read_text(encoding="utf-8") == "y = 2\nz = 3\nw = 4\n"
+
+
+def test_strip_block_if_else_names_a_block_with_no_end(tmp_path: Path):
+    (tmp_path / "config.py").write_text(
+        "# copybarista:if internal\nx = 1\n# copybarista:else\n# y = 2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransformError, match="did not find end marker"):
+        apply_transforms(tmp_path, (_if_else("config.py"),))
+
+
+def test_uncomment_block_strips_a_bare_hash_too(tmp_path: Path):
+    path = tmp_path / "setup.cfg"
+    path.write_text(
+        "# copybarista:external:start\n#a = 1\n# b = 2\n# copybarista:external:end\n",
+        encoding="utf-8",
+    )
+
+    apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="u",
+                type="uncomment",
+                path="setup.cfg",
+                start="# copybarista:external:start",
+                end="# copybarista:external:end",
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "a = 1\nb = 2\n"
+
+
+def _if_else(path: str) -> Transform:
+    return Transform(
+        id="conditional",
+        type="strip_block",
+        path=path,
+        start="# copybarista:if internal",
+        end="# copybarista:endif",
+        else_marker="# copybarista:else",
+    )
 
 
 def _entry(source: str, destination: str) -> ManifestEntry:

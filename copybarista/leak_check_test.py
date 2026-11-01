@@ -20,6 +20,7 @@ from copybarista.config import (
 )
 from copybarista.errors import LeakCheckError
 from copybarista.leak_check import (
+    LeakViolation,
     _entry_segments,
     _list_tree,
     _located,
@@ -68,6 +69,13 @@ def test_check_leaks_reports_forbidden_paths_and_text(tmp_path: Path):
         "private-paths: private/notes.md: forbidden path was exported",
         "loop-imports: pkg/module.py:1: forbidden text matched",
     ]
+
+
+def test_a_violation_without_a_message_names_forbidden_content() -> None:
+    assert (
+        LeakViolation(rule_id="rule", path="pkg/a.py", line=3).format()
+        == "rule: pkg/a.py:3: forbidden export content"
+    )
 
 
 def test_enforce_leak_check_does_not_echo_matched_text(tmp_path: Path):

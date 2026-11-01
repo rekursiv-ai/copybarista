@@ -7,12 +7,8 @@ from typing import TYPE_CHECKING, Final, Unpack
 from typing_extensions import TypedDict
 
 import dataclasses
-import os
 import re
 import shlex
-import shutil
-import subprocess
-import sys
 
 from treekle import from_plain
 
@@ -54,6 +50,8 @@ class _SyncSettingsFields(TypedDict, total=False, closed=True):
     npm_build_commands: tuple[str, ...]
     npm_packages: tuple[str, ...]
     package_name: str
+    pr_default_body: str
+    pr_default_title: str
     publish_source_rev: bool
     refresh_public_lockfile: bool
     release_check_script: str
@@ -64,6 +62,7 @@ class _SyncSettingsFields(TypedDict, total=False, closed=True):
     sync_label: str
     sync_token_login: str
     system_packages: tuple[str, ...]
+    type_check_targets: tuple[str, ...]
     validation_python_versions: tuple[str, ...]
 
 
@@ -458,6 +457,159 @@ def test_check_sync_config_rejects_import_command_drift(tmp_path: Path):
         check_sync_config(root=tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        (
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "true",
+            r"jobs\.import-change\.if must contain github\.event\.pull_request",
+        ),
+        (
+            'python-version: "3.12"',
+            'python-version: "3.13"',
+            r"setup-python python-version must match validation_python_versions\[0\]",
+        ),
+        ("GH_TOKEN", "GH_PAT", r"must reference GH_TOKEN\."),
+    ],
+    ids=["a fork's pull request", "another python", "no token"],
+)
+def test_check_sync_config_rejects_an_import_workflow_edited_by_hand(
+    tmp_path: Path,
+    before: str,
+    after: str,
+    message: str,
+):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(before, after),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        check_sync_config(root=tmp_path)
+
+
+def _step_named(
+    steps: list[dict[str, object]],
+    key: str,
+    value: str,
+) -> dict[str, object]:
+    """Return the one step whose ``key`` is ``value``."""
+    (found,) = (step for step in steps if step.get(key) == value)
+    return found
+
+
+def _if_as_a_list(job: dict[str, object]) -> None:
+    job["if"] = [job["if"]]
+
+
+def _no_setup_python(job: dict[str, object]) -> None:
+    steps = from_plain(job["steps"], list[dict[str, object]])
+    steps.remove(_step_named(steps, "uses", action_ref("actions/setup-python")))
+    job["steps"] = steps
+
+
+def _a_step_as_a_string(job: dict[str, object]) -> None:
+    job["steps"] = ["echo", *from_plain(job["steps"], list[dict[str, object]])]
+
+
+def _refs_without_its_id(job: dict[str, object]) -> None:
+    steps = from_plain(job["steps"], list[dict[str, object]])
+    del _step_named(steps, "id", "refs")["id"]
+    job["steps"] = steps
+
+
+def _refs_without_a_run(job: dict[str, object]) -> None:
+    steps = from_plain(job["steps"], list[dict[str, object]])
+    _step_named(steps, "id", "refs")["run"] = ["echo"]
+    job["steps"] = steps
+
+
+def _refs_after_public_base(job: dict[str, object]) -> None:
+    # The public-base checkout is the step right after refs.
+    steps = from_plain(job["steps"], list[dict[str, object]])
+    index = steps.index(_step_named(steps, "id", "refs"))
+    steps.insert(index + 1, steps.pop(index))
+    job["steps"] = steps
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (_if_as_a_list, r"jobs\.import-change\.if must be a string"),
+        (_no_setup_python, r"must define step using actions/setup-python@"),
+        (_a_step_as_a_string, r"setup-python@\w+ must be a YAML mapping"),
+        (_refs_without_its_id, r"each import ordering role; found 0"),
+        (_refs_without_a_run, r"step Resolve public refs must define run"),
+        (_refs_after_public_base, r"must check out public-base after the step"),
+    ],
+    ids=[
+        "if as a list",
+        "no setup-python",
+        "a step as a string",
+        "refs without its id",
+        "refs without a run",
+        "refs after public-base",
+    ],
+)
+def test_check_sync_config_rejects_an_import_job_reshaped_by_hand(
+    tmp_path: Path,
+    edit: Callable[[dict[str, object]], None],
+    message: str,
+):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+    parsed = from_plain(
+        yaml.safe_load(workflow.read_text(encoding="utf-8")),
+        dict[object, object],
+    )
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+    edit(jobs["import-change"])
+    parsed["jobs"] = jobs
+    workflow.write_text(yaml.safe_dump(parsed, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_names_each_missing_sync_file(tmp_path: Path):
+    with pytest.raises(
+        ConfigError,
+        match=r"Missing sync files: copy\.barista\.toml, copybarista\.sync\.toml$",
+    ):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_requires_forbidden_path_leak_checks(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config = tmp_path / "copy.barista.toml"
+    text = config.read_text(encoding="utf-8")
+    config.write_text(
+        text[: text.index("[[leak_check.forbidden_path]]")],
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must define forbidden path leak checks"):
+        check_sync_config(root=tmp_path)
+
+
+def test_check_sync_config_accepts_a_package_with_no_system_packages(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings(system_packages=()))
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+
+    assert "Install system packages" not in workflow.read_text(encoding="utf-8")
+    check_sync_config(root=tmp_path)
+
+
+def test_the_workflow_files_name_their_direction():
+    settings = _settings()
+
+    assert sync_setup.export_workflow_filename(settings) == "loop-to-configgle.yml"
+    assert sync_setup.import_workflow_filename(settings) == "configgle-to-loop.yml"
+
+
 def test_load_sync_settings_reports_malformed_toml(tmp_path: Path):
     config = tmp_path / "copybarista.sync.toml"
     config.write_text("[sync\n", encoding="utf-8")
@@ -609,6 +761,162 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
 
     with pytest.raises(ConfigError, match=rf"sync\.{key} is not a setting"):
         load_sync_settings(config)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        ('package_name = "configgle"\n', "", r"must define sync\.package_name\."),
+        (
+            'sync_user_name = "copybarista"',
+            "sync_user_name = 1",
+            r"sync\.sync_user_name must be a string\.",
+        ),
+        (
+            "refresh_public_lockfile = false",
+            'refresh_public_lockfile = "no"',
+            r"sync\.refresh_public_lockfile must be a boolean\.",
+        ),
+        (
+            'default_title = "Update Configgle export"',
+            "default_title = 1",
+            r"\[pull_request\]\.default_title must be a string\.",
+        ),
+        (
+            "require_pr_metadata = false",
+            'require_pr_metadata = "no"',
+            r"\[pull_request\]\.require_pr_metadata must be a boolean\.",
+        ),
+        (
+            '  "configgle",\n  "tests",\n',
+            '  "configgle",\n  1,\n',
+            r"sync\.type_check_targets must be a list of strings\.",
+        ),
+        (
+            '  "configgle",\n  "tests",\n',
+            "",
+            r"sync\.type_check_targets cannot be empty\.",
+        ),
+    ],
+    ids=[
+        "no package name",
+        "a number for a name",
+        "a string for a flag",
+        "a number for a title",
+        "a string for a pull request flag",
+        "a number in a list",
+        "no type check target",
+    ],
+)
+def test_load_sync_settings_names_a_setting_of_the_wrong_type(
+    tmp_path: Path,
+    before: str,
+    after: str,
+    message: str,
+):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    config = tmp_path / "copybarista.sync.toml"
+    text = config.read_text(encoding="utf-8")
+    assert text.count(before) == 1
+    config.write_text(text.replace(before, after), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_sync_settings(config)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (
+            _SyncSettingsFields(package_name="--"),
+            "package_name must contain at least one alphanumeric",
+        ),
+        (_SyncSettingsFields(sync_label=" "), r"sync\.sync_label cannot be empty\."),
+        (
+            _SyncSettingsFields(type_check_targets=()),
+            r"sync\.type_check_targets cannot be empty\.",
+        ),
+        (
+            _SyncSettingsFields(export_watch_paths=("../shared/**",)),
+            r"sync\.export_watch_paths must be a project-relative path\.",
+        ),
+        (
+            _SyncSettingsFields(release_check_script="scripts/check\x01.py"),
+            r"sync\.release_check_script must not contain control characters\.",
+        ),
+        (
+            _SyncSettingsFields(system_packages=("ripgrep; sh",)),
+            r"sync\.system_packages entries must be Debian package names",
+        ),
+        (
+            _SyncSettingsFields(validation_python_versions=()),
+            r"sync\.validation_python_versions cannot be empty\.",
+        ),
+        (
+            _SyncSettingsFields(validation_python_versions=("3.13",)),
+            r"must include the published floor '3\.12'; got \('3\.13',\)\.",
+        ),
+        (
+            _SyncSettingsFields(pr_default_title=" "),
+            r"\[pull_request\]\.default_title cannot be empty\.",
+        ),
+        (
+            _SyncSettingsFields(pr_default_body=" "),
+            r"\[pull_request\]\.default_body cannot be empty\.",
+        ),
+        (
+            _SyncSettingsFields(replay_bootstrap_base="main\n"),
+            r"replay_bootstrap_base must not contain control characters\.",
+        ),
+        (
+            _SyncSettingsFields(import_branch_prefix="sync..x/"),
+            r"sync\.import_branch_prefix is not a safe generated branch prefix\.",
+        ),
+        (
+            _SyncSettingsFields(import_branch_prefix="sync/.x/"),
+            r"sync\.import_branch_prefix is not a safe generated branch prefix\.",
+        ),
+    ],
+    ids=[
+        "a name with no letter",
+        "a blank label",
+        "no type check target",
+        "a watch path outside the package",
+        "a control character in a path",
+        "shell in a package name",
+        "no python",
+        "no floor python",
+        "a blank title",
+        "a blank body",
+        "a control character in the base",
+        "a prefix with dot-dot",
+        "a prefix with a dot-led component",
+    ],
+)
+def test_sync_settings_are_refused_before_they_render(
+    fields: _SyncSettingsFields,
+    message: str,
+):
+    with pytest.raises(ConfigError, match=message):
+        sync_toml(_settings(**fields))
+
+
+def test_a_commented_watch_path_is_not_read_as_a_path():
+    # Read as a path, ``..`` would escape the package.
+    settings = _settings(export_watch_paths=("# watches docs/../shared too",))
+
+    assert "      # watches docs/../shared too\n" in export_workflow(
+        settings,
+        inputs=(),
+    )
+
+
+def test_read_keys_counts_the_whole_table_it_wraps():
+    table = sync_setup._ReadKeys({"package_name": "configgle", "sync_label": "x"})
+
+    assert len(table) == 2
+    assert table.get("package_name") == "configgle"
+    assert table.read == {"package_name"}
 
 
 def test_a_push_to_main_never_cancels_or_replaces_its_ci_run():
@@ -1288,27 +1596,19 @@ def test_app_settings_reject_conflicting_personal_identity(tmp_path: Path):
         load_sync_settings(config)
 
 
-@pytest.mark.cli_bash
-@pytest.mark.parametrize("actual", ["example-sync", "different-app", ""])
-def test_app_identity_guard_rejects_another_app(tmp_path: Path, actual: str):
+# workflow_steps_parity.py runs every checked-in guard with bash, for the expected
+# App's slug, another App's and none; this pins the text it ran.
+def test_app_identity_guard_rejects_another_app(tmp_path: Path):
     steps = _job_steps(_export_workflow(_app_settings(tmp_path)), job="export-pr")
     guard = steps[
         _step_index(steps, lambda step: step.get("name") == "Verify sync App identity")
     ]
-    env = from_plain(guard["env"], dict[str, str])
-    env["ACTUAL_SYNC_APP_SLUG"] = actual
-    bash = shutil.which("bash")
-    assert bash is not None
 
-    result = subprocess.run(  # noqa: S603 -- Execute the generated identity guard.
-        [bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", str(guard["run"])],
-        env={**os.environ, **env},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert (result.returncode == 0) is (actual == "example-sync")
+    assert from_plain(guard["env"], dict[str, str]) == {
+        "EXPECTED_SYNC_APP_SLUG": "example-sync",
+        "ACTUAL_SYNC_APP_SLUG": "${{ steps.sync-app-token.outputs.app-slug }}",
+    }
+    assert app_identity_guard_commands(str(guard["run"])) == APP_IDENTITY_GUARD
 
 
 def test_export_workflow_skips_the_source_repos_uv_cache():
@@ -1453,39 +1753,40 @@ def test_import_workflow_keeps_explicit_base_semantics_off_the_ledger():
     assert 'git check-ref-format --allow-onelevel "$ref"' in run
 
 
-@pytest.mark.cli_bash
-@pytest.mark.cli_git
-@pytest.mark.cli_python_subprocess
-def test_import_workflow_skips_a_push_the_source_already_reflects(tmp_path: Path):
+def test_import_workflow_skips_a_push_the_source_already_reflects():
     """An export landing on public main must not open an empty import PR.
 
     Every export squash-merges onto public main, and that push re-runs this
     workflow. The source already holds that content, so the import is a no-op,
     yet it still opened an empty ledger PR that blocked the next export until
     someone merged it. A commit behind the synced base is reflected too: main
-    moved on before this run checked it out.
+    moved on before this run checked it out. Only a push past the synced base
+    imports, from that base. workflow_steps_parity.py runs the rendered step
+    over a real public history for all three; this pins what it ran: the
+    baseline walk and the ancestry check read the checkouts the job makes, and
+    the decision lands in the outputs later steps read.
     """
-    shas = _public_history_with_export(tmp_path)
+    steps = _import_steps(import_workflow(_settings()))
+    refs = _step_index(steps, lambda step: step.get("id") == "refs")
+    run = str(steps[refs]["run"])
+    checkouts = {_checkout_path(step) for step in steps[:refs]}
 
-    for head, before in (("export", "prior"), ("prior", "initial")):
-        outputs = _resolve_push_refs(tmp_path, head=shas[head], before=shas[before])
-        assert outputs.get("import") == "false", head
-
-
-@pytest.mark.cli_bash
-@pytest.mark.cli_git
-@pytest.mark.cli_python_subprocess
-def test_import_workflow_imports_a_push_past_the_synced_base(tmp_path: Path):
-    """A public commit after the newest export is new content and must import."""
-    shas = _public_history_with_export(tmp_path)
-
-    outputs = _resolve_push_refs(tmp_path, head=shas["human"], before=shas["export"])
-
-    assert outputs == {
-        "base_ref": shas["export"],
-        "head_ref": shas["human"],
-        "import": "true",
-    }
+    assert {"target", "public-history"} <= checkouts
+    assert "--target-dir target \\\n" in run
+    assert "--public-dir public-history \\\n" in run
+    assert 'head_ref="${GITHUB_SHA}"' in run
+    assert (
+        'if [ "${{ github.event_name }}" = "push" ] &&\n'
+        '  git -C public-history merge-base --is-ancestor "$head_ref" "$base_ref"; then\n'
+        '  echo "::notice::Source already reflects public commit $head_ref; '
+        'nothing to import."\n'
+        '  echo "import=false" >> "$GITHUB_OUTPUT"\n'
+        "else\n"
+        '  echo "import=true" >> "$GITHUB_OUTPUT"\n'
+        "fi\n"
+    ) in run
+    assert 'echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"' in run
+    assert 'echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"' in run
 
 
 def test_import_workflow_gates_every_import_step_on_the_refs_decision():
@@ -1800,103 +2101,26 @@ def _checkout_path(step: dict[str, object]) -> str:
     return str(with_config.get("path", ""))
 
 
-# Public main: initial, prior, a landed Configgle export (its export branch points at
-# it, which is what authenticates it), then a later human commit. Trees play no part in
-# the decision, so every commit is empty. `target` aliases the public repo: it walks to
-# no import subjects, i.e. a source with no ledger, without a second repository.
-def _public_history_with_export(root: Path) -> dict[str, str]:
-    """Create the `target` and `public-history` checkouts; return public SHAs."""
-    public = root / "public-history"
-    _git(root, "init", "-q", "-b", "main", str(public))
-    (root / "target").symlink_to(public)
-    commits = (
-        ("initial", "Initial commit"),
-        ("prior", "Prior change"),
-        ("export", "Publish export\n\nConfiggle export branch: configgle/export/main"),
-        ("human", "Human change"),
+# The App identity guard's commands, comments dropped. workflow_steps_parity.py runs
+# every checked-in copy with bash.
+APP_IDENTITY_GUARD: Final = (
+    'if [ "$ACTUAL_SYNC_APP_SLUG" != "$EXPECTED_SYNC_APP_SLUG" ]; then',
+    (
+        "  echo \"::error::Sync token belongs to App '$ACTUAL_SYNC_APP_SLUG', expected "
+        "'$EXPECTED_SYNC_APP_SLUG'.\""
+    ),
+    "  exit 1",
+    "fi",
+)
+
+
+def app_identity_guard_commands(run: str) -> tuple[str, ...]:
+    """Return the lines of a guard's ``run`` that bash executes."""
+    return tuple(
+        line
+        for line in run.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
     )
-    for _, message in commits:
-        _git(public, "commit", "-q", "--allow-empty", "-m", message)
-    log = _git(public, "log", "--reverse", "--format=%H").split()
-    shas = {name: sha for (name, _), sha in zip(commits, log, strict=True)}
-    _git(public, "branch", "configgle/export/main", shas["export"])
-    return shas
-
-
-# Executes the rendered step rather than matching its text: the decision spans the
-# shell, the trusted helper's baseline walk, and git ancestry, and a substring check
-# passes while any one of them is wired to the wrong directory or output name.
-def _resolve_push_refs(root: Path, *, head: str, before: str) -> dict[str, str]:
-    """Run 'Resolve public refs' as a push of `head`; return its step outputs."""
-    steps = _import_steps(import_workflow(_settings()))
-    run = str(steps[_step_index(steps, lambda step: step.get("id") == "refs")]["run"])
-    expressions = {"github.event_name": "push", "github.event.before": before}
-    bin_dir = root / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    # The step runs the helper via `uv ... run --no-project python`; this test's own
-    # interpreter stands in, so no uv environment is resolved per call.
-    (bin_dir / "uv").write_text(
-        f'#!/bin/sh\nwhile [ "$1" != python ]; do shift; done\nshift\n'
-        f'exec "{sys.executable}" "$@"\n',
-        encoding="utf-8",
-    )
-    (bin_dir / "uv").chmod(0o755)
-    output = root / "github-output"
-    output.write_text("", encoding="utf-8")
-    bash = shutil.which("bash")
-    assert bash is not None
-    subprocess.run(  # noqa: S603 -- Fixed bash argv; the script is the rendered workflow step.
-        [
-            bash,
-            "--noprofile",
-            "--norc",
-            "-eo",
-            "pipefail",
-            "-c",
-            re.sub(r"\$\{\{ (.+?) \}\}", lambda m: expressions.get(m[1], ""), run),
-        ],
-        cwd=root,
-        check=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-            "GITHUB_OUTPUT": str(output),
-            "GITHUB_SHA": head,
-            "COPYBARISTA_SYNC_LABEL": "Configgle",
-            "TRUSTED_IMPORT_SCRIPT": str(
-                _CWD / "scripts" / "sync_import_change.py",
-            ),
-        },
-    )
-    return {
-        key: value
-        for key, _, value in (
-            line.partition("=")
-            for line in output.read_text(encoding="utf-8").splitlines()
-        )
-    }
-
-
-def _git(cwd: Path, *args: str) -> str:
-    """Run git in `cwd` with a fixed identity; return its stripped stdout."""
-    git = shutil.which("git")
-    assert git is not None
-    return subprocess.run(  # noqa: S603 -- Fixed git subcommands over test paths.
-        [
-            git,
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            *args,
-        ],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
 
 
 def test_workflow_dir_prefers_the_staged_export_over_a_source_only_github(

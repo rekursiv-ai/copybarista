@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from copybarista.scripts.check_pr_text import _scan
+from typing import TYPE_CHECKING
+
+import sys
+
+from copybarista.scripts.check_pr_text import _scan, main
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
 _CLEAN = (
     "Reorganize web utilities into submodules.\n"
     "\n"
-    "- Move chrome modules under loop/wesearch/chrome/ "
+    "- Move chrome modules under loop/widget/chrome/ "
     "(ordinary body: fine).\n"
     "\n"
     "Copybarista-PR-Scope: sagent\n"
@@ -31,7 +41,7 @@ class TestScan:
             "Subject line.\n\n"
             "Copybarista-PR-Title: Update imports.\n"
             "Copybarista-PR-Body:\n"
-            "- Challenge now imported from `loop.wesearch.fetch`.\n"
+            "- Challenge now imported from `loop.widget.fetch`.\n"
         )
         violations = _scan(message)
         assert len(violations) == 1
@@ -42,7 +52,7 @@ class TestScan:
     def test_forbidden_path_in_title_flagged(self) -> None:
         message = (
             "Subject.\n\n"
-            "Copybarista-PR-Title: Refresh loop/wesearch export "
+            "Copybarista-PR-Title: Refresh loop/widget export "
             "manifest.\n"
             "Copybarista-PR-Body:\nPublic-safe body.\n"
         )
@@ -56,8 +66,8 @@ class TestScan:
         # A monorepo path in the NON-metadata body must not flag: Copybarista
         # ignores the ordinary subject/body entirely.
         message = (
-            "Move things around loop/wesearch/chrome and "
-            "loop.wesearch.fetch.\n\n"
+            "Move things around loop/widget/chrome and "
+            "loop.widget.fetch.\n\n"
             "Copybarista-PR-Title: Public title.\n"
             "Copybarista-PR-Body:\nPublic body.\n"
         )
@@ -73,7 +83,7 @@ class TestScan:
             "Copybarista-PR-Body:\nPublic sagent body.\n"
             "Copybarista-PR-Scope: configgle\n"
             "Copybarista-PR-Title: Public configgle title.\n"
-            "Copybarista-PR-Body:\n- References loop.lib leak here.\n"
+            "Copybarista-PR-Body:\n- References loop.widget leak here.\n"
         )
         violations = _scan(message)
         assert len(violations) == 1
@@ -85,11 +95,46 @@ class TestScan:
             "Subject.\n\n"
             "Copybarista-PR-Title: Public title.\n"
             "Copybarista-PR-Body:\n"
-            "- Path loop/lib and module loop.lib both leak, "
+            "- Path loop/widget and module loop.widget both leak, "
             "plus LOOP_ENV.\n"
         )
         terms = {term for _field, term, _text in _scan(message)}
         assert {"loop.", "loop/", "LOOP_"} <= terms
+
+
+class TestMain:
+    def test_a_clean_message_passes_silently(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        message = tmp_path / "COMMIT_EDITMSG"
+        message.write_text(_CLEAN, encoding="utf-8")
+        monkeypatch.setattr(sys, "argv", ["check_pr_text.py", str(message)])
+
+        assert main() == 0
+        assert capsys.readouterr().err == ""
+
+    def test_a_leak_fails_naming_each_field_and_term(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        message = tmp_path / "COMMIT_EDITMSG"
+        message.write_text(
+            "Subject.\n\nCopybarista-PR-Title: Move loop/widget.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sys, "argv", ["check_pr_text.py", str(message)])
+
+        assert main() == 1
+        assert capsys.readouterr().err.splitlines()[:3] == [
+            "Copybarista-PR metadata contains forbidden monorepo references:",
+            "  Copybarista-PR-Title: 'loop/' in 'Move loop/widget.'",
+            "",
+        ]
 
 
 if __name__ == "__main__":

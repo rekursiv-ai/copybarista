@@ -157,12 +157,52 @@ def test_brace_alternation_policy_is_configurable():
     assert globs.matches("src/main.py")
 
 
+def test_excludes_follow_the_same_brace_policy_as_includes():
+    globs = GlobSet(include=("**",), exclude=("src/{main}.py",), min_brace_choices=1)
+
+    assert globs.excludes("src/main.py")
+    assert globs.matches("src/test.py")
+
+
 def test_character_class_matches_style_choices():
     globs = GlobSet(include=("src/[ab].py",), exclude=())
 
     assert globs.matches("src/a.py")
     assert globs.matches("src/b.py")
     assert not globs.matches("src/c.py")
+
+
+def test_negated_character_class_matches_every_other_character():
+    globs = GlobSet(include=("src/[!a].py",))
+
+    assert globs.matches("src/b.py")
+    assert not globs.matches("src/a.py")
+
+
+def test_character_class_range_spans_its_endpoints():
+    globs = GlobSet(include=("src/[a-c].py", "edge/[-a].py"))
+
+    assert globs.matches("src/b.py")
+    assert not globs.matches("src/d.py")
+    # A hyphen at either end of a class is literal, not a range.
+    assert globs.matches("edge/-.py")
+    assert not globs.matches("edge/b.py")
+
+
+def test_question_mark_matches_one_character_within_a_segment():
+    globs = GlobSet(include=("src/?.py",))
+
+    assert globs.matches("src/a.py")
+    assert not globs.matches("src/ab.py")
+    assert not globs.matches("src//.py")
+
+
+def test_backslash_makes_a_glob_character_literal():
+    globs = GlobSet(include=("src/\\*.py", "src/\\[a.py"))
+
+    assert globs.matches("src/*.py")
+    assert globs.matches("src/[a.py")
+    assert not globs.matches("src/a.py")
 
 
 @pytest.mark.parametrize(
@@ -173,6 +213,12 @@ def test_character_class_matches_style_choices():
         "../outside/**",
         "src/[ab.py",
         "src/{main,test.py",
+        "src/]a[.py",
+        "src/[].py",
+        "src/[!].py",
+        "src/[a/b].py",
+        "src/{main}.py",
+        "src/{main,}.py",
     ],
 )
 def test_rejects_unsupported_or_unsafe_patterns(pattern: str):

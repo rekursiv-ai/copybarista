@@ -8,20 +8,27 @@ from treekle import from_plain, json_loads
 
 import pytest
 
+from copybarista import cli
 from copybarista.cli import _exit_code, _parser, main
 from copybarista.errors import (
     ConfigError,
+    CopybaristaError,
     ExportError,
     ImportRequestError,
     LeakCheckError,
     OutputMismatchError,
     TransformError,
 )
+from copybarista.import_request import ImportResult
+from copybarista.manifest import ExportManifest
 from copybarista.sync_setup import DEFAULT_SYNC_USER_EMAIL, DEFAULT_SYNC_USER_NAME
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from copybarista.config import WorkflowConfig
+    from copybarista.import_request import ImportRequest
 
 
 def _config(path: Path, source_root: str = "project") -> None:
@@ -222,7 +229,155 @@ def test_cli_check_leaks_honors_config_globstar(
     assert "no-secrets" in capsys.readouterr().err
 
 
+def test_cli_translate_prints_or_writes_the_native_config(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    sky = tmp_path / "copy.bara.sky"
+    sky.write_text(
+        "core.workflow(\n"
+        '    name = "export",\n'
+        "    origin = folder.origin(),\n"
+        "    destination = folder.destination(),\n"
+        '    origin_files = glob(["**"]),\n'
+        '    destination_files = glob(["**"]),\n'
+        '    authoring = authoring.pass_thru("Demo <demo@copybarista.test>"),\n'
+        '    mode = "SQUASH",\n'
+        ")\n",
+        encoding="utf-8",
+    )
+
+    assert main(["translate", str(sky)]) == 0
+    printed = capsys.readouterr().out
+    native = tmp_path / "copy.barista.toml"
+    assert main(["translate", str(sky), "--output", str(native)]) == 0
+
+    assert printed.startswith('[workflow]\nname = "export"\n')
+    assert native.read_text(encoding="utf-8") == printed
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(("flags", "printed"), [([], ""), (["--json"], "{")])
+def test_cli_publish_git_exports_to_git_and_prints_the_manifest_on_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    printed: str,
+):
+    config = tmp_path / "copy.barista.toml"
+    _config(config)
+    exported: list[tuple[str, Path]] = []
+
+    def export_git(*, config: WorkflowConfig, source_ref: Path) -> ExportManifest:
+        exported.append((config.name, source_ref))
+        return ExportManifest(files=(), transforms=(), elapsed_sec=0.0)
+
+    monkeypatch.setattr(cli, "export_git", export_git)
+
+    assert main(["publish-git", str(config), str(tmp_path / "repo"), *flags]) == 0
+
+    assert exported == [("demo", tmp_path / "repo")]
+    out = capsys.readouterr().out
+    assert out.startswith(printed)
+    if printed:
+        assert json_loads(out, dict[str, object]) == {"files": [], "transforms": []}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(([], True, False, False), id="defaults"),
+        pytest.param(
+            (["--no-verify", "--merge-import", "--json"], False, True, True),
+            id="every-flag",
+        ),
+    ],
+)
+def test_cli_import_change_runs_the_import_its_flags_describe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: tuple[list[str], bool, bool, bool],
+):
+    # With --no-verify it warns, and with --json it prints the report.
+    flags, verify, merge, warned = case
+    printed = warned
+    config = tmp_path / "copy.barista.toml"
+    _config(config)
+    requests: list[ImportRequest] = []
+
+    def import_change_request(request: ImportRequest) -> ImportResult:
+        requests.append(request)
+        return ImportResult(changes=())
+
+    monkeypatch.setattr(cli, "import_change_request", import_change_request)
+    paths = {name: tmp_path / name for name in ("base", "head", "source", "out")}
+
+    assert (
+        main(
+            [
+                "import-change",
+                str(config),
+                *("--public-base", str(paths["base"])),
+                *("--public-head", str(paths["head"])),
+                *("--source-base", str(paths["source"])),
+                *("--destination", str(paths["out"])),
+                *flags,
+            ],
+        )
+        == 0
+    )
+
+    [request] = requests
+    assert (request.public_base, request.public_head) == (paths["base"], paths["head"])
+    assert (request.source_base, request.destination) == (paths["source"], paths["out"])
+    assert (request.verify, request.merge_import) == (verify, merge)
+    captured = capsys.readouterr()
+    assert ("--no-verify disables" in captured.err) is warned
+    assert (
+        json_loads(captured.out, dict[str, object]) if printed else captured.out
+    ) == ({"changes": []} if printed else "")
+
+
+def test_cli_write_export_workflow_writes_to_an_output_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "packages/configgle",
+            "--public-repo",
+            "example/configgle",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+        ],
+    )
+    capsys.readouterr()
+    output = tmp_path / "loop-to-configgle.yml"
+
+    main(
+        [
+            "write-export-workflow",
+            str(tmp_path / "copybarista.sync.toml"),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert "configgle/export/main" in output.read_text(encoding="utf-8")
+    assert capsys.readouterr().out == ""
+
+
 def test_cli_release_gate_exit_code_mapping():
+    assert _exit_code(CopybaristaError("other")) == 1
     assert _exit_code(ConfigError("bad config")) == 1
     assert _exit_code(TransformError("no-op")) == 2
     assert _exit_code(OutputMismatchError("mismatch")) == 2
