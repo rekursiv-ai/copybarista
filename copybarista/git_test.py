@@ -1,39 +1,751 @@
-"""Tests for single-commit Git destination export."""
+"""Tests for Git destination helpers and single-commit Git export."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from pathlib import Path
 
+import hashlib
 import shutil
 
 import pytest
 
-from copybarista.commands import CommandRunner
+from copybarista import git
+from copybarista.commands import CommandResult, CommandRunner
 from copybarista.config import (
     FileSelection,
     FolderDestination,
     GitDestination,
     WorkflowConfig,
 )
+from copybarista.destinations import DestinationResult
 from copybarista.errors import ExportError
 from copybarista.git import (
-    export_git,
+    GitRuntime,
+    _commit_and_push,
+    _commit_message,
+    _ensure_local_remote,
+    _has_staged_changes,
+    _local_remote_path,
+    _origin_rev_id,
+    _prepare_destination,
+    _remote_branch_exists,
+    _replace_worktree_contents,
+    _sync_cached_bare_repo,
+    _verify_user_info_configured,
     write_git_destination,
 )
-from copybarista.workflow import WorkflowRunner
+from copybarista.lib.userdirs import cache_dir
+from copybarista.workflow import StagedTree, WorkflowRunner
 
 
-if TYPE_CHECKING:
-    from pathlib import Path
+def test_git_runtime_default_cache_uses_xdg_cache() -> None:
+    assert (
+        GitRuntime().cache_root == cache_dir() / "rekursiv-ai" / "copybarista" / "git"
+    )
 
 
-pytestmark = [
-    pytest.mark.cli_git,
-    pytest.mark.skipif(shutil.which("git") is None, reason="git not installed"),
-]
+def test_local_remote_path_rejects_scp_style_url():
+    assert _local_remote_path("git@github.com:org/repo.git") is None
 
 
-def _config(remote: Path) -> WorkflowConfig:
+def test_local_remote_path_accepts_file_url(tmp_path: Path):
+    remote = tmp_path / "remote.git"
+
+    assert _local_remote_path(f"file://{remote.as_posix()}") == remote
+
+
+def test_local_remote_path_accepts_relative_local_path():
+    assert _local_remote_path("out/remote.git") == Path("out/remote.git")
+
+
+def test_export_git_requires_destination_url(tmp_path: Path):
+    config = _workflow_config(git=GitDestination())
+
+    with pytest.raises(ExportError, match="url"):
+        git.export_git(config=config, source_ref=tmp_path)
+
+
+def test_export_git_stages_manifest_without_real_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_ref = _source(tmp_path)
+
+    def fake_write(
+        staged_tree: StagedTree,
+        *,
+        destination: GitDestination,
+        origin_rev_id: str = "",
+        runtime: GitRuntime | None = None,
+    ) -> DestinationResult:
+        assert destination.url == "ssh://example.com/repo.git"
+        assert origin_rev_id == ""
+        assert runtime is not None
+        assert (staged_tree.root / "README.md").read_text(encoding="utf-8") == "hello\n"
+        return DestinationResult(status="updated", ref="abc123")
+
+    monkeypatch.setattr(git, "write_git_destination", fake_write)
+
+    manifest = git.export_git(
+        config=_workflow_config(
+            git=GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        ),
+        source_ref=source_ref,
+    )
+
+    assert [entry.destination for entry in manifest.files] == ["README.md"]
+
+
+def test_write_git_destination_uses_temporary_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "source"
+    (source / "pkg").mkdir(parents=True)
+    (source / "README.md").write_text("hello\n", encoding="utf-8")
+    (source / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    observed: list[tuple[bool, bool, bool]] = []
+
+    def fake_prepare(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> None:
+        assert destination.url == "ssh://example.com/repo.git"
+        assert runtime is not None
+        worktree.mkdir()
+        (worktree / ".git").mkdir()
+        (worktree / "stale.txt").write_text("stale\n", encoding="utf-8")
+        (worktree / "old").mkdir()
+
+    def fake_commit(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        origin_rev_id: str = "",
+        runtime: GitRuntime | None = None,
+    ) -> str:
+        assert destination.branch == "main"
+        assert origin_rev_id == ""
+        assert runtime is not None
+        observed.append(
+            (
+                (worktree / ".git").is_dir(),
+                (worktree / "stale.txt").exists(),
+                (worktree / "pkg" / "module.py").is_file(),
+            ),
+        )
+        return "abc123"
+
+    monkeypatch.setattr(git, "_prepare_destination", fake_prepare)
+    monkeypatch.setattr(git, "_commit_and_push", fake_commit)
+
+    result = write_git_destination(
+        StagedTree(root=source, files=(), transforms=()),
+        destination=GitDestination(url="ssh://example.com/repo.git", branch="main"),
+    )
+
+    assert result.status == "updated"
+    assert result.ref == "abc123"
+    assert observed == [(True, False, True)]
+
+
+def test_replace_worktree_contents_preserves_nested_submodules(tmp_path: Path):
+    source = tmp_path / "source"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    (worktree / ".git").mkdir(parents=True)
+    (worktree / "vendor" / "submodule").mkdir(parents=True)
+    (worktree / "vendor" / "submodule" / ".git").write_text(
+        "gitdir: ../../.git/modules/vendor/submodule\n",
+        encoding="utf-8",
+    )
+    (worktree / "vendor" / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+    _replace_worktree_contents(source=source, worktree=worktree)
+
+    assert (worktree / ".git").is_dir()
+    assert (worktree / "vendor" / "submodule" / ".git").is_file()
+    assert not (worktree / "vendor" / "stale.txt").exists()
+    assert (worktree / "pkg" / "module.py").is_file()
+
+
+def test_replace_worktree_contents_rejects_staged_symlink_escape(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "escape").symlink_to("../outside.txt")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").mkdir()
+
+    with pytest.raises(ExportError, match="outside staged tree"):
+        _replace_worktree_contents(source=source, worktree=worktree)
+
+
+def test_prepare_destination_checks_out_existing_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+    cache = tmp_path / "cache.git"
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    def remote_branch_exists(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> bool:
+        assert runtime is not None
+        assert destination.branch == "main"
+        assert worktree == tmp_path / "worktree"
+        return True
+
+    def skip_local_remote(url: str, *, runtime: GitRuntime | None = None) -> None:
+        assert runtime is not None
+        assert url == "ssh://example.com/repo.git"
+
+    def sync_cache(url: str, *, runtime: GitRuntime | None = None) -> Path:
+        assert runtime is not None
+        assert url == "ssh://example.com/repo.git"
+        return cache
+
+    monkeypatch.setattr(git, "_ensure_local_remote", skip_local_remote)
+    monkeypatch.setattr(git, "_sync_cached_bare_repo", sync_cache)
+    monkeypatch.setattr(git, "_remote_branch_exists", remote_branch_exists)
+    monkeypatch.setattr(git, "_git", fake_git)
+
+    _prepare_destination(
+        GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        tmp_path / "worktree",
+    )
+
+    assert calls[0] == ("clone", str(cache), str(tmp_path / "worktree"))
+    assert calls[1] == (
+        "-C",
+        str(tmp_path / "worktree"),
+        "remote",
+        "set-url",
+        "origin",
+        "ssh://example.com/repo.git",
+    )
+    assert calls[2][-2:] == ("main", "origin/main")
+
+
+def test_prepare_destination_creates_orphan_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+    cache = tmp_path / "cache.git"
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    def skip_local_remote(url: str, *, runtime: GitRuntime | None = None) -> None:
+        assert runtime is not None
+        assert url == "ssh://example.com/repo.git"
+
+    def sync_cache(url: str, *, runtime: GitRuntime | None = None) -> Path:
+        assert runtime is not None
+        assert url == "ssh://example.com/repo.git"
+        return cache
+
+    def missing_branch(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> bool:
+        assert runtime is not None
+        assert destination.branch == "main"
+        assert worktree == tmp_path / "worktree"
+        return False
+
+    monkeypatch.setattr(git, "_ensure_local_remote", skip_local_remote)
+    monkeypatch.setattr(git, "_sync_cached_bare_repo", sync_cache)
+    monkeypatch.setattr(git, "_remote_branch_exists", missing_branch)
+    monkeypatch.setattr(git, "_git", fake_git)
+
+    _prepare_destination(
+        GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        tmp_path / "worktree",
+    )
+
+    assert calls[2][-3:] == ("checkout", "--orphan", "main")
+
+
+def test_ensure_local_remote_initializes_empty_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git, "_git", fake_git)
+
+    _ensure_local_remote(remote.as_posix())
+
+    assert remote.parent.is_dir()
+    assert calls == [("init", "--bare", remote.as_posix())]
+
+
+def test_ensure_local_remote_rejects_missing_path(
+    tmp_path: Path,
+):
+    with pytest.raises(ExportError, match="already exist"):
+        _ensure_local_remote((tmp_path / "remote.git").as_posix())
+
+
+def test_ensure_local_remote_rejects_non_git_directory(tmp_path: Path):
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    (remote / "README.md").write_text("not git\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="not a Git repository"):
+        _ensure_local_remote(remote.as_posix())
+
+
+def test_sync_cached_bare_repo_clones_missing_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git, "_git", fake_git)
+
+    cache = _sync_cached_bare_repo(
+        "ssh://example.com/repo.git",
+        runtime=GitRuntime(cache_root=tmp_path / "cache"),
+    )
+
+    assert cache.parent == tmp_path / "cache"
+    assert calls == [("clone", "--mirror", "ssh://example.com/repo.git", str(cache))]
+
+
+def test_sync_cached_bare_repo_fetches_existing_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+    cache_root = tmp_path / "cache"
+    existing = cache_root / hashlib.sha256(b"ssh://example.com/repo.git").hexdigest()
+    existing.mkdir(parents=True)
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git, "_git", fake_git)
+
+    assert (
+        _sync_cached_bare_repo(
+            "ssh://example.com/repo.git",
+            runtime=GitRuntime(cache_root=cache_root),
+        )
+        == existing
+    )
+    assert calls == [("-C", str(existing), "remote", "update", "--prune")]
+
+
+def test_remote_branch_exists_handles_git_exit_codes():
+    fake = _FakeCommands(result=CommandResult(returncode=2, stdout="", stderr=""))
+
+    assert not _remote_branch_exists(
+        GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        Path("worktree"),
+        runtime=GitRuntime(commands=fake),
+    )
+    assert fake.calls[0][-2:] == ["origin", "main"]
+
+
+def test_remote_branch_exists_reports_unexpected_failure():
+    runtime = GitRuntime(
+        commands=_FakeCommands(
+            result=CommandResult(returncode=128, stdout="", stderr="bad remote"),
+        ),
+    )
+
+    with pytest.raises(ExportError, match="bad remote"):
+        _remote_branch_exists(
+            GitDestination(url="ssh://example.com/repo.git", branch="main"),
+            Path("worktree"),
+            runtime=runtime,
+        )
+
+
+def test_remote_branch_exists_treats_exit_two_with_stderr_as_failure():
+    runtime = GitRuntime(
+        commands=_FakeCommands(
+            result=CommandResult(returncode=2, stdout="", stderr="auth failed"),
+        ),
+    )
+
+    with pytest.raises(ExportError, match="auth failed"):
+        _remote_branch_exists(
+            GitDestination(url="ssh://example.com/repo.git", branch="main"),
+            Path("worktree"),
+            runtime=runtime,
+        )
+
+
+def test_has_staged_changes_handles_git_exit_codes():
+    fake = _FakeCommands(result=CommandResult(returncode=1, stdout="", stderr=""))
+
+    assert _has_staged_changes(Path("worktree"), runtime=GitRuntime(commands=fake))
+    assert fake.calls[0][-3:] == ["diff", "--cached", "--quiet"]
+
+
+def test_has_staged_changes_reports_unexpected_failure():
+    runtime = GitRuntime(
+        commands=_FakeCommands(
+            result=CommandResult(returncode=128, stdout="", stderr=""),
+        ),
+    )
+
+    with pytest.raises(ExportError, match="staged"):
+        _has_staged_changes(Path("worktree"), runtime=runtime)
+
+
+def test_commit_and_push_uses_configured_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        if args[-2:] == ("config", "-l"):
+            stdout = "user.name=Copybarista\nuser.email=copybarista@example.com\n"
+        elif "rev-parse" in args:
+            stdout = "abc123\n"
+        else:
+            stdout = ""
+        return CommandResult(returncode=0, stdout=stdout, stderr="")
+
+    def has_staged_changes(
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> bool:
+        assert runtime is not None
+        assert worktree == tmp_path
+        return True
+
+    monkeypatch.setattr(git, "_git", fake_git)
+    monkeypatch.setattr(git, "_has_staged_changes", has_staged_changes)
+
+    commit = _commit_and_push(
+        GitDestination(
+            url="ssh://example.com/repo.git",
+            branch="main",
+            committer_name="Copybarista",
+            committer_email="copybarista@example.com",
+        ),
+        tmp_path,
+        origin_rev_id="source123",
+        runtime=GitRuntime(),
+    )
+
+    assert commit == "abc123"
+    assert calls[0][-2:] == ("user.name", "Copybarista")
+    assert calls[1][-2:] == ("user.email", "copybarista@example.com")
+    assert calls[3][-2:] == ("add", "-A")
+    assert calls[4][-2:] == (
+        "-m",
+        "Project import generated by Copybarista.\n\nCopybarista-Source-Rev: source123",
+    )
+    assert calls[-1][-2:] == ("origin", "HEAD:main")
+
+
+def test_commit_and_push_returns_noop_without_staged_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str, runtime: GitRuntime | None = None) -> CommandResult:
+        assert runtime is not None
+        calls.append(args)
+        stdout = (
+            "user.name=Copybarista\nuser.email=copybarista@example.com\n"
+            if args[-2:] == ("config", "-l")
+            else ""
+        )
+        return CommandResult(returncode=0, stdout=stdout, stderr="")
+
+    def has_staged_changes(
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> bool:
+        assert runtime is not None
+        assert worktree == tmp_path
+        return False
+
+    monkeypatch.setattr(git, "_git", fake_git)
+    monkeypatch.setattr(git, "_has_staged_changes", has_staged_changes)
+
+    assert (
+        _commit_and_push(
+            GitDestination(
+                url="ssh://example.com/repo.git",
+                committer_name="Copybarista",
+                committer_email="copybarista@example.com",
+            ),
+            tmp_path,
+            runtime=GitRuntime(),
+        )
+        == ""
+    )
+    assert calls[-1] == ("-C", str(tmp_path), "add", "-A")
+
+
+def test_verify_user_info_configured_rejects_missing_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        git,
+        "_git",
+        _empty_git_config,
+    )
+
+    with pytest.raises(ExportError, match=r"user\.name"):
+        _verify_user_info_configured(tmp_path, runtime=GitRuntime())
+
+
+def test_commit_message_includes_copybarista_origin_label():
+    assert _commit_message(origin_rev_id="abc123") == (
+        "Project import generated by Copybarista.\n\nCopybarista-Source-Rev: abc123"
+    )
+
+
+def test_commit_message_without_an_origin_is_the_summary_alone():
+    assert (
+        _commit_message(origin_rev_id="") == "Project import generated by Copybarista."
+    )
+
+
+def test_write_git_destination_requires_a_url(tmp_path: Path):
+    with pytest.raises(ExportError, match=r"destination\.git\.url is required"):
+        write_git_destination(
+            StagedTree(root=tmp_path, files=(), transforms=()),
+            destination=GitDestination(),
+        )
+
+
+def test_write_git_destination_reports_noop_when_nothing_was_committed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def prepare(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        runtime: GitRuntime | None = None,
+    ) -> None:
+        del destination, runtime
+        (worktree / ".git").mkdir(parents=True)
+
+    def commit_nothing(
+        destination: GitDestination,
+        worktree: Path,
+        *,
+        origin_rev_id: str = "",
+        runtime: GitRuntime | None = None,
+    ) -> str:
+        del destination, worktree, origin_rev_id, runtime
+        return ""
+
+    monkeypatch.setattr(git, "_prepare_destination", prepare)
+    monkeypatch.setattr(git, "_commit_and_push", commit_nothing)
+
+    result = write_git_destination(
+        StagedTree(root=tmp_path, files=(), transforms=()),
+        destination=GitDestination(url="ssh://example.com/repo.git", branch="main"),
+    )
+
+    assert (result.status, result.ref) == ("noop", "ssh://example.com/repo.git")
+
+
+def test_ensure_local_remote_leaves_a_network_remote_alone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(git, "_git", _empty_git_config)
+
+    _ensure_local_remote("ssh://example.com/repo.git")
+
+
+def test_ensure_local_remote_rejects_a_file(tmp_path: Path):
+    remote = tmp_path / "remote.git"
+    remote.write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="not a directory"):
+        _ensure_local_remote(remote.as_posix())
+
+
+def test_local_remote_path_rejects_a_network_url():
+    assert _local_remote_path("https://example.com/repo.git") is None
+
+
+def test_remote_branch_exists_when_ls_remote_finds_it():
+    fake = _FakeCommands(result=CommandResult(returncode=0, stdout="sha\n", stderr=""))
+
+    assert _remote_branch_exists(
+        GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        Path("worktree"),
+        runtime=GitRuntime(commands=fake),
+    )
+
+
+def test_replace_worktree_contents_refuses_to_overwrite_a_submodule(tmp_path: Path):
+    source = tmp_path / "source"
+    (source / "vendor").mkdir(parents=True)
+    (source / "vendor" / "lib.py").write_text("x = 1\n", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    (worktree / ".git").mkdir(parents=True)
+    (worktree / "vendor").mkdir()
+    (worktree / "vendor" / ".git").write_text("gitdir: ../.git/modules/vendor\n")
+
+    with pytest.raises(ExportError, match="Refusing to overwrite Git submodule"):
+        _replace_worktree_contents(source=source, worktree=worktree)
+
+
+@pytest.mark.parametrize(
+    ("result", "origin"),
+    [
+        (CommandResult(returncode=0, stdout="abc123\n", stderr=""), "abc123"),
+        (CommandResult(returncode=128, stdout="", stderr="not a repo"), ""),
+    ],
+)
+def test_origin_rev_id_reads_the_source_head_when_it_has_one(
+    result: CommandResult,
+    origin: str,
+):
+    fake = _FakeCommands(result=result)
+
+    assert (
+        _origin_rev_id(Path("src"), runtime=GitRuntime(git="g", commands=fake))
+        == origin
+    )
+    assert (fake.calls, fake.checks) == (
+        [["g", "-C", "src", "rev-parse", "HEAD"]],
+        [False],
+    )
+
+
+def test_git_runs_the_runtimes_git_through_its_commands():
+    fake = _FakeCommands(result=CommandResult(returncode=0, stdout="", stderr=""))
+
+    git._git("status", runtime=GitRuntime(git="g", commands=fake))
+
+    assert (fake.calls, fake.checks) == ([["g", "status"]], [True])
+
+
+@pytest.mark.cli_git
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+class TestRealGit:
+    def test_export_git_creates_branch_and_manifest(self, tmp_path: Path):
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        config = _remote_config(remote)
+
+        manifest = git.export_git(config=config, source_ref=_source(tmp_path))
+
+        assert [entry.destination for entry in manifest.files] == ["README.md"]
+        assert _git_output(remote, "show", "main:README.md") == "hello\n"
+
+    def test_export_git_uses_copybarista_commit_message(self, tmp_path: Path):
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        config = _remote_config(remote)
+
+        git.export_git(config=config, source_ref=_source(tmp_path))
+
+        assert (
+            _git_output(remote, "log", "-1", "--format=%s", "main")
+            == "Project import generated by Copybarista.\n"
+        )
+
+    def test_write_git_destination_reports_noop_for_unchanged_tree(
+        self,
+        tmp_path: Path,
+    ):
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        config = _remote_config(remote)
+        source_ref = _source(tmp_path)
+
+        staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
+            tmp_path / "stage1",
+        )
+        first = write_git_destination(staged, destination=config.git)
+        staged_again = WorkflowRunner(config=config, source_ref=source_ref).stage(
+            tmp_path / "stage2",
+        )
+        second = write_git_destination(staged_again, destination=config.git)
+
+        assert first.status == "updated"
+        assert len(first.ref) == 40
+        assert second.status == "noop"
+        assert second.ref == config.git.url
+
+    def test_export_git_does_not_initialize_invalid_existing_local_remote(
+        self,
+        tmp_path: Path,
+    ):
+        remote = tmp_path / "not-a-git-remote"
+        remote.mkdir()
+        (remote / "README.md").write_text("not a git repository\n", encoding="utf-8")
+        config = _remote_config(remote)
+
+        with pytest.raises(ExportError, match="repository"):
+            git.export_git(config=config, source_ref=_source(tmp_path))
+
+        assert not (remote / "HEAD").exists()
+
+
+def _empty_git_config(*_args: str, runtime: GitRuntime | None = None) -> CommandResult:
+    assert runtime is not None
+    return CommandResult(returncode=0, stdout="", stderr="")
+
+
+@dataclass(slots=True, kw_only=True)
+class _FakeCommands:
+    result: CommandResult
+    calls: list[list[str]] = field(default_factory=list)
+    checks: list[bool] = field(default_factory=list)
+
+    def run(self, argv: list[str], *, check: bool = True) -> CommandResult:
+        self.calls.append(argv)
+        self.checks.append(check)
+        return self.result
+
+
+def _workflow_config(*, git: GitDestination) -> WorkflowConfig:
     return WorkflowConfig(
         name="demo",
         mode="squash",
@@ -41,6 +753,12 @@ def _config(remote: Path) -> WorkflowConfig:
         files=FileSelection(include=("**",), exclude=()),
         transforms=(),
         folder=FolderDestination(),
+        git=git,
+    )
+
+
+def _remote_config(remote: Path) -> WorkflowConfig:
+    return _workflow_config(
         git=GitDestination(
             url=f"file://{remote.as_posix()}",
             branch="main",
@@ -58,89 +776,10 @@ def _source(tmp_path: Path) -> Path:
     return source_ref
 
 
-def test_export_git_creates_branch_and_manifest(tmp_path: Path):
-    remote = tmp_path / "remote.git"
-    remote.mkdir()
-    config = _config(remote)
-
-    manifest = export_git(config=config, source_ref=_source(tmp_path))
-
-    assert [entry.destination for entry in manifest.files] == ["README.md"]
-    assert _git(remote, "show", "main:README.md") == "hello\n"
-
-
-def test_export_git_uses_copybarista_commit_message(tmp_path: Path):
-    remote = tmp_path / "remote.git"
-    remote.mkdir()
-    config = _config(remote)
-
-    export_git(config=config, source_ref=_source(tmp_path))
-
-    assert (
-        _git(remote, "log", "-1", "--format=%s", "main")
-        == "Project import generated by Copybarista.\n"
-    )
-
-
-def test_write_git_destination_reports_noop_for_unchanged_tree(tmp_path: Path):
-    remote = tmp_path / "remote.git"
-    remote.mkdir()
-    config = _config(remote)
-    source_ref = _source(tmp_path)
-
-    staged = WorkflowRunner(config=config, source_ref=source_ref).stage(
-        tmp_path / "stage1",
-    )
-    first = write_git_destination(staged, destination=config.git)
-    staged_again = WorkflowRunner(config=config, source_ref=source_ref).stage(
-        tmp_path / "stage2",
-    )
-    second = write_git_destination(staged_again, destination=config.git)
-
-    assert first.status == "updated"
-    assert len(first.ref) == 40
-    assert second.status == "noop"
-    assert second.ref == config.git.url
-
-
-def test_export_git_requires_destination_url(tmp_path: Path):
-    config = _config(tmp_path / "remote.git")
-    config = WorkflowConfig(
-        name=config.name,
-        mode=config.mode,
-        source_root=config.source_root,
-        files=config.files,
-        transforms=config.transforms,
-        folder=config.folder,
-        git=GitDestination(),
-    )
-
-    with pytest.raises(ExportError, match="url"):
-        export_git(config=config, source_ref=_source(tmp_path))
-
-
-def test_export_git_does_not_initialize_invalid_existing_local_remote(
-    tmp_path: Path,
-):
-    remote = tmp_path / "not-a-git-remote"
-    remote.mkdir()
-    (remote / "README.md").write_text("not a git repository\n", encoding="utf-8")
-    config = _config(remote)
-
-    with pytest.raises(ExportError, match="repository"):
-        export_git(config=config, source_ref=_source(tmp_path))
-
-    assert not (remote / "HEAD").exists()
-
-
-def _git(remote: Path, *args: str) -> str:
-    result = shutil.which("git")
-    assert result is not None
-
-    completed = CommandRunner().run(
-        [result, "--git-dir", str(remote), *args],
-    )
-    return completed.stdout
+def _git_output(remote: Path, *args: str) -> str:
+    executable = shutil.which("git")
+    assert executable is not None
+    return CommandRunner().run([executable, "--git-dir", str(remote), *args]).stdout
 
 
 if __name__ == "__main__":

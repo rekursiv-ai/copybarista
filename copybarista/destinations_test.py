@@ -51,6 +51,26 @@ def test_folder_destination_reports_created_and_updated(tmp_path: Path):
     assert sorted(path.name for path in destination.iterdir()) == ["README.md"]
 
 
+def test_folder_destination_refuses_to_replace_without_force(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    source_root = source_ref / "project"
+    source_root.mkdir(parents=True)
+    destination = tmp_path / "out"
+    destination.mkdir()
+    (destination / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="pass --force to replace it"):
+        write_folder_destination(
+            _staged_tree(tmp_path / "stage"),
+            destination=destination,
+            source_ref=source_ref,
+            source_root=source_root,
+            replace_existing=False,
+        )
+
+    assert sorted(path.name for path in destination.iterdir()) == ["keep.txt"]
+
+
 def test_folder_destination_can_consume_staging(tmp_path: Path):
     source_ref = tmp_path / "repo"
     source_root = source_ref / "project"

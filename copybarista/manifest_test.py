@@ -25,6 +25,16 @@ def test_manifest_json_omits_elapsed_time_for_determinism():
     assert json.loads(first) == {"files": [], "transforms": []}
 
 
+def test_file_entry_hashes_a_regular_files_bytes(tmp_path: Path):
+    path = tmp_path / "a.txt"
+    path.write_bytes(b"content\n")
+
+    entry = file_entry(source="src/a.txt", destination="a.txt", path=path)
+
+    assert (entry.source, entry.destination, entry.size) == ("src/a.txt", "a.txt", 8)
+    assert entry.sha256 == hashlib.sha256(b"content\n").hexdigest()
+
+
 def test_file_entry_hashes_symlink_target_text(tmp_path: Path):
     target = tmp_path / "target.txt"
     target.write_text("content\n", encoding="utf-8")

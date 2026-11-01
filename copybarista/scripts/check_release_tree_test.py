@@ -193,6 +193,22 @@ def test_check_tree_allows_root_git_for_checked_out_public_repo(tmp_path: Path):
     assert check_tree(root=tmp_path, allow_root_git=True) == ()
 
 
+def test_check_tree_reports_a_missing_root(tmp_path: Path):
+    assert check_tree(root=tmp_path / "gone") == (
+        f"Release tree root does not exist: {tmp_path / 'gone'}",
+    )
+
+
+def test_main_reads_its_flags_from_the_command_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_required_tree(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_release_tree.py", str(tmp_path)])
+
+    assert check_release_tree.main() == 0
+
+
 def test_check_tree_reports_missing_required_paths(tmp_path: Path):
     errors = check_tree(root=tmp_path)
 
@@ -218,12 +234,14 @@ def test_run_cli_reports_errors_and_honors_root_git_flag(
 
 def test_check_tree_rejects_every_blocked_text_variant(tmp_path: Path):
     _write_required_tree(tmp_path)
+    # Split as check_release_tree.py's own patterns are, so the export's leak check
+    # still scans this file; whole, each probe is a monorepo reference it ships.
     probes = {
-        "experimental.md": "loop/experimental",
-        "lib.md": "loop.lib",
-        "copybarista.md": "loop/copybarista",
+        "experimental.md": "loop" + "/experimental",
+        "lib.md": "loop" + ".lib",
+        "copybarista.md": "loop" + "/copybarista",
         "users.md": "/Users/dan",
-        "home.md": "~/loop",
+        "home.md": "~/" + "loop",
         "knowop.md": "kNoWOp2",
         "start.md": "<!-- copybarista:private-sync:start -->",
         "end.md": "<!-- copybarista:private-sync:end -->",
@@ -258,10 +276,10 @@ def test_check_tree_rejects_each_source_only_config_token(tmp_path: Path):
 def test_check_tree_ignores_skipped_and_symlinked_text_files(tmp_path: Path):
     _write_required_tree(tmp_path)
     skipped = tmp_path / "copybarista/scripts/check_pr_text_test.py"
-    skipped.write_text("loop/experimental\n", encoding="utf-8")
+    skipped.write_text("loop" + "/experimental\n", encoding="utf-8")
     source = tmp_path / "docs/source.md"
     source.parent.mkdir()
-    source.write_text("loop/experimental\n", encoding="utf-8")
+    source.write_text("loop" + "/experimental\n", encoding="utf-8")
     (tmp_path / "docs/link.md").symlink_to(source)
 
     errors = check_tree(root=tmp_path)

@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING, Final
 import itertools
 import tomllib
 
-from treekle import from_plain
-
 from copybarista.delta_render import DeltaError, render
 from copybarista.toml_layout import layout, uncommented
 from copybarista.toml_lines import (
@@ -32,8 +30,10 @@ from copybarista.toml_lines import (
     parse,
     remark,
     spell,
+    spelled_key,
     split_entry,
     split_header,
+    value_key,
 )
 from copybarista.toml_lists import ListError, ListValue
 
@@ -144,7 +144,11 @@ def _with_remark(base: Entry, entry: Entry) -> Entry:
 
 def _commented(base: Entry | None, entry: Entry) -> Entry:
     """Return ``entry``'s new value written into ``base``'s comments, where it fits."""
-    if base is None:
+    # A kept value is no edit. Given its comments it would differ from the uncommented
+    # base and be written, and a merge would restate it over the source's own change.
+    if base is None or value_key(tomllib.loads(base.text)) == value_key(
+        tomllib.loads(entry.text),
+    ):
         return entry
     try:
         before, after = ListValue.parse(base.text), ListValue.parse(entry.text)
@@ -166,8 +170,8 @@ def _commented(base: Entry | None, entry: Entry) -> Entry:
 # and ``+key`` do: a removed entry takes the comments only it used; the others stay.
 def _with_list_comments(before: ListValue, after: ListValue, *, entry: Entry) -> Entry:
     """Return ``entry`` as ``before`` with the removed and appended entries applied."""
-    old = [_content(v) for v in before.values()]
-    new = [_content(v) for v in after.values()]
+    old = [spelled_key(v) for v in before.values()]
+    new = [spelled_key(v) for v in after.values()]
     kept = [v for v in old if v in new]
     if _repeats(old) or _repeats(new) or new[: len(kept)] != kept:
         return entry
@@ -468,18 +472,29 @@ def _stated(
     else:
         lead = tuple(line for line in block.lead if line.strip())
     body = "".join(f"{''.join(e.lead)}{e.text}" for e in block.entries)
-    return "".join((*lead, block.header, *extra, body, *block.tail))
+    return "".join((*lead, _delta_header(block), *extra, body, *block.tail))
 
 
 def _block_ops(old: Block, new: Block, *, extra: list[str]) -> str:
     """Return the delta block turning table ``old`` into ``new``, or ``""``."""
+    spelled = _delta_header(new)
     lead = _lead(old.lead, new.lead)
-    header = _header(old.header, new.header)
+    header = _header(old.header, spelled)
     body = "".join(extra) + _table_ops(old, new)
     if lead is None and header is None and not body:
         return ""
-    brackets = split_header(new.header)[0]
+    brackets = split_header(spelled)[0]
     return "".join((*(lead or ()), header or f"{brackets}\n", body))
+
+
+def _delta_header(block: Block) -> str:
+    """Return ``block``'s header as a delta writes it, a name read as an op escaped."""
+    if not block.path[-1].startswith(_OPS):
+        return block.header
+    rest = split_header(block.header)[1]
+    if block.array:
+        return f"[[{_escaped(block.path)}]]{rest}"
+    return f"[{_escaped(block.path)}]{rest}"
 
 
 def _header(old: str, new: str) -> str | None:
@@ -525,7 +540,9 @@ def _table_ops(old: Block, new: Block) -> str:
         if entry.key not in new_keys
     )
     kept = [key for key in old_keys if key in new_keys]
+    moved: list[KeyPath] = []
     if kept != [key for key in new_keys if key in old_keys]:
+        moved = kept
         lines.extend(f"{_op_key('!', key)} = true\n" for key in kept)
         old_keys = [key for key in old_keys if key not in kept]
     placed = list(old_keys)
@@ -541,7 +558,10 @@ def _table_ops(old: Block, new: Block) -> str:
             _added(
                 entry,
                 anchor=anchor,
-                last=not any(key in old_keys for key in new_keys[index + 1 :]),
+                # A moved key set again plainly is restated whole, in place: render
+                # moves it only to an anchor.
+                last=entry.key not in moved
+                and not any(key in old_keys for key in new_keys[index + 1 :]),
             ),
         )
     if tail := _tail(old.tail, new.tail):
@@ -604,8 +624,8 @@ def _list_ops(old: Entry, new: Entry) -> list[str] | None:
         after = ListValue.parse(new.text)
     except ListError:
         return None
-    old_values = [_content(v) for v in before.values()]
-    new_values = [_content(v) for v in after.values()]
+    old_values = [spelled_key(v) for v in before.values()]
+    new_values = [spelled_key(v) for v in after.values()]
     if _repeats(old_values) or _repeats(new_values):
         return None
     kept = [v for v in old_values if v in new_values]
@@ -643,7 +663,7 @@ def _list_ops(old: Entry, new: Entry) -> list[str] | None:
 def _added_lines(after: ListValue, *, keep: list[object]) -> ListValue:
     """Return a list of ``after``'s new entries with the comment lines above each."""
     if after.lines is None:
-        new = [v for v in after.values() if _content(v) not in keep]
+        new = [v for v in after.values() if spelled_key(v) not in keep]
         return ListValue.parse(f"v = [{', '.join(new)}]\n")
     chosen: list[str] = []
     pending: list[str] = []
@@ -651,15 +671,11 @@ def _added_lines(after: ListValue, *, keep: list[object]) -> ListValue:
         if not line.value:
             pending.append(line.text())
             continue
-        if _content(line.value) not in keep:
+        if spelled_key(line.value) not in keep:
             chosen.extend((*pending, line.text()))
         pending = []
     chosen.extend(pending)
     return ListValue.parse(f"v = [\n{''.join(chosen)}]\n")
-
-
-def _content(value: str) -> object:
-    return from_plain(tomllib.loads(f"v = {value}"), dict[str, object])["v"]
 
 
 def _repeats(values: Sequence[object]) -> bool:

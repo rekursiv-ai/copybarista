@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
-import shutil
+import hashlib
+import re
 import subprocess
 
 import pytest
@@ -27,55 +29,204 @@ from copybarista.scripts.sync_import_change import (
 )
 
 
-def _git_repo_with_commits(*, root: Path, subjects: list[str]) -> None:
-    """Initialize a Git repo at root and commit each subject in order."""
-    _git(root, "init", "-q", "-b", "main", str(root))
-    for key, value in (
-        ("user.email", "test@example.com"),
-        ("user.name", "Test"),
-        ("commit.gpgsign", "false"),
-    ):
-        _git(root, "config", key, value)
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+
+# What ``git hash-object -t tree /dev/null`` prints: the id of the empty tree.
+_EMPTY_TREE: Final = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+class FakeGit:
+    """Repositories in memory that answer the git commands the baseline walk runs.
+
+    Each answer takes the shape ``git log`` documents and git 2.50 prints: a
+    ``--format`` record ends in a newline and a ``-z`` record in a NUL, ``%s`` is the
+    message's first paragraph joined by spaces and ``%B`` the message as stored, and a
+    ref git cannot resolve exits 128. A command it does not model fails the test rather
+    than answering. A manual parity script, ``sync_import_change_git_parity.py`` in the
+    source repository, builds the same histories with real git and compares the
+    answers byte for byte.
+    """
+
+    def __init__(self) -> None:
+        self.repos: dict[Path, _Repo] = {}
+        self._made = 0
+
+    def commit(
+        self,
+        root: Path,
+        *,
+        message: str,
+        files: Mapping[str, str],
+        email: str = "t@example.com",
+    ) -> str:
+        """Write ``files`` and commit them on ``main`` as ``email``; return the SHA."""
+        repo = self.repos.setdefault(root.resolve(), _Repo())
+        repo.files.update(files)
+        self._made += 1
+        made = _Commit(
+            sha=_digest(f"commit {self._made}"),
+            tree=_digest(f"tree {sorted(repo.files.items())}"),
+            message=_stored(message),
+            email=email,
+        )
+        repo.refs["refs/heads/main"] = (made, *repo.refs.get("refs/heads/main", ()))
+        return made.sha
+
+    def amend(self, root: Path, *, message: str) -> None:
+        """Reword the tip of ``main``, as ``git commit --amend -m`` does."""
+        repo = self.repos[root.resolve()]
+        tip, *rest = repo.refs["refs/heads/main"]
+        self._made += 1
+        made = _Commit(
+            sha=_digest(f"commit {self._made}"),
+            tree=tip.tree,
+            message=_stored(message),
+            email=tip.email,
+        )
+        repo.refs["refs/heads/main"] = (made, *rest)
+
+    def branch(self, root: Path, name: str, *, at: str) -> None:
+        """Point ``refs/heads/<name>`` at the commit ``at`` of ``main``."""
+        repo = self.repos[root.resolve()]
+        history = repo.refs["refs/heads/main"]
+        start = next(index for index, each in enumerate(history) if each.sha == at)
+        repo.refs[f"refs/heads/{name}"] = history[start:]
+
+    def delete_branch(self, root: Path, name: str) -> None:
+        """Delete ``refs/heads/<name>``, as ``git branch -D`` does."""
+        del self.repos[root.resolve()].refs[f"refs/heads/{name}"]
+
+    def clone(self, source: Path, dest: Path, *, branch: str) -> None:
+        """Clone ``branch`` of ``source`` alone, as ``git clone --single-branch``."""
+        origin = self.repos[source.resolve()]
+        history = origin.refs[f"refs/heads/{branch}"]
+        self.repos[dest.resolve()] = _Repo(
+            refs={
+                f"refs/heads/{branch}": history,
+                f"refs/remotes/origin/{branch}": history,
+            },
+            files=dict(origin.files),
+            origin=origin,
+        )
+
+    def run(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path | None = None,
+        check: bool = True,
+        capture: bool = False,
+        **options: object,
+    ) -> subprocess.CompletedProcess[str]:
+        """Answer one ``_run`` of git as ``_run`` returns it.
+
+        It exits when ``check`` is set and git fails. Output comes back only when
+        ``capture`` asks for it: uncaptured, ``_run`` leaves it to the job's log.
+        """
+        del options
+        assert cwd is not None
+        done = self._answer_in(argv, cwd=cwd)
+        if check and done.returncode:
+            raise SystemExit(done.returncode)
+        return done if capture else subprocess.CompletedProcess(argv, done.returncode)
+
+    # ``init``, ``add`` and ``commit`` change it.
+    #
+    # Only ``cwd`` itself is a repository: git's search of the parent directories is not
+    # modeled.
+    def _answer_in(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        """Answer ``argv`` run in ``cwd``."""
+        # Outside a repository git refuses any command needing one, so only the
+        # program is checked there; a misspelled one must not read as "not a repo".
+        if argv[:1] != ["git"]:
+            raise AssertionError(f"FakeGit runs only git, not {argv}")
+        root = cwd.resolve()
+        if argv == ["git", "init", "--quiet", "--initial-branch=main"]:
+            (cwd / ".git").mkdir()
+            self.repos[root] = _Repo()
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        repo = self.repos.get(root)
+        if repo is None:
+            return subprocess.CompletedProcess(
+                argv,
+                128,
+                "",
+                "fatal: not a git repository (or any of the parent directories): .git\n",
+            )
+        match argv:
+            case ["git", "add", "--all"]:
+                repo.files = {
+                    str(path.relative_to(cwd)): path.read_text(encoding="utf-8")
+                    for path in cwd.rglob("*")
+                    if path.is_file() and ".git" not in path.relative_to(cwd).parts
+                }
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            case [
+                "git",
+                "-c",
+                name,
+                "-c",
+                email,
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                message,
+            ] if name.startswith("user.name=") and email.startswith("user.email="):
+                _ = self.commit(
+                    cwd,
+                    message=message,
+                    files={},
+                    email=email.removeprefix("user.email="),
+                )
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            case ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(argv, 0, f"{root}\n", "")
+            case _:
+                return _answer(argv, repo)
+
+
+@pytest.fixture
+def git(monkeypatch: pytest.MonkeyPatch) -> FakeGit:
+    """Route every ``_run`` to a fresh ``FakeGit``."""
+    fake = FakeGit()
+    monkeypatch.setattr(sync_import_change, "_run", fake.run)
+    return fake
+
+
+def _git_repo_with_commits(git: FakeGit, *, root: Path, subjects: list[str]) -> None:
+    """Commit each subject in order on ``main`` at root."""
     for i, subject in enumerate(subjects):
-        (root / "f.txt").write_text(f"{i}\n", encoding="utf-8")
-        _git(root, "add", "f.txt")
-        _git(root, "commit", "-q", "-m", subject)
-
-
-def _git(root: Path, *args: str) -> None:
-    """Run a Git command in root for test fixture setup."""
-    argv = ["git"] if args[0] == "init" else ["git", "-C", str(root)]
-    subprocess.run([*argv, *args], check=True)  # noqa: S603 -- The test constructs the Git fixture argv from fixed subcommands and paths.
-
-
-def _git_out(root: Path, *args: str) -> str:
-    """Run a Git command in root and return its stripped stdout."""
-    argv = ["git", "-C", str(root)]
-    return subprocess.run(  # noqa: S603 -- Fixed subcommands and repository paths.
-        [*argv, *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+        _ = git.commit(root, message=subject, files={"f.txt": f"{i}\n"})
 
 
 # Bodies matter here: a landed export commit is identified by the ``<label> export
 # branch: <branch>`` line the squash-merge writes into the body, not by its subject. The
 # returned SHAs are in commit order (oldest first) so a test can assert which one the
 # resolver selects.
-def _public_repo_with_messages(*, root: Path, messages: list[str]) -> list[str]:
+def _public_repo_with_messages(
+    git: FakeGit,
+    *,
+    root: Path,
+    messages: list[str],
+) -> list[str]:
     """Commit each full message (subject + body) in order; return the SHAs."""
-    _git_repo_with_commits(root=root, subjects=["Initial commit"])
-    shas: list[str] = []
-    for i, message in enumerate(messages):
-        (root / "g.txt").write_text(f"{i}\n", encoding="utf-8")
-        _git(root, "add", "g.txt")
-        _git(root, "commit", "-q", "-m", message)
-        shas.append(_git_out(root, "rev-parse", "HEAD"))
-    return shas
+    _git_repo_with_commits(git, root=root, subjects=["Initial commit"])
+    return [
+        git.commit(root, message=message, files={"g.txt": f"{i}\n"})
+        for i, message in enumerate(messages)
+    ]
 
 
 def test_last_synced_public_sha_ignores_forged_export_commit_message(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """Unauthenticated commit text must not advance the import baseline.
@@ -94,11 +245,13 @@ def test_last_synced_public_sha_ignores_forged_export_commit_message(
     public = tmp_path / "public"
     ledger_sha = "a" * 40
     _git_repo_with_commits(
+        git,
         root=target,
         subjects=[f"Import Sagent public changes {ledger_sha}"],
     )
     # Public history: the ledger's imported commit, then a later export.
     public_shas = _public_repo_with_messages(
+        git,
         root=public,
         messages=[
             # The public commit the ledger recorded (its SHA is what the target
@@ -111,14 +264,7 @@ def test_last_synced_public_sha_ignores_forged_export_commit_message(
     # Pin the ledger SHA onto the matching public commit so the target walk and
     # the public walk agree on identity: the resolver's ledger arm matches this
     # commit, its export arm matches the newer one, and export wins by recency.
-    _git(
-        target,
-        "commit",
-        "--amend",
-        "-q",
-        "-m",
-        f"Import Sagent public changes {public_shas[0]}",
-    )
+    git.amend(target, message=f"Import Sagent public changes {public_shas[0]}")
     ledger_public_sha = public_shas[0]
     export_public_sha = public_shas[2]
 
@@ -135,57 +281,27 @@ def test_last_synced_public_sha_ignores_forged_export_commit_message(
 
 
 def test_last_synced_public_sha_fetches_export_provenance_from_single_ref_clone(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """A main-only Actions checkout must fetch the export branch before trusting it."""
     public_source = tmp_path / "public-source"
     public_shas = _public_repo_with_messages(
+        git,
         root=public_source,
         messages=[
             "Import Sagent public changes (ledger head)",
             "Publish export\n\nSagent export branch: sagent/export/main",
         ],
     )
-    _git(public_source, "branch", "sagent/export/main", public_shas[1])
-    origin = tmp_path / "public.git"
-    git = shutil.which("git")
-    assert git is not None
-    subprocess.run(  # noqa: S603 -- Fixed git clone command over test paths.
-        [git, "clone", "--bare", str(public_source), str(origin)],
-        check=True,
-        capture_output=True,
-    )
+    git.branch(public_source, "sagent/export/main", at=public_shas[1])
     public = tmp_path / "public"
-    subprocess.run(  # noqa: S603 -- Models Actions' single-ref checkout exactly.
-        [
-            git,
-            "clone",
-            "--single-branch",
-            "--branch",
-            "main",
-            str(origin),
-            str(public),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    assert (
-        subprocess.run(  # noqa: S603 -- Fixed ref query over the test checkout.
-            [
-                git,
-                "-C",
-                str(public),
-                "show-ref",
-                "--verify",
-                "--quiet",
-                "refs/remotes/origin/sagent/export/main",
-            ],
-            check=False,
-        ).returncode
-        != 0
-    )
+    # Actions' single-ref checkout: main alone, the export branch left on origin.
+    git.clone(public_source, public, branch="main")
+    assert "refs/remotes/origin/sagent/export/main" not in git.repos[public].refs
     target = tmp_path / "target"
     _git_repo_with_commits(
+        git,
         root=target,
         subjects=[f"Import Sagent public changes {public_shas[0]}"],
     )
@@ -201,6 +317,7 @@ def test_last_synced_public_sha_fetches_export_provenance_from_single_ref_clone(
 
 
 def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """When the newest sync IS an import, the ledger SHA wins.
@@ -212,6 +329,7 @@ def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
     target = tmp_path / "target"
     public = tmp_path / "public"
     public_shas = _public_repo_with_messages(
+        git,
         root=public,
         messages=[
             "Publish export\n\nSagent export branch: copybarista/export/main",
@@ -220,8 +338,9 @@ def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
         ],
     )
     import_public_sha = public_shas[2]
-    _git(public, "branch", "copybarista/export/main", public_shas[0])
+    git.branch(public, "copybarista/export/main", at=public_shas[0])
     _git_repo_with_commits(
+        git,
         root=target,
         subjects=[f"Import Sagent public changes {import_public_sha}"],
     )
@@ -237,6 +356,7 @@ def test_last_synced_public_sha_prefers_the_ledger_when_it_is_newer(
 
 
 def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """A different label's export commit must not be read as this label's sync.
@@ -248,22 +368,18 @@ def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
     target = tmp_path / "target"
     public = tmp_path / "public"
     public_shas = _public_repo_with_messages(
+        git,
         root=public,
         messages=[
             "Import Sagent public changes (ledger head)",
             "Publish export\n\nConfiggle export branch: copybarista/export/main",
         ],
     )
-    _git(target, "init", "-q", "-b", "main", str(target))
-    for key, value in (
-        ("user.email", "t@example.com"),
-        ("user.name", "T"),
-        ("commit.gpgsign", "false"),
-    ):
-        _git(target, "config", key, value)
-    (target / "f.txt").write_text("x\n", encoding="utf-8")
-    _git(target, "add", "f.txt")
-    _git(target, "commit", "-q", "-m", f"Import Sagent public changes {public_shas[0]}")
+    _ = git.commit(
+        target,
+        message=f"Import Sagent public changes {public_shas[0]}",
+        files={"f.txt": "x\n"},
+    )
 
     result = last_synced_public_sha(
         target_dir=target,
@@ -277,6 +393,7 @@ def test_last_synced_public_sha_export_arm_scopes_to_sync_label(
 
 
 def test_last_synced_public_sha_without_public_dir_walks_only_the_ledger(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """Omitting the public checkout preserves the original ledger-only behavior.
@@ -286,6 +403,7 @@ def test_last_synced_public_sha_without_public_dir_walks_only_the_ledger(
     """
     sha = "d" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[f"Import Sagent public changes {sha}"],
     )
@@ -994,56 +1112,6 @@ def test_validate_target_runs_checks_against_exported_tree(
     ]
 
 
-@pytest.mark.cli_bash
-@pytest.mark.parametrize(
-    ("commands", "ok"),
-    [
-        (("cd sub", "test -f marker"), True),
-        (("false", "true"), False),
-        (("false | true", "true"), False),
-    ],
-    ids=["cd-carries", "stops-at-failure", "pipefail"],
-)
-def test_validation_runs_as_one_github_shell(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    commands: tuple[str, ...],
-    ok: bool,
-) -> None:
-    """A bare ``cd`` passed the one-shell-per-command gate and failed public CI."""
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "marker").touch()
-
-    def fake_export(
-        *,
-        request: ImportRequest,
-        project: Path,
-        runner_temp: Path,
-        requirements: Path,
-    ) -> Path:
-        del request, project, runner_temp, requirements
-        return tmp_path
-
-    monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
-
-    def validate() -> None:
-        _validate_target(
-            request=replace(
-                _import_request(target_dir=tmp_path),
-                validation_commands=commands,
-            ),
-            project=tmp_path,
-            runner_temp=tmp_path,
-            requirements=tmp_path / "requirements.txt",
-        )
-
-    if ok:
-        validate()
-    else:
-        with pytest.raises(SystemExit):
-            validate()
-
-
 def test_export_public_tree_runs_copybarista_export(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1173,6 +1241,7 @@ def test_export_copybarista_requirements_exports_group_from_lock(
 
 
 def test_import_commit_subject_round_trips_through_baseline_walk(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     # The SHA written into the import commit subject must be the exact SHA the
@@ -1180,6 +1249,7 @@ def test_import_commit_subject_round_trips_through_baseline_walk(
     # workflow level (recording the run SHA instead of the imported head SHA).
     sha = "3" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[import_commit_subject_prefix("Sagent") + sha],
     )
@@ -1212,11 +1282,14 @@ def test_import_commit_subject_refuses_a_reworded_prefix() -> None:
         import_commit_subject("Wesearch", "not-a-sha")
 
 
-def test_import_commit_subject_round_trips_a_full_sha(tmp_path: Path) -> None:
+def test_import_commit_subject_round_trips_a_full_sha(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     """What the writer accepts, the baseline walk recovers unchanged."""
     sha = "7" * 40
     subject = import_commit_subject("Wesearch", sha)
-    _git_repo_with_commits(root=tmp_path, subjects=[subject])
+    _git_repo_with_commits(git, root=tmp_path, subjects=[subject])
 
     assert (
         last_synced_public_sha(
@@ -1228,10 +1301,14 @@ def test_import_commit_subject_round_trips_a_full_sha(tmp_path: Path) -> None:
     )
 
 
-def test_last_synced_public_sha_returns_newest_imported_sha(tmp_path: Path) -> None:
+def test_last_synced_public_sha_returns_newest_imported_sha(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     older = "a" * 40
     newer = "b" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[
             f"Import Sagent public changes {older}",
@@ -1252,6 +1329,7 @@ def test_last_synced_public_sha_returns_newest_imported_sha(tmp_path: Path) -> N
 
 
 def test_last_synced_public_sha_reads_a_squash_merged_subject(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     """A squash-merged import still records the baseline.
@@ -1265,6 +1343,7 @@ def test_last_synced_public_sha_reads_a_squash_merged_subject(
     older = "a" * 40
     newer = "b" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[
             f"Import Sagent public changes {older}",
@@ -1282,10 +1361,14 @@ def test_last_synced_public_sha_reads_a_squash_merged_subject(
     )
 
 
-def test_last_synced_public_sha_ignores_trailing_prose(tmp_path: Path) -> None:
+def test_last_synced_public_sha_ignores_trailing_prose(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     """Only the PR-number suffix is tolerated, not arbitrary trailing text."""
     good = "a" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[
             f"Import Sagent public changes {good}",
@@ -1303,10 +1386,14 @@ def test_last_synced_public_sha_ignores_trailing_prose(tmp_path: Path) -> None:
     )
 
 
-def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
+def test_last_synced_public_sha_scopes_to_sync_label(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     # A different label's imports must not be mistaken for this label's baseline.
     sagent = "c" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[
             f"Import Sagent public changes {sagent}",
@@ -1324,8 +1411,11 @@ def test_last_synced_public_sha_scopes_to_sync_label(tmp_path: Path) -> None:
     )
 
 
-def test_last_synced_public_sha_raises_without_prior_import(tmp_path: Path) -> None:
-    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+def test_last_synced_public_sha_raises_without_prior_import(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
+    _git_repo_with_commits(git, root=tmp_path, subjects=["Initial commit"])
 
     with pytest.raises(
         ImportBaseError,
@@ -1339,12 +1429,13 @@ def test_last_synced_public_sha_raises_without_prior_import(tmp_path: Path) -> N
 
 
 def test_last_synced_public_sha_returns_fallback_without_prior_import(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     # First import: no landed history yet, so the caller-supplied baseline
     # (the pushed commit's parent) stands in for the merge ancestor.
     parent = "f" * 40
-    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+    _git_repo_with_commits(git, root=tmp_path, subjects=["Initial commit"])
 
     assert (
         last_synced_public_sha(
@@ -1357,11 +1448,15 @@ def test_last_synced_public_sha_returns_fallback_without_prior_import(
     )
 
 
-def test_last_synced_public_sha_matches_label_literally(tmp_path: Path) -> None:
+def test_last_synced_public_sha_matches_label_literally(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     # A label with regex metacharacters must match by literal text, not as a
     # git --grep regex that could match unintended subjects.
     sha = "1" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[f"Import C++.NET public changes {sha}"],
     )
@@ -1377,6 +1472,7 @@ def test_last_synced_public_sha_matches_label_literally(tmp_path: Path) -> None:
 
 
 def test_last_synced_public_sha_ignores_incidental_sha_in_subject(
+    git: FakeGit,
     tmp_path: Path,
 ) -> None:
     # A 40-hex token elsewhere in an unrelated subject must not be mistaken for
@@ -1384,6 +1480,7 @@ def test_last_synced_public_sha_ignores_incidental_sha_in_subject(
     incidental = "9" * 40
     landed = "2" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[
             f"Import Sagent public changes {landed}",
@@ -1402,12 +1499,14 @@ def test_last_synced_public_sha_ignores_incidental_sha_in_subject(
 
 
 def test_main_print_synced_base_prints_and_skips_import(
+    git: FakeGit,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     sha = "e" * 40
     _git_repo_with_commits(
+        git,
         root=tmp_path,
         subjects=[f"Import Sagent public changes {sha}"],
     )
@@ -1433,12 +1532,13 @@ def test_main_print_synced_base_prints_and_skips_import(
 
 
 def test_main_print_synced_base_emits_fallback_without_history(
+    git: FakeGit,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     parent = "7" * 40
-    _git_repo_with_commits(root=tmp_path, subjects=["Initial commit"])
+    _git_repo_with_commits(git, root=tmp_path, subjects=["Initial commit"])
 
     def fail_run_import_sync(_: ImportRequest) -> None:
         raise AssertionError("import must not run in print-synced-base mode")
@@ -1463,6 +1563,7 @@ def test_main_print_synced_base_emits_fallback_without_history(
 
 
 def test_main_print_synced_base_prefers_export_from_public_dir(
+    git: FakeGit,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1475,14 +1576,16 @@ def test_main_print_synced_base_prefers_export_from_public_dir(
     target = tmp_path / "target"
     public = tmp_path / "public"
     public_shas = _public_repo_with_messages(
+        git,
         root=public,
         messages=[
             "Import Sagent public changes (ledger head)",
             "Publish export\n\nSagent export branch: copybarista/export/main",
         ],
     )
-    _git(public, "branch", "copybarista/export/main", public_shas[1])
+    git.branch(public, "copybarista/export/main", at=public_shas[1])
     _git_repo_with_commits(
+        git,
         root=target,
         subjects=[f"Import Sagent public changes {public_shas[0]}"],
     )
@@ -1648,7 +1751,7 @@ def test_import_pr_unrecognized_auto_merge_failure_exits_with_its_code(
     assert raised.value.code == 4
 
 
-def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
+def test_pr_title_sha_is_readable_by_the_ledger(git: FakeGit, tmp_path: Path) -> None:
     """The title an import writes must parse as the marker it later reads.
 
     ``_open_or_update_target_pr`` wrote an abbreviated SHA while
@@ -1658,7 +1761,7 @@ def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
     """
     full = "0e8b8406cdd2" + "0" * 28
     title = f"Import Sagent public changes {sync_import_change._pr_title_sha(full)}"
-    _git_repo_with_commits(root=tmp_path, subjects=[title])
+    _git_repo_with_commits(git, root=tmp_path, subjects=[title])
 
     assert (
         last_synced_public_sha(
@@ -1670,7 +1773,7 @@ def test_pr_title_sha_is_readable_by_the_ledger(tmp_path: Path) -> None:
     )
 
 
-def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
+def test_import_title_feeds_the_export_guard(git: FakeGit, tmp_path: Path) -> None:
     """The import's own title must satisfy the export's data-loss guard.
 
     Every component here passed its own test while the loop stayed broken:
@@ -1687,7 +1790,7 @@ def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
         f"Import Sagent public changes {sync_import_change._pr_title_sha(public_sha)}"
     )
     source = tmp_path / "source"
-    _git_repo_with_commits(root=source, subjects=[title])
+    _git_repo_with_commits(git, root=source, subjects=[title])
 
     # The ledger the guard reads.
     assert (
@@ -1700,7 +1803,10 @@ def test_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
     ), "the import's title must parse as the marker the guard reads"
 
 
-def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> None:
+def test_squash_merged_import_title_feeds_the_export_guard(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     """The same holds once GitHub appends its squash-merge suffix."""
     public_sha = "1" * 40
     title = (
@@ -1708,7 +1814,7 @@ def test_squash_merged_import_title_feeds_the_export_guard(tmp_path: Path) -> No
         f"{sync_import_change._pr_title_sha(public_sha)} (#123)"
     )
     source = tmp_path / "source"
-    _git_repo_with_commits(root=source, subjects=[title])
+    _git_repo_with_commits(git, root=source, subjects=[title])
 
     assert (
         last_synced_public_sha(
@@ -1762,7 +1868,6 @@ def test_export_public_tree_initializes_git_repo(
     assert calls.index(git_calls[0]) > 0, "export must precede git init"
 
 
-@pytest.mark.cli_git
 def test_export_public_tree_gives_validation_a_head_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1775,14 +1880,14 @@ def test_export_public_tree_gives_validation_a_head_commit(
     """
     runner_temp = tmp_path / "runner"
     tree = runner_temp / "copybarista-validation-tree"
-    real_run = sync_import_change._run
+    git = FakeGit()
 
     def fake_run(
         argv: list[str],
         **kwargs: Path | None,
     ) -> subprocess.CompletedProcess[str]:
         if argv[:1] == ["git"]:
-            return real_run(argv, cwd=kwargs.get("cwd"))
+            return git.run(argv, cwd=kwargs.get("cwd"))
         tree.mkdir(parents=True)
         (tree / "README.md").write_text("Exported.\n", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)
@@ -1796,8 +1901,11 @@ def test_export_public_tree_gives_validation_a_head_commit(
         requirements=tmp_path / "copybarista-requirements.txt",
     )
 
-    head = real_run(["git", "rev-parse", "HEAD"], cwd=tree, check=False, capture=True)
+    head = git.run(["git", "rev-parse", "HEAD"], cwd=tree, check=False)
     assert head.returncode == 0, head.stderr
+    (commit,) = git.repos[tree.resolve()].refs["refs/heads/main"]
+    assert commit.email == "copybarista@example.com"
+    assert git.repos[tree.resolve()].files == {"README.md": "Exported.\n"}
 
 
 def test_no_op_import_still_writes_the_ledger_commit(
@@ -1849,7 +1957,10 @@ def test_no_op_import_still_writes_the_ledger_commit(
     assert "--allow-empty" in commits[0], commits[0]
 
 
-def test_ledger_subject_satisfies_the_export_guard(tmp_path: Path) -> None:
+def test_ledger_subject_satisfies_the_export_guard(
+    git: FakeGit,
+    tmp_path: Path,
+) -> None:
     """The subject this module writes is the one the export guard parses.
 
     Two modules agree on a string format by convention alone; an abbreviated
@@ -1860,12 +1971,533 @@ def test_ledger_subject_satisfies_the_export_guard(tmp_path: Path) -> None:
     subject = import_commit_subject_prefix("Priml") + sha
     root = tmp_path / "source"
     root.mkdir()
-    _git_repo_with_commits(root=root, subjects=["init", subject, "later work"])
+    _git_repo_with_commits(git, root=root, subjects=["init", subject, "later work"])
 
     assert (
         last_synced_public_sha(target_dir=root, sync_label="Priml", base_branch="main")
         == sha
     )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _Commit:
+    """A commit's id, its tree's id, and its message as git stores it."""
+
+    sha: str
+    tree: str
+    message: str
+    email: str
+
+
+@dataclass(kw_only=True, slots=True)
+class _Repo:
+    """Each ref's history newest first, the worktree's files, and the origin."""
+
+    refs: dict[str, tuple[_Commit, ...]] = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=dict)
+    origin: _Repo | None = None
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode(), usedforsecurity=False).hexdigest()
+
+
+def _stored(message: str) -> str:
+    """Return ``message`` as ``git commit -m`` stores it, after its whitespace cleanup."""
+    lines = "\n".join(line.rstrip() for line in message.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", lines).strip("\n") + "\n"
+
+
+def _answer(argv: list[str], repo: _Repo) -> subprocess.CompletedProcess[str]:
+    """Answer one git argv the way git 2.50 does, or fail on one it does not model."""
+    match argv:
+        case ["git", "log", ref, "--fixed-strings", grep, "--format=%s"] if (
+            grep.startswith("--grep=")
+        ):
+            needle = grep.removeprefix("--grep=")
+            return _log(
+                argv,
+                repo,
+                ref,
+                lambda each: (
+                    f"{_subject(each.message)}\n"
+                    if any(needle in line for line in each.message.splitlines())
+                    else ""
+                ),
+            )
+        case ["git", "log", ref, "-z", "--format=%H%x00%T%x00%B"]:
+            return _log(
+                argv,
+                repo,
+                ref,
+                lambda each: f"{each.sha}\0{each.tree}\0{each.message}\0",
+            )
+        case ["git", "log", ref, "--format=%T"]:
+            return _log(argv, repo, ref, lambda each: f"{each.tree}\n")
+        case ["git", "log", span, "--format=%h%x00%ae%x00%s"] if ".." in span:
+            return _log_span(argv, repo, span)
+        case ["git", "rev-parse", "HEAD"]:
+            history = repo.refs.get("refs/heads/main", ())
+            if not history:
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    "HEAD\n",
+                    "fatal: ambiguous argument 'HEAD': unknown revision or path not in "
+                    "the working tree.\n",
+                )
+            return subprocess.CompletedProcess(argv, 0, f"{history[0].sha}\n", "")
+        case ["git", "hash-object", "-t", "tree", "/dev/null"]:
+            return subprocess.CompletedProcess(argv, 0, f"{_EMPTY_TREE}\n", "")
+        case ["git", "fetch", "--no-tags", "origin", refspec] if refspec.startswith(
+            "+",
+        ):
+            return _fetch(argv, repo, refspec.removeprefix("+"))
+        case _:
+            raise AssertionError(f"FakeGit does not model {argv}")
+
+
+def _log(
+    argv: list[str],
+    repo: _Repo,
+    ref: str,
+    record: Callable[[_Commit], str],
+) -> subprocess.CompletedProcess[str]:
+    """Print ``record`` of each commit of ``ref``, newest first, as ``git log`` does."""
+    history = repo.refs.get(ref if ref.startswith("refs/") else f"refs/heads/{ref}")
+    if history is None:
+        return subprocess.CompletedProcess(
+            argv,
+            128,
+            "",
+            f"fatal: ambiguous argument '{ref}': unknown revision or path not in the "
+            "working tree.\n",
+        )
+    return subprocess.CompletedProcess(argv, 0, "".join(map(record, history)), "")
+
+
+# A ``base`` git cannot resolve fails the range; the empty tree excludes nothing.
+def _log_span(
+    argv: list[str],
+    repo: _Repo,
+    span: str,
+) -> subprocess.CompletedProcess[str]:
+    """Print each commit of ``base..head`` as ``%h%x00%ae%x00%s``, newest first."""
+    base, _, head = span.partition("..")
+    shown = _rev_history(repo, head)
+    if shown is None:
+        raise AssertionError(f"FakeGit does not model an unknown head: {argv}")
+    hidden = () if base == _EMPTY_TREE else _rev_history(repo, base)
+    if hidden is None:
+        return subprocess.CompletedProcess(
+            argv,
+            128,
+            "",
+            f"fatal: Invalid revision range {span}\n",
+        )
+    return subprocess.CompletedProcess(
+        argv,
+        0,
+        "".join(
+            f"{each.sha[:7]}\0{each.email}\0{_subject(each.message)}\n"
+            for each in shown
+            if each not in hidden
+        ),
+        "",
+    )
+
+
+def _rev_history(repo: _Repo, rev: str) -> tuple[_Commit, ...] | None:
+    """Return the history ``rev`` names (``HEAD``, a branch or a SHA), or None."""
+    named = repo.refs.get("refs/heads/main" if rev == "HEAD" else f"refs/heads/{rev}")
+    if named is not None:
+        return named
+    return next(
+        (
+            history[index:]
+            for history in repo.refs.values()
+            for index, each in enumerate(history)
+            if each.sha == rev
+        ),
+        None,
+    )
+
+
+def _fetch(
+    argv: list[str],
+    repo: _Repo,
+    refspec: str,
+) -> subprocess.CompletedProcess[str]:
+    """Copy ``origin``'s ref into a local one, as a forced ``git fetch`` does."""
+    source, _, target = refspec.partition(":")
+    if repo.origin is None:
+        return subprocess.CompletedProcess(
+            argv,
+            128,
+            "",
+            "fatal: 'origin' does not appear to be a git repository\n",
+        )
+    history = repo.origin.refs.get(source)
+    if history is None:
+        return subprocess.CompletedProcess(
+            argv,
+            128,
+            "",
+            f"fatal: couldn't find remote ref {source}\n",
+        )
+    repo.refs[target] = history
+    return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+def _subject(message: str) -> str:
+    """Return ``%s``: the message's first paragraph, its lines joined by spaces."""
+    return " ".join(message.split("\n\n", 1)[0].splitlines())
+
+
+@dataclass(slots=True, kw_only=True)
+class RecordingRun:
+    """``subprocess.run`` in place: records each call, exits with ``returncode``."""
+
+    returncode: int = 0
+    calls: list[tuple[list[str], dict[str, object]]] = field(default_factory=list)
+
+    def __call__(
+        self,
+        argv: list[str],
+        **options: object,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append((argv, options))
+        return subprocess.CompletedProcess(argv, self.returncode, "out", "err")
+
+
+def test_a_command_is_logged_and_run_without_the_callers_virtualenv(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    ran = RecordingRun()
+    monkeypatch.setattr(sync_import_change.subprocess, "run", ran)
+    monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere/.venv")
+    monkeypatch.setenv("KEPT", "1")
+
+    done = sync_import_change._run(["uv", "sync"], cwd=tmp_path, capture=True)
+
+    assert done.stdout == "out"
+    assert capsys.readouterr().err == "+ uv sync\n"
+    ((argv, options),) = ran.calls
+    env = options.pop("env")
+    assert isinstance(env, dict)
+    assert "VIRTUAL_ENV" not in env
+    assert env["KEPT"] == "1"
+    assert (argv, options) == (
+        ["uv", "sync"],
+        {
+            "cwd": tmp_path,
+            "check": False,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        },
+    )
+
+
+def test_a_failed_checked_command_exits_with_its_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sync_import_change.subprocess,
+        "run",
+        RecordingRun(returncode=3),
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        sync_import_change._run(["git", "push"])
+    assert exited.value.code == 3
+    assert sync_import_change._run(["git", "push"], check=False).returncode == 3
+
+
+def test_main_runs_with_the_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sync_import_change, "run", _seven)
+
+    assert sync_import_change.main() == 7
+
+
+@pytest.mark.parametrize(
+    ("argv", "missing"),
+    [
+        (["--public-base-ref", "b", "--public-head-ref", "h"], "--project-path"),
+        (["--project-path", "p", "--public-head-ref", "h"], "--public-base-ref"),
+        (["--project-path", "p", "--public-base-ref", "b"], "--public-head-ref"),
+    ],
+)
+def test_run_requires_each_import_input(
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    missing: str,
+) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        sync_import_change.run(argv)
+
+    assert f"{missing} is required for an import" in capsys.readouterr().err
+
+
+def test_open_pr_only_opens_the_pr_and_imports_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[ImportRequest] = []
+
+    def refuse(**_: object) -> Path:
+        raise AssertionError("an open-PR-only run exports nothing")
+
+    monkeypatch.setattr(sync_import_change, "_export_copybarista_requirements", refuse)
+
+    def open_pr(*, request: ImportRequest) -> None:
+        opened.append(request)
+
+    monkeypatch.setattr(sync_import_change, "_open_or_update_target_pr", open_pr)
+    request = replace(_import_request(target_dir=tmp_path), open_pr_only=True)
+
+    sync_import_change.run_import_sync(request)
+
+    assert opened == [request]
+
+
+def test_a_red_validation_off_main_records_no_import_and_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing: list[ImportRequest] = []
+
+    def validation_failure(**_: object) -> None:
+        raise SystemExit(1)
+
+    monkeypatch.setattr(
+        sync_import_change,
+        "_export_copybarista_requirements",
+        _requirements_in_runner_temp,
+    )
+    monkeypatch.setattr(sync_import_change, "_run_import_change", _import_nothing)
+    monkeypatch.setattr(sync_import_change, "_validate_target", validation_failure)
+    monkeypatch.setattr(sync_import_change, "_log_missing_import", missing.append)
+    request = _import_request(target_dir=tmp_path)
+
+    with pytest.raises(SystemExit, match="1"):
+        sync_import_change.run_import_sync(request)
+
+    assert missing == [request]
+    assert not request.validation_failure_marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("branch", "valid"),
+    [
+        ("copybarista/import/sha-1", True),
+        ("main", False),
+        ("-x", False),
+        ("/x", False),
+        ("x/", False),
+        ("x.", False),
+        ("x.lock", False),
+        ("x..y", False),
+        # Git refuses a component that leads with ``.`` or ends ``.lock``.
+        ("x/.y", False),
+        ("x.lock/y", False),
+    ],
+)
+def test_valid_git_branch_name_refuses_what_a_force_push_must_not_name(
+    branch: str,
+    valid: bool,
+) -> None:
+    assert sync_import_change.valid_git_branch_name(branch) is valid
+
+
+def test_run_gh_replays_an_uncaptured_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, "out\n", "err\n")
+
+    monkeypatch.setattr(sync_import_change, "_run", run)
+
+    sync_import_change._run_gh(["gh", "pr", "list"], cwd=Path("w"))
+
+    assert capsys.readouterr()[:2] == ("out\n", "err\n")
+
+
+def test_run_gh_returns_an_unchecked_failure_without_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "not found\n")
+
+    monkeypatch.setattr(sync_import_change, "_run", run)
+
+    result = sync_import_change._run_gh(
+        ["gh", "pr", "view"],
+        cwd=Path("w"),
+        check=False,
+    )
+
+    assert (result.returncode, len(calls)) == (1, 1)
+
+
+def test_public_tree_for_import_without_a_relock_is_the_source(tmp_path: Path) -> None:
+    assert (
+        sync_import_change._public_tree_for_import(
+            source=tmp_path / "public",
+            destination=tmp_path / "out",
+            refresh_public_lockfile=False,
+        )
+        == tmp_path / "public"
+    )
+
+
+def test_export_public_tree_replaces_a_stale_tree_and_seeds_the_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner_temp = tmp_path / "runner"
+    tree = runner_temp / "copybarista-validation-tree"
+    (tree / "stale").mkdir(parents=True)
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "uv.lock").write_text("seed lock\n", encoding="utf-8")
+    seeded: list[str] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if argv[-3:-1] == ["--folder-dir", str(tree)]:
+            assert not tree.exists()
+            tree.mkdir(parents=True)
+            (tree / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        if argv[:2] == ["uv", "lock"]:
+            seeded.append((tree / "uv.lock").read_text(encoding="utf-8"))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    sync_import_change._export_public_tree(
+        request=replace(
+            _import_request(target_dir=target),
+            refresh_public_lockfile=True,
+        ),
+        project=target / "package",
+        runner_temp=runner_temp,
+        requirements=tmp_path / "requirements.txt",
+    )
+
+    assert seeded == ["seed lock\n"]
+    assert not (tree / "stale").exists()
+
+
+def test_an_open_import_pr_is_edited_in_place(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    github_calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n")
+
+    def run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        github_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sync_import_change, "_run", run)
+    monkeypatch.setattr(sync_import_change, "_run_gh", run_gh)
+    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", _pr_exists)
+    request = replace(_import_request(target_dir=tmp_path), auto_merge=False)
+
+    sync_import_change._open_or_update_target_pr(request=request)
+
+    assert [argv[:4] for argv in github_calls] == [["gh", "pr", "edit", request.branch]]
+
+
+@pytest.mark.parametrize(
+    ("porcelain", "changed"),
+    [(" M package/a.py\n", True), ("", False)],
+)
+def test_git_has_changes_reads_git_status_under_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+    porcelain: str,
+    changed: bool,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(argv: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, options))
+        return subprocess.CompletedProcess(argv, 0, stdout=porcelain)
+
+    monkeypatch.setattr(sync_import_change, "_run", run)
+
+    assert (
+        sync_import_change._git_has_changes(path=Path("t"), rel=Path("package"))
+        is changed
+    )
+    assert calls == [
+        (
+            ["git", "status", "--porcelain", "package"],
+            {"cwd": Path("t"), "check": False, "capture": True},
+        ),
+    ]
+
+
+def test_newest_synced_public_sha_is_empty_when_no_commit_is_reflected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = FakeGit()
+    git.commit(tmp_path, message="Public change", files={"f.txt": "x\n"})
+    monkeypatch.setattr(sync_import_change, "_run", git.run)
+
+    assert (
+        sync_import_change._newest_synced_public_sha(
+            public_dir=tmp_path,
+            base_branch="main",
+            sync_label="Package",
+            ledger_sha="b" * 40,
+        )
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Publish\n\nPackage export branch: main\n",
+        "Publish\n\nPackage export branch: pkg/export/..\n",
+        "Publish\n",
+    ],
+)
+def test_export_branch_from_message_refuses_a_malformed_claim(message: str) -> None:
+    assert (
+        sync_import_change._export_branch_from_message(
+            message=message,
+            sync_label="Package",
+        )
+        == ""
+    )
+
+
+def _seven() -> int:
+    return 7
+
+
+def _requirements_in_runner_temp(*, target_dir: Path, runner_temp: Path) -> Path:
+    del target_dir
+    return runner_temp / "requirements.txt"
+
+
+def _import_nothing(**_: object) -> None:
+    return None
+
+
+def _pr_exists(**_: object) -> bool:
+    return True
 
 
 if __name__ == "__main__":

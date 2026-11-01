@@ -270,10 +270,9 @@ def _run_copybarista_sample(
     phases["manifest"] = time.perf_counter() - manifest_started
 
     cleanup_started = time.perf_counter()
+    # No staging cleanup: `consume_staging` moved the staged tree into place.
     if destination.exists():
         shutil.rmtree(destination)
-    if staging.exists():
-        shutil.rmtree(staging)
     phases["cleanup"] = time.perf_counter() - cleanup_started
     return BenchmarkSample(
         total_sec=time.perf_counter() - total_started,

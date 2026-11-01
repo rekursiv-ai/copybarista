@@ -13,8 +13,6 @@ from typing import Final
 import itertools
 import tomllib
 
-from treekle import from_plain
-
 from copybarista.toml_lines import (
     Block,
     Document,
@@ -24,9 +22,11 @@ from copybarista.toml_lines import (
     parse,
     remark,
     spell,
+    spelled_key,
     split_entry,
     split_header,
     split_key,
+    value_key,
 )
 from copybarista.toml_lists import ListError, ListValue
 
@@ -107,18 +107,16 @@ def _separated(delta: Document) -> Document:
 
 def _states_top(work: _Work, *, delta: Document) -> bool:
     """Return whether the delta stated, exactly, the lead of what now opens the body."""
-    first = next(
+    # The root table has no header, so its first key opens the body; with no table or
+    # key left, nothing does, and no lead below can match.
+    top = next(
         (
-            (t, t.entries[0] if not t.header and t.entries else None)
+            t.path if t.header else t.entries[0].key
             for t in work.tables
             if t.header or t.entries
         ),
         None,
     )
-    if first is None:
-        return False
-    table, entry = first
-    path = table.path if entry is None else entry.key
     for block in delta.blocks:
         leads = (
             [(block.path, block.lead)]
@@ -126,7 +124,7 @@ def _states_top(work: _Work, *, delta: Document) -> bool:
             else [(_split_op(e.key)[1], e.lead) for e in block.entries]
         )
         for at, lead in leads:
-            if at == path and lead and lead[-1].strip() == _CLEAR:
+            if at == top and lead and lead[-1].strip() == _CLEAR:
                 return True
     return False
 
@@ -578,7 +576,8 @@ def _apply_block(
     if block.array and op in {"+", "-"}:
         _apply_array(work, block=block, op=op, path=path)
         return
-    if block.array and not op:
+    # ``=`` only escapes a name spelled like an operation: the element is added.
+    if block.array and op in {"", "="}:
         _add_element(work, block=block, path=_literal_path(path))
         return
     path = _literal_path(path)
@@ -617,17 +616,12 @@ def _add_element(work: _Work, *, block: Block, path: KeyPath) -> None:
         (t for t in work.tables if t.array and t.path == path and not t.header),
         None,
     )
-    base = ["\n"] if marker is None else marker.lead
-    lead = _wanted(block.lead, base=base)
-    element = _Table(
-        lead=base if lead is None else lead,
-        header=block.header,
+    element = _new_table(
+        block,
         path=path,
-        array=True,
-        entries=list(block.entries),
-        tail=list(block.tail),
-        added=True,
+        lead=["\n"] if marker is None else marker.lead,
     )
+    element.entries.extend(block.entries)
     if marker is not None:
         work.tables[work.tables.index(marker)] = element
         return
@@ -768,10 +762,8 @@ def _body(table: _Table) -> str:
 
 
 def _content(text: str) -> object:
-    try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as err:
-        raise DeltaError(f"Cannot parse a table of the delta: {err}") from err
+    # Only a parsed document's own entries reach here, so they parse.
+    return value_key(tomllib.loads(text))
 
 
 def _apply_entry(
@@ -786,8 +778,8 @@ def _apply_entry(
     anchor: KeyPath | None = None
     if op == "^":
         anchor = split_key(key[0][1:]) if key[0] != "^" else ()
-        key = key[1:]
-        op = ""
+        # The anchored key's last part may carry an ``=`` escape of its own.
+        op, key = _split_op(key[1:])
     # ``_split_op`` already took the operation, or the ``=`` escape, off the last part.
     key = (*_literal_path(key[:-1]), key[-1])
     path = (*at, *key)
@@ -850,19 +842,14 @@ def _remove(work: _Work, *, path: KeyPath, values: list[str], where: str) -> Non
         try:
             edited = edited.without([value])
         except ListError as err:
-            wanted = _value(value)
             raise DeltaError(
-                f"delta removes {wanted!r} from {where!r}, which lacks it",
+                f"delta removes {value} from {where!r}, which lacks it",
             ) from err
     table.entries[index] = replace(current, text=edited.text())
 
 
-def _value(spelled: str) -> object:
-    return from_plain(tomllib.loads(f"v = {spelled}"), dict[str, object])["v"]
-
-
 def _remove_table(work: _Work, *, path: KeyPath, value: str, where: str) -> None:
-    wanted = _value(value)
+    wanted = spelled_key(value)
     match = next(
         (
             t

@@ -6,10 +6,13 @@ from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+import re
+
 import pytest
 
 from copybarista.config import (
     FileCopy,
+    FileMove,
     FileSelection,
     FileWrite,
     FolderDestination,
@@ -19,7 +22,7 @@ from copybarista.config import (
     parse_config,
 )
 from copybarista.errors import ExportError
-from copybarista.workflow import WorkflowRunner
+from copybarista.workflow import MoveSequence, WorkflowRunner
 
 
 if TYPE_CHECKING:
@@ -453,6 +456,147 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
     assert [(entry.source, entry.destination) for entry in staged.files] == [
         ("project/_stubs/pkg/__init__.py", "pkg/__init__.py"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("rel", "destination"),
+    [
+        ("README.md", "docs/README.md"),
+        ("pkg/a.py", "lib/pkg/a.py"),
+        ("pkgs/a.py", "pkgs/a.py"),
+        ("other.py", "other.py"),
+    ],
+)
+def test_move_sequence_relocates_an_exact_path_or_the_tree_under_it(
+    rel: str,
+    destination: str,
+):
+    moves = MoveSequence(
+        moves=(
+            FileMove(path="README.md", destination="docs/README.md"),
+            FileMove(path="pkg", destination="lib/pkg"),
+        ),
+    )
+
+    assert moves.destination_path(rel) == destination
+
+
+def test_workflow_runner_rejects_a_directory_copy_over_a_selected_file(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project/sub").mkdir(parents=True)
+    (source_ref / "project/sub/README.md").write_text("project\n", encoding="utf-8")
+    (source_ref / "shared").mkdir()
+    (source_ref / "shared/README.md").write_text("shared\n", encoding="utf-8")
+
+    with pytest.raises(
+        ExportError,
+        match=re.escape(
+            "Export destination already exists: sub/README.md from shared/README.md",
+        ),
+    ):
+        WorkflowRunner(
+            config=_config(copies=(FileCopy(source="shared", destination="sub"),)),
+            source_ref=source_ref,
+        ).stage(tmp_path / "stage")
+
+
+def test_workflow_runner_rejects_a_copy_source_linked_outside_the_checkout(
+    tmp_path: Path,
+):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (source_ref / "shared").symlink_to(outside)
+
+    with pytest.raises(
+        ExportError,
+        match="Copied source escapes source checkout: shared",
+    ):
+        WorkflowRunner(
+            config=_config(copies=(FileCopy(source="shared", destination="lib"),)),
+            source_ref=source_ref,
+        ).stage(tmp_path / "stage")
+
+
+def test_workflow_runner_skips_a_file_copy_its_own_filter_excludes(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "project/app.py").write_text("app\n", encoding="utf-8")
+    (source_ref / "shared").mkdir()
+    (source_ref / "shared/notes.txt").write_text("notes\n", encoding="utf-8")
+
+    staged = WorkflowRunner(
+        config=_config(
+            copies=(
+                FileCopy(
+                    source="shared/notes.txt",
+                    destination="notes.txt",
+                    exclude=("*.txt",),
+                ),
+            ),
+        ),
+        source_ref=source_ref,
+    ).stage(tmp_path / "stage")
+
+    assert not (staged.root / "notes.txt").exists()
+    assert [entry.destination for entry in staged.files] == ["app.py"]
+
+
+def test_workflow_runner_rejects_a_selected_pyproject_beside_its_delta(
+    tmp_path: Path,
+):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "pyproject.toml").write_text("b = 1\n", encoding="utf-8")
+    (source_ref / "project/pyproject.toml").write_text("b = 3\n", encoding="utf-8")
+    (source_ref / "project/pyproject.delta.toml").write_text(
+        'b = 2\n\n[pyproject]\nbase = "pyproject.toml"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ExportError,
+        match=re.escape(
+            "Export destination already exists: pyproject.toml from "
+            "project/pyproject.delta.toml",
+        ),
+    ):
+        WorkflowRunner(
+            config=replace(
+                _config(),
+                files=replace(
+                    _config().files,
+                    exclude=("pyproject.delta.toml",),
+                    pyproject="project/pyproject.delta.toml",
+                ),
+            ),
+            source_ref=source_ref,
+        ).stage(tmp_path / "stage")
+
+
+def test_workflow_runner_reports_how_long_each_phase_took(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    (source_ref / "project/app.py").write_text("app\n", encoding="utf-8")
+    phases: list[tuple[str, float]] = []
+
+    def record(phase: str, elapsed_sec: float) -> None:
+        phases.append((phase, elapsed_sec))
+
+    WorkflowRunner(config=_config(), source_ref=source_ref).stage(
+        tmp_path / "stage",
+        record_phase=record,
+    )
+
+    assert {phase for phase, _ in phases} >= {
+        "select",
+        "copy",
+        "transforms",
+        "final_manifest",
+    }
+    assert all(elapsed_sec >= 0 for _, elapsed_sec in phases)
 
 
 if __name__ == "__main__":

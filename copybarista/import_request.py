@@ -353,14 +353,13 @@ class PathMapper:
             if not self.config.source_root:
                 return prefixed
             return f"{self.config.source_root}/{prefixed}"
-        copied_source, root_copy = self._copied_source_path(
+        # A root copy covers a file only by matching it, so no root copy claimed it.
+        copied_source, _ = self._copied_source_path(
             source_public_path,
             root_destination=True,
         )
         if copied_source:
             return copied_source
-        if root_copy:
-            return ""
         # A path under no relocation rule keeps its identical path on both
         # sides -- it lives at the same repo-root location in source and
         # public. Mirrors Copybara's CopyOrMove: a path matching no move glob
@@ -619,11 +618,8 @@ class ChangeRequestImporter:
                 destination_root=self.destination,
             )
             return change
+        # A snapshot holds files and symlinks, so a directory head is a type change.
         if public_path.is_dir():
-            if change.action != "type_changed":
-                raise ImportRequestError(
-                    f"Cannot import directory change: {change.public}",
-                )
             _delete_path(target)
             target.mkdir(parents=True)
             shutil.copymode(public_path, dst=target)
@@ -1202,7 +1198,8 @@ class ChangeRequestImporter:
                 source_block.text,
                 transform=transform,
             )
-            if not exported or exported == source_block.text:
+            # A block of markers alone exports nothing to restore.
+            if not exported:
                 continue
             lower, upper = _edited_block_bounds(
                 public_text=public_text,
@@ -1607,8 +1604,6 @@ def _reverse_replaces(
 # matching the sequential precedence this replaces.
 def _reverse_replace_all(*, transforms: tuple[Transform, ...], text: str) -> str:
     """Apply several reverse replacements in ONE simultaneous left-to-right pass."""
-    if not transforms:
-        return text
     if len(transforms) == 1:
         return _reverse_replace(transform=transforms[0], text=text)
     # Compile each reverse rule once: a regex_groups rule keeps its full
@@ -1813,20 +1808,15 @@ def _edited_block_bounds(
             raise ImportRequestError(
                 "Cannot determine transformed block positional boundary",
             )
+    # The block's own lines were edited past recognition, so bound it by the
+    # nearest surviving line on each side. A block that still aligned line for
+    # line would lie inside one ``equal`` opcode, which the first loop returned.
     aligned = _align_kept_to_public(export_lines, public_lines=public_lines)
-    block_positions = aligned[exported_start:exported_stop]
-    if block_positions and all(position is not None for position in block_positions):
-        positions = [position for position in block_positions if position is not None]
-        if positions == list(range(positions[0], positions[0] + len(positions))):
-            return positions[0], positions[-1] + 1
-    # The block's own lines may be edited past recognition, so bound it by the
-    # nearest surviving line on each side.
     before = _max_aligned(aligned, start=0, stop=exported_start)
     after = _min_aligned(aligned, start=exported_stop, stop=len(aligned))
+    # The alignment only increases, so ``after`` lies past ``before``.
     lower = 0 if before is None else before + 1
     upper = len(public_lines) if after is None else after
-    if upper < lower:
-        raise ValueError("Expected non-crossing block bounds.")
     return lower, upper
 
 
@@ -1851,10 +1841,6 @@ def _replace_line_spans(
 # and append the edit beneath it, discarding the change.
 def _recomment_block(edited_body: str, source_block: str, transform: Transform) -> str:
     """Wrap an edited public body back in its source markers, commented."""
-    marker_lines = source_block.splitlines(keepends=True)
-    start_line = marker_lines[0] if marker_lines else ""
-    if transform.start not in start_line:
-        return source_block
     if not transform.end:
         body_lines = edited_body.splitlines()
         if not body_lines:
@@ -1862,13 +1848,12 @@ def _recomment_block(edited_body: str, source_block: str, transform: Transform) 
         return "".join(
             f"{_comment_line(f'{line}  {transform.start}')}\n" for line in body_lines
         )
-    end_line = marker_lines[-1] if len(marker_lines) > 1 else ""
-    if transform.end not in end_line:
-        return source_block
+    # ``_uncomment_source_blocks`` opens a block on ``start`` and closes it on ``end``.
+    marker_lines = source_block.splitlines(keepends=True)
     commented = "".join(
         _comment_line(line) for line in edited_body.splitlines(keepends=True)
     )
-    return f"{start_line}{commented}{end_line}"
+    return f"{marker_lines[0]}{commented}{marker_lines[-1]}"
 
 
 def _recomment_else_block(
@@ -1878,27 +1863,13 @@ def _recomment_else_block(
     transform: Transform,
 ) -> str:
     """Restore an else block while retaining its edited public branch."""
+    # ``_else_source_blocks`` closes a block on ``end``, and ``_strip_blocks_with_else``
+    # refuses one without its else marker, so both lines are found, in that order.
     lines = source_block.splitlines(keepends=True)
     else_index = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if transform.else_marker and transform.else_marker in line
-        ),
-        None,
+        index for index, line in enumerate(lines) if transform.else_marker in line
     )
-    end_index = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if transform.end and transform.end in line
-        ),
-        None,
-    )
-    if else_index is None or end_index is None or else_index >= end_index:
-        raise ImportRequestError(
-            f"Malformed else block for transform '{transform.id}'",
-        )
+    end_index = next(index for index, line in enumerate(lines) if transform.end in line)
     commented = "".join(
         _comment_line(line) for line in edited_body.splitlines(keepends=True)
     )
@@ -2044,8 +2015,6 @@ def _uncomment_source_blocks(
 ) -> list[_SourceBlock]:
     """Return source regions and their original exported line positions."""
     start = transform.start
-    if not start:
-        return []
     lines = source_text.splitlines(keepends=True)
     blocks: list[_SourceBlock] = []
     index = 0
@@ -2089,8 +2058,6 @@ def _uncomment_source_blocks(
 def _else_source_blocks(source_text: str, transform: Transform) -> list[_SourceBlock]:
     """Return else blocks and their original exported line positions."""
     start, end = transform.start, transform.end
-    if not start or not end:
-        return []
     lines = source_text.splitlines(keepends=True)
     blocks: list[_SourceBlock] = []
     index = 0
@@ -2183,8 +2150,6 @@ def _anchor_source_only_regions(
             after_index=kept_seen,
             public_line_count=for_public_count,
         )
-        if insert_at is None:
-            return None
         # Detachment guard: if the run's immediate following kept line did NOT
         # align (difflib dropped it) yet its content still exists in public BEFORE
         # the chosen insert point, public reordered it ahead of the run -- placing
@@ -2208,10 +2173,7 @@ def _anchor_source_only_regions(
 # ``before_index`` / ``after_index`` are the kept-line indices immediately before and
 # after the run. Placement is decided by alignment only:
 #
-# - Immediate before-neighbor aligns: insert right after its public line. When the
-# immediate after-neighbor ALSO aligns, its public position must be at or after the
-# before-neighbor's -- an inverted slot (public reordered the two past each other) has
-# no determined position and is rejected, so a run is never detached from its neighbors.
+# - Immediate before-neighbor aligns: insert right after its public line.
 # - Else the run's preceding context was rewritten; anchor FORWARD to the nearest
 # aligned kept line at/after the run and insert right before it, so the run lands at the
 # tail of the rewritten span it belonged to. Forward-only avoids jumping BACKWARD across
@@ -2224,17 +2186,14 @@ def _placement_index(
     before_index: int,
     after_index: int,
     public_line_count: int,
-) -> int | None:
-    """Return the public insert index for a source-only run, or ``None`` to reject."""
-    # The run must land in the public gap bracketed by its context: strictly after
-    # every kept line BEFORE it that aligns, and at/before every kept line AFTER it
-    # that aligns. If any following kept line aligns to a position <= a preceding
-    # one (public reordered them past each other, or dropped one to an earlier
-    # spot), no contiguous slot survives -- reject rather than detach the run.
-    before_max = _max_aligned(kept_to_public, 0, before_index + 1)
+) -> int:
+    """Return the public insert index for a source-only run."""
+    # The run lands in the public gap bracketed by its context: strictly after
+    # every kept line BEFORE it that aligns, and at/before every kept line AFTER
+    # it that aligns. The alignment only increases, so that gap is never empty; a
+    # public reorder shows up as a neighbor that did not align, which the caller's
+    # detachment guard rejects.
     after_min = _min_aligned(kept_to_public, after_index, len(kept_to_public))
-    if before_max is not None and after_min is not None and after_min <= before_max:
-        return None
     if after_min is None:
         # No kept line aligns AFTER the run: it is trailing. Append at the end --
         # the only unambiguous position when nothing survived after it.
@@ -2490,13 +2449,15 @@ def _capture_originals(
 
 
 def _highest_absent_path(*, destination: Path, target: Path) -> Path:
-    """Return the first absent path from ``destination`` toward ``target``."""
-    candidate = destination
-    for part in target.relative_to(destination).parts:
-        candidate /= part
-        if not candidate.exists() and not candidate.is_symlink():
-            return candidate
-    return target
+    """Return the first absent path from ``destination`` toward ``target``, itself absent."""
+    parts = target.relative_to(destination).parts
+    return next(
+        candidate
+        for candidate in (
+            destination.joinpath(*parts[: index + 1]) for index in range(len(parts))
+        )
+        if not candidate.exists() and not candidate.is_symlink()
+    )
 
 
 def _restore_originals(originals: tuple[_OriginalPath, ...]) -> None:

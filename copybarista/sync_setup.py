@@ -24,6 +24,10 @@ from copybarista.errors import ConfigError
 from copybarista.globs import GlobSet
 from copybarista.lib.yaml import parse
 from copybarista.pyproject import pyproject_inputs
+from copybarista.scripts.sync_import_change import (
+    CONTROL_CHAR_BOUND,
+    valid_git_branch_name,
+)
 
 
 if TYPE_CHECKING:
@@ -39,7 +43,6 @@ CONTROL_EXCLUDES: Final = (
     "copy.barista.toml",
     "copybarista.sync.toml",
 )
-CONTROL_CHAR_BOUND: Final = 32
 NPM_WORKFLOW_FILENAME: Final = "publish-npm.yml"
 CI_COMMANDS: Final = (
     "uv sync --frozen --all-groups",
@@ -1251,10 +1254,6 @@ def _required_str_tuple(sync: Mapping[str, object], key: str) -> tuple[str, ...]
             f"copybarista.sync.toml sync.{key} must be a list of strings.",
         )
     strings = [item for item in value if isinstance(item, str)]
-    if len(strings) != len(value):
-        raise ConfigError(
-            f"copybarista.sync.toml sync.{key} must be a list of strings.",
-        )
     if not strings and key == "type_check_targets":
         raise ConfigError(
             "copybarista.sync.toml sync.type_check_targets cannot be empty.",
@@ -1375,25 +1374,9 @@ def _validate_relative_path(value: str, *, name: str) -> None:
 
 def _validate_branch_prefix(prefix: str, *, name: str) -> None:
     """Reject branch prefixes that can overwrite protected or arbitrary refs."""
-    if not prefix or prefix in {"main", "master"} or prefix.startswith(("-", "/")):
+    # ``prefix`` is never empty: an unset one derives from the package name.
+    if prefix in {"main", "master"} or not valid_git_branch_name(f"{prefix}check"):
         raise ConfigError(f"sync.{name} is not a safe generated branch prefix.")
-    branch = f"{prefix}check"
-    if not _valid_git_branch_name(branch):
-        raise ConfigError(f"sync.{name} is not a safe generated branch prefix.")
-
-
-def _valid_git_branch_name(branch: str) -> bool:
-    """Return whether `branch` is safe for generated sync pushes."""
-    if branch in {"main", "master"} or branch.startswith(("-", "/")):
-        return False
-    if branch.endswith(("/", ".", ".lock")):
-        return False
-    if ".." in branch or "//" in branch or "@{" in branch:
-        return False
-    forbidden = set(" ~^:?*[\\")
-    return not any(
-        char in forbidden or ord(char) < CONTROL_CHAR_BOUND for char in branch
-    )
 
 
 def _shell_lines(args: list[str], *, indent: str) -> str:

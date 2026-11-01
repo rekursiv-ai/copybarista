@@ -140,6 +140,14 @@ def _render(base: str, delta: str) -> str:
             '"!a" = true\n\n[a]\nk = 9\n',
             "# About a.\n[a]\nk = 9\n\n[b]\n",
         ),
+        # A key deleted and set again is restated whole, in place, as a table is;
+        # one set again after an anchor moves there.
+        (
+            "# About a.\na = 1\nb = 2\n",
+            '"!a" = true\na = 3\n',
+            "# About a.\na = 3\nb = 2\n",
+        ),
+        ("[t]\na = 1\nb = 2\n", '[t]\n"!b" = true\n"^".b = 2\n', "[t]\nb = 2\na = 1\n"),
         # ``=`` escapes a key spelled like an operation.
         ("[t]\n", '[t]\n"=!x" = 1\n', '[t]\n"!x" = 1\n'),
         ("[t]\n", '[t]\n"==c" = 1\n', '[t]\n"=c" = 1\n'),
@@ -153,6 +161,14 @@ def _render(base: str, delta: str) -> str:
         ),
         # ``+``/``-`` on an array of tables add and remove ``[[...]]`` elements.
         ("[[i]]\nn = 1\n", '"+i" = [{n = 2}]\n', "[[i]]\nn = 1\n\n[[i]]\nn = 2\n"),
+        # A removal takes the value it names: ``true``, ``1`` and ``1.0`` are three.
+        ("a = [true, 1.0, 1]\n", '"-a" = [1]\n', "a = [true, 1.0]\n"),
+        (
+            "[[i]]\nn = true\n\n[[i]]\nn = 1\n",
+            '"-i" = [{n = 1}]\n',
+            "[[i]]\nn = true\n",
+        ),
+        ("[[i]]\nn = 1.0\n\n[[i]]\nn = 1\n", '[["-i"]]\nn = 1\n', "[[i]]\nn = 1.0\n"),
         # A comment-only base is all preamble; the delta's comments replace it.
         ("# Only.\n", "# New.\n", "# New.\n"),
         ("# Only.\n", "# (clear)\n", ""),
@@ -196,6 +212,117 @@ def test_render_applies_each_operation_in_place(base: str, delta: str, expected:
 def test_render_names_what_the_base_lacks(delta: str, message: str):
     with pytest.raises(DeltaError, match=message):
         _render("a = [1]\n[t]\na = 1\n", delta)
+
+
+@pytest.mark.parametrize(
+    ("base", "delta", "expected"),
+    [
+        # The delta's own ``[pyproject]`` settings are not an operation.
+        ("a = 1\n", 'a = 2\n\n[pyproject]\nbase = "x"\n', "a = 2\n"),
+        # Deleting a dotted key's parent takes each key under it, arrays aside.
+        (
+            "a.b = 1\nd = 3\n\n[[i]]\nn = 1\n",
+            '"!a" = true\n',
+            "d = 3\n\n[[i]]\nn = 1\n",
+        ),
+        ("a.b = 1\na.c = 2\nd = 3\n", '"!a" = true\n', "d = 3\n"),
+        # A table emptied of its last key goes with it.
+        ("[[i]]\nn = 1\n\n[t]\na = 1\n", '[t]\n"!a" = true\n', "[[i]]\nn = 1\n"),
+        # A new table joins the run of tables nearest it in path.
+        (
+            "[tool.a]\nx = 1\n\n[tool.a.b]\ny = 1\n\n[other]\nz = 1\n",
+            "[tool.a.c]\nw = 1\n",
+            "[tool.a]\nx = 1\n\n[tool.a.b]\ny = 1\n\n[tool.a.c]\nw = 1\n\n[other]\nz = 1\n",
+        ),
+        # An exact lead keeps a new table after one the delta names before it.
+        (
+            "[x.a]\nk = 1\n\n[b]\ny = 1\n",
+            "# (clear)\n[b]\n\n# (clear)\n[x.n]\nk = 2\n",
+            "[x.a]\nk = 1\n[b]\ny = 1\n[x.n]\nk = 2\n",
+        ),
+        # A comment-only delta with no blank line closing a preamble is all footer.
+        ("a = 1\n", "# Foot.\n", "a = 1\n# Foot.\n"),
+        (
+            "a = 1\n",
+            "# Top.\n\n# Mid.\n# Foot.\n",
+            "a = 1\n# Top.\n\n# Mid.\n# Foot.\n",
+        ),
+        # A stated array of tables the base lacks is added.
+        ("a = 1\n", "[[i]]\nn = 1\n", "a = 1\n\n[[i]]\nn = 1\n"),
+        ("a = 1\n", "[t]  # (clear)\nk = 1\n", "a = 1\n\n[t]\nk = 1\n"),
+        # ``[["-i"]]`` removes the element holding exactly those keys, subtables too.
+        (
+            "[[i]]\nn = 1\n[i.sub]\nx = 1\n\n[[i]]\nn = 2\n\n[j]\nm = 1\n",
+            '[["-i"]]\nn = 1\n',
+            "[[i]]\nn = 2\n\n[j]\nm = 1\n",
+        ),
+        # Appending to a key the base lacks sets it, under a table made for it.
+        ("b = 1\n", '"+a" = ["x"]\n', 'b = 1\na = ["x"]\n'),
+        ("a = 1\n", 't."+k" = ["x"]\n', 'a = 1\n\n[t]\nk = ["x"]\n'),
+        # Setting a key over a table replaces the table.
+        ("[a]\nk = 1\n\n[b]\n", "a = 1\n", "a = 1\n\n[b]\n"),
+    ],
+)
+def test_render_places_what_the_base_lacks(base: str, delta: str, expected: str):
+    assert _render(base, delta) == expected
+
+
+@pytest.mark.parametrize(
+    ("base", "delta", "expected"),
+    [
+        ("[t]\nk = 1\n", "\n\n# (clear)\n[t]\nk = 2\n", "\n\n[t]\nk = 2\n"),
+        ("[t]\nk = 1\n", "\n\n[t]\nk = 2\n", "[t]\nk = 2\n"),
+        ("a = 1\n\n[t]\n", "\n# (clear)\na = 2\n", "\na = 2\n\n[t]\n"),
+        ("a = 1\nb = 2\n", '"!a" = true\n\n# (clear)\nb = 3\n', "\nb = 3\n"),
+        ("a = 1\n\nb = 2\n", '"!a" = true\n', "b = 2\n"),
+        ("a = 1\nb = 2\n", "\n# (clear)\nb = 3\n", "a = 1\n\nb = 3\n"),
+        # An exact lead lower down leaves the new top's opening blank line to go.
+        (
+            "a = 1\n\nb = 2\nc = 3\n",
+            '"!a" = true\n\n# (clear)\nc = 4\n',
+            "b = 2\n\nc = 4\n",
+        ),
+        (
+            "[t]\nk = 1\n\n[u]\nj = 1\n",
+            "\n# (clear)\n[u]\nj = 2\n",
+            "[t]\nk = 1\n\n[u]\nj = 2\n",
+        ),
+        ('"-a" = 1\n', '\n# (clear)\n"=-a" = 2\n', '\n"-a" = 2\n'),
+        ("[t]\nk = 1\n", "\n# (clear)\n[t]\n", "\n[t]\nk = 1\n"),
+    ],
+)
+def test_render_opens_with_blank_lines_only_where_the_delta_states_them(
+    base: str,
+    delta: str,
+    expected: str,
+):
+    """A lead stated exactly is the delta's own; any other opening blank line goes."""
+    assert _render(base, delta) == expected
+
+
+@pytest.mark.parametrize(
+    ("base", "delta", "message"),
+    [
+        ("[[i]]\nn = 1\n", '"+i" = ["x"]\n', "appends a non-table to 'i'"),
+        (
+            "[[i]]\nn = 1\n",
+            '[["-i"]]\nn = 3\n',
+            r"removes '\{n = 3\}' from i, which lacks it",
+        ),
+        ("a = [1]\n", '"-a" = 1\n', "removes a non-list from 'a'"),
+        ("a = 1\n", '"-a" = [1]\n', "removes entries from 'a', which is not a list"),
+        ("[a]\nk = 1\n", '"+a" = ["x"]\n', "appends to 'a', which is not a list"),
+        ("a = 1\n", '"+a" = ["x"]\n', "appends to 'a', which is not a list"),
+        ("a = [1\n", "a = 2\n", "Cannot parse the base"),
+    ],
+)
+def test_render_refuses_an_operation_the_value_cannot_take(
+    base: str,
+    delta: str,
+    message: str,
+):
+    with pytest.raises(DeltaError, match=message):
+        _render(base, delta)
 
 
 if __name__ == "__main__":

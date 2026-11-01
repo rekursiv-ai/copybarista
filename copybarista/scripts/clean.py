@@ -86,7 +86,10 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 def _safe_project_path(relative_target: str) -> Path:
     """Return a project-local cleanup path or fail closed."""
     project_root = _CWD.parent
-    target = (project_root / relative_target).resolve()
+    target = project_root / relative_target
+    # Resolve the directory only. Resolving the target too follows a symlinked
+    # artifact, so `main` would remove what it points to and keep the link.
+    target = target.parent.resolve() / target.name
     if target == project_root or not target.is_relative_to(project_root):
         raise ValueError(f"Refusing to clean path outside project: {target}")
     return target

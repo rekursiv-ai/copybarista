@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-import tomllib
-
-from treekle import from_plain
+from copybarista.toml_lines import spelled_key
 
 
 class ListError(ValueError):
@@ -203,9 +201,13 @@ class ListValue:
         return result
 
     def _without_one(self, entry: str) -> ListValue:
-        wanted = _content(entry)
+        wanted = spelled_key(entry)
         index = next(
-            (i for i, value in enumerate(self.values()) if _content(value) == wanted),
+            (
+                i
+                for i, value in enumerate(self.values())
+                if spelled_key(value) == wanted
+            ),
             None,
         )
         if index is None:
@@ -275,7 +277,7 @@ def _value_end(text: str, pos: int) -> int:
         elif not depth and char in ",]#\n":
             return pos
         pos += 1
-    return pos
+    raise ListError(f"a list does not close: {text.strip()!r}")
 
 
 def _string_end(text: str, pos: int) -> int:
@@ -285,7 +287,3 @@ def _string_end(text: str, pos: int) -> int:
     while text[pos] != quote:
         pos += 2 if quote == '"' and text[pos] == "\\" else 1
     return pos + 1
-
-
-def _content(value: str) -> object:
-    return from_plain(tomllib.loads(f"v = {value}"), dict[str, object])["v"]

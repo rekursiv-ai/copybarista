@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Final
 
 import os
+import sys
 
 from treekle import from_plain, json_loads
 
@@ -18,23 +19,7 @@ _CWD: Final = Path(__file__).resolve().parent
 
 
 def test_build_report_times_copybarista_export(tmp_path: Path):
-    source_ref = tmp_path / "repo"
-    project = source_ref / "project"
-    project.mkdir(parents=True)
-    (project / "README.md").write_text("hello\n", encoding="utf-8")
-    config_path = tmp_path / "copy.barista.toml"
-    config_path.write_text(
-        """
-        [workflow]
-        name = "demo"
-        mode = "squash"
-        source_root = "project"
-
-        [files]
-        include = ["**"]
-        """,
-        encoding="utf-8",
-    )
+    config_path, source_ref = _demo_export(tmp_path)
 
     report = bench.build_report(config_path=config_path, source_ref=source_ref, runs=2)
 
@@ -71,6 +56,53 @@ def test_report_json_is_machine_readable():
     copybarista = from_plain(data["copybarista"], dict[str, object])
     assert copybarista["median_sec"] == 0.2
     assert set(data) == {"copybarista"}
+
+
+def test_build_report_requires_at_least_one_run(tmp_path: Path):
+    config_path, source_ref = _demo_export(tmp_path)
+
+    with pytest.raises(ValueError, match="at least one run"):
+        bench.build_report(config_path=config_path, source_ref=source_ref, runs=0)
+
+
+def test_main_prints_the_report_as_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    config_path, source_ref = _demo_export(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench.py", str(config_path), str(source_ref), "--runs", "1", "--json"],
+    )
+
+    assert bench.main() == 0
+
+    data = json_loads(capsys.readouterr().out, dict[str, object])
+    copybarista = from_plain(data["copybarista"], dict[str, object])
+    assert (copybarista["file_count"], copybarista["byte_count"]) == (1, 6)
+    assert len(from_plain(copybarista["runs"], list[float])) == 1
+
+
+def test_main_prints_the_report_as_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    config_path, source_ref = _demo_export(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench.py", str(config_path), str(source_ref), "--runs", "1"],
+    )
+
+    assert bench.main() == 0
+
+    summary, phases = capsys.readouterr().out.splitlines()
+    assert summary.startswith("copybarista median: ")
+    assert summary.endswith(" files=1 bytes=6")
+    assert phases.startswith("copybarista phases: cleanup=")
 
 
 @pytest.mark.bench_throughput
@@ -137,6 +169,28 @@ def test_self_export_performance_has_recordable_timings():
     assert report.copybarista.file_count > 0
     assert report.copybarista.byte_count > 0
     assert "stage" in report.copybarista.phase_medians_sec
+
+
+def _demo_export(tmp_path: Path) -> tuple[Path, Path]:
+    """Return a one-file workflow's config path and its source checkout."""
+    source_ref = tmp_path / "repo"
+    project = source_ref / "project"
+    project.mkdir(parents=True)
+    (project / "README.md").write_text("hello\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+    return config_path, source_ref
 
 
 def _write_synthetic_tree(*, project: Path, files: int) -> None:

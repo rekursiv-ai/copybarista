@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
+import dataclasses
 import json
 import shutil
 import stat
@@ -14,6 +16,7 @@ import tomllib
 
 import pytest
 
+from copybarista import import_request
 from copybarista.cli import main
 from copybarista.config import (
     FileMove,
@@ -6012,6 +6015,554 @@ def _failed_walk(
         raise AssertionError("walk must receive an error handler")
     onerror(PermissionError(walk_root / "blocked"))
     return []
+
+
+def _importer(
+    tmp_path: Path,
+    *,
+    files: dict[str, object] | None = None,
+    transforms: tuple[Transform, ...] = (),
+    merge_import: bool = False,
+) -> ChangeRequestImporter:
+    """Return an importer over empty trees under ``tmp_path``, with ``transforms``."""
+    for name in ("public-base", "public-head", "source-base", "destination"):
+        (tmp_path / name).mkdir()
+    config = parse_config(
+        {"workflow": {"source_root": ""}, "files": files or {"include": ["**"]}},
+    )
+    return ChangeRequestImporter(
+        config=dataclasses.replace(config, transforms=transforms),
+        public_base=tmp_path / "public-base",
+        public_head=tmp_path / "public-head",
+        source_base=tmp_path / "source-base",
+        destination=tmp_path / "destination",
+        merge_import=merge_import,
+    )
+
+
+_STRIP_BLOCK = Transform(
+    id="sb",
+    type="strip_block",
+    path="m.py",
+    start="# S",
+    end="# E",
+)
+_UNCOMMENT = Transform(id="u", type="uncomment", path="m.py", start="# S", end="# E")
+
+
+def test_tree_snapshot_refuses_a_root_that_is_no_directory(tmp_path: Path):
+    with pytest.raises(ImportRequestError, match="Cannot snapshot tree root"):
+        TreeSnapshot.from_root(tmp_path / "missing")
+
+
+def test_tree_snapshot_skips_a_copybarista_metadata_file(tmp_path: Path):
+    (tmp_path / ".copybarista").write_text("state\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+
+    assert list(TreeSnapshot.from_root(tmp_path).entries) == ["a.txt"]
+
+
+@pytest.mark.parametrize(
+    ("files", "public", "action", "message"),
+    [
+        ({"include": ["**"]}, ".git/config", "modified", "excluded or unmapped"),
+        (
+            {
+                "include": ["**"],
+                "pyproject": {"delta": ".export/pyproject.delta.toml"},
+            },
+            "pyproject.toml",
+            "deleted",
+            r"rendered from \.export/pyproject\.delta\.toml and cannot be deleted",
+        ),
+        (
+            {
+                "include": ["**"],
+                "moves": [{"path": "", "destination": "pkg"}],
+                "copy": [
+                    {
+                        "source": "lib/util.py",
+                        "destination": "util.py",
+                        "include": ["*.txt"],
+                    },
+                ],
+            },
+            "util.py",
+            "modified",
+            "excluded or unmapped",
+        ),
+    ],
+    ids=["metadata", "a deleted render", "a copy its include filters out"],
+)
+def test_path_mapper_refuses_a_path_no_rule_ships(
+    files: dict[str, object],
+    public: str,
+    action: Literal["modified", "deleted"],
+    message: str,
+):
+    mapper = PathMapper(
+        config=parse_config({"workflow": {"source_root": ""}, "files": files}),
+    )
+
+    with pytest.raises(ImportRequestError, match=message):
+        mapper.source_path(public, action=action)
+
+
+def test_reformat_reruns_ruff_on_the_reversed_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[list[str], Path | None]] = []
+
+    class _Runner:
+        def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
+            assert not check
+            calls.append((argv[1:], cwd))
+
+    monkeypatch.setattr(import_request, "CommandRunner", _Runner)
+    importer = _importer(
+        tmp_path,
+        transforms=(Transform(id="rf", type="ruff_format", path="."),),
+    )
+
+    importer._reformat_imported_source(
+        change=ImportChange(public="pkg/m.py", source="src/m.py", action="modified"),
+        target=importer.destination / "src/m.py",
+    )
+
+    assert calls == [
+        (
+            ["-m", "ruff", "check", "--fix", "--exit-zero", "--no-cache", "src/m.py"],
+            importer.destination,
+        ),
+        (["-m", "ruff", "format", "--no-cache", "src/m.py"], importer.destination),
+    ]
+
+
+def test_merge_reads_an_identity_symlink_from_the_source(tmp_path: Path):
+    """A path the export never ships is the local side as the source holds it."""
+    importer = _importer(tmp_path, merge_import=True)
+    (importer.source_base / "link").symlink_to("target")
+
+    entry = importer._ours_public_entry(
+        change=ImportChange(public="link", source="link", action="modified"),
+        source_export=tmp_path / "public-base",
+    )
+
+    assert entry == import_request.TreeEntry(kind="symlink", data=b"target")
+
+
+def test_merge_skips_a_pyproject_the_source_already_renders(tmp_path: Path):
+    importer = _importer(tmp_path, merge_import=True)
+    change = ImportChange(public="pyproject.toml", source="d.toml", action="modified")
+
+    resolved, conflicted = importer._merge_pyproject(
+        change=change,
+        target=importer.destination / "d.toml",
+        ours=b"[project]\n",
+        head=b"[project]\n",
+    )
+
+    assert (resolved.outcome, conflicted) == ("skipped", False)
+    assert not (importer.destination / "d.toml").exists()
+
+
+@pytest.mark.parametrize(
+    ("merged", "ours"),
+    [(b"\xff\n", b"a\n"), (b"b\n", b"\xff\n")],
+    ids=["binary head", "binary base"],
+)
+def test_reverse_keeps_a_binary_reversal_whole(
+    tmp_path: Path,
+    merged: bytes,
+    ours: bytes,
+):
+    """Lines cannot be spliced into text that is not UTF-8, so the reversal stands."""
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.txt").write_text("a\n", encoding="utf-8")
+
+    reversed_data = importer._reverse_changed_lines(
+        public_path="m.txt",
+        source_path="m.txt",
+        merged_public=merged,
+        ours_public=ours,
+    )
+
+    assert reversed_data == merged
+
+
+def test_reverse_leaves_a_file_the_source_lacks(tmp_path: Path):
+    importer = _importer(tmp_path)
+
+    assert (
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_UNCOMMENT,
+            content=b"x\n",
+        )
+        == b"x\n"
+    )
+    assert (
+        importer._reinsert_source_only_regions(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_STRIP_BLOCK,
+            content=b"x\n",
+            match_path="m.py",
+        )
+        == b"x\n"
+    )
+
+
+def test_recomment_skips_an_uncomment_block_of_markers_alone(tmp_path: Path):
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.py").write_text("# S\n# E\nx\n", encoding="utf-8")
+
+    assert (
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_UNCOMMENT,
+            content=b"x\n",
+        )
+        == b"x\n"
+    )
+
+
+def test_recomment_rebuilds_an_edited_inline_uncomment(tmp_path: Path):
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.py").write_text("a\n# b = 1  # S\n", encoding="utf-8")
+    inline = replace(_UNCOMMENT, end="")
+
+    assert (
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=inline,
+            content=b"a\nb = 2\n",
+        )
+        == b"a\n# b = 2  # S\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "public", "message"),
+    [
+        (
+            "a\n# S\nx\n# E\nb\n",
+            "a\nb\n# S\n",
+            "produced a source tree that cannot be re-exported",
+        ),
+        ("a\nb\n", "a\n# S\nx\n# E\nb\n", "so its export no longer reproduces"),
+    ],
+    ids=["a stray start marker", "a block the public edit added"],
+)
+def test_reinsert_refuses_a_public_edit_that_adds_markers(
+    tmp_path: Path,
+    source: str,
+    public: str,
+    message: str,
+):
+    """Re-export would strip what the contributor wrote, so a human must decide."""
+    importer = _importer(tmp_path, transforms=(_STRIP_BLOCK,))
+    (importer.source_base / "m.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match=message):
+        importer._reinsert_source_only_regions(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_STRIP_BLOCK,
+            content=public.encode(),
+            match_path="m.py",
+        )
+
+
+def test_reinsert_refuses_a_line_whose_neighbor_moved_ahead_of_it(tmp_path: Path):
+    """The splice lands mid-line, and the follower now precedes every anchor."""
+    importer = _importer(tmp_path, transforms=(_INTERNAL_LINES,))
+    (importer.source_base / "m.py").write_text(
+        "h1\nh2\nnote = 0  # INT\nt1\nt2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportRequestError, match="cannot place a stripped region"):
+        importer._reinsert_source_only_regions(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_INTERNAL_LINES,
+            content=b"t1\nlong t2\nh1\nh2\n",
+            match_path="m.py",
+        )
+
+
+@pytest.mark.parametrize(
+    ("exported", "expected"),
+    [({}, False), ({"pyproject.toml": b"[project]\n"}, True)],
+    ids=["a missing render", "both renders"],
+)
+def test_reproduces_compares_the_render_only_when_both_hold_it(
+    tmp_path: Path,
+    exported: dict[str, bytes],
+    expected: bool,
+):
+    importer = _importer(
+        tmp_path,
+        files={
+            "include": ["**"],
+            "pyproject": {"delta": ".export/pyproject.delta.toml"},
+        },
+    )
+
+    def snapshot(entries: dict[str, bytes]) -> TreeSnapshot:
+        return TreeSnapshot(
+            entries={
+                path: import_request.TreeEntry(kind="file", data=data)
+                for path, data in entries.items()
+            },
+        )
+
+    assert (
+        importer._reproduces(
+            snapshot(exported),
+            snapshot({"pyproject.toml": b"[project]\n"}),
+        )
+        is expected
+    )
+
+
+def test_exported_until_uncomments_before_a_later_strip():
+    """A strip's offsets are into the text every earlier rule left behind."""
+    text = import_request._exported_until(
+        "# S\n# a = 1\n# E\nb\n",
+        transforms=(_UNCOMMENT, _STRIP_BLOCK),
+        stop=_STRIP_BLOCK,
+        match_path="m.py",
+        globstar="one_or_more",
+    )
+
+    assert text == "a = 1\nb\n"
+
+
+def test_forward_replace_applies_regex_groups():
+    transform = Transform(
+        id="r",
+        type="replace",
+        path="m.py",
+        before="a${n}",
+        after="b${n}",
+        regex_groups=(("n", "[0-9]"),),
+    )
+
+    assert import_request._forward_replace(transform=transform, text="a1 a2 ax") == (
+        "b1 b2 ax"
+    )
+
+
+def test_reverse_replace_all_skips_a_rule_that_matches_nothing_wide():
+    """A pattern that can match empty text consumes nothing and wins nothing."""
+    digits = Transform(
+        id="d",
+        type="replace",
+        path="m.py",
+        before="x${g}",
+        after="${g}",
+        regex_groups=(("g", "[0-9]*"),),
+    )
+    name = Transform(
+        id="n",
+        type="replace",
+        path="m.py",
+        before="loop.pkg",
+        after="pkg",
+    )
+
+    assert (
+        import_request._reverse_replace_all(transforms=(digits, name), text="pkg!")
+        == "loop.pkg!"
+    )
+
+
+@pytest.mark.parametrize(
+    ("public", "expected"),
+    [("a\nX\nY\nc\n", (1, 3)), ("a\nc\n", (1, 1))],
+    ids=["rewritten wider", "deleted"],
+)
+def test_edited_block_bounds_falls_back_to_the_surviving_neighbors(
+    public: str,
+    expected: tuple[int, int],
+):
+    bounds = import_request._edited_block_bounds(
+        public_text=public,
+        whole_export="a\nB\nc\n",
+        exported_start=1,
+        exported_length=1,
+    )
+
+    assert bounds == expected
+
+
+def test_replace_line_spans_refuses_overlapping_blocks():
+    with pytest.raises(ImportRequestError, match="overlapping transformed blocks"):
+        import_request._replace_line_spans(
+            ["a\n", "b\n", "c\n"],
+            replacements=[(0, 2, "x\n"), (1, 3, "y\n")],
+        )
+
+
+@pytest.mark.parametrize(
+    ("transform", "edited", "source", "expected"),
+    [
+        (replace(_UNCOMMENT, end=""), "", "# a  # S\n", "# a  # S\n"),
+        (_UNCOMMENT, "a\n\nb\n", "# S\n# a\n# E\n", "# S\n# a\n\n# b\n# E\n"),
+    ],
+    ids=["a deleted inline line", "a blank line in a block"],
+)
+def test_recomment_block_keeps_what_has_no_comment_form(
+    transform: Transform,
+    edited: str,
+    source: str,
+    expected: str,
+):
+    assert _recomment_block(edited, source, transform) == expected
+
+
+def test_three_way_merge_needs_git_on_path(monkeypatch: pytest.MonkeyPatch):
+    def no_git(name: str) -> None:
+        assert name == "git"
+
+    monkeypatch.setattr(import_request.shutil, "which", no_git)
+
+    with pytest.raises(ImportRequestError, match="requires git on PATH"):
+        _three_way_merge(current=b"a\n", base=b"a\n", incoming=b"b\n")
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [(b"\xff", b"\xff", True), (b"\xff", b"x", False)],
+    ids=["equal bytes", "different bytes"],
+)
+def test_same_render_compares_bytes_it_cannot_parse(
+    left: bytes,
+    right: bytes,
+    same: bool,
+):
+    assert import_request._same_render(left, right) is same
+
+
+def test_text_that_is_not_utf8_is_refused(tmp_path: Path):
+    path = tmp_path / "m.txt"
+    path.write_bytes(b"\xff\n")
+
+    with pytest.raises(ImportRequestError, match=r"^label$"):
+        import_request._read_import_text(path=path, label="label")
+    with pytest.raises(
+        ImportRequestError,
+        match=r"text reversal but is not UTF-8: m\.txt",
+    ):
+        import_request._decoded(b"\xff\n", public_path="m.txt")
+
+
+def test_write_symlink_refuses_an_absolute_target(tmp_path: Path):
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public/link").symlink_to("/etc/hosts")
+
+    with pytest.raises(ImportRequestError, match="Symlink target escapes import tree"):
+        import_request._write_symlink(
+            public_path=tmp_path / "public/link",
+            target=tmp_path / "link",
+            public_root=tmp_path / "public",
+            destination_root=tmp_path,
+        )
+
+
+def test_rollback_restores_a_replaced_directory(tmp_path: Path):
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d/f.txt").write_text("kept\n", encoding="utf-8")
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(ImportChange(public="d", source="d", action="type_changed"),),
+    )
+    shutil.rmtree(tmp_path / "d")
+    (tmp_path / "d").write_text("file\n", encoding="utf-8")
+
+    import_request._restore_originals(originals)
+    import_request._discard_backups(originals)
+
+    assert (tmp_path / "d/f.txt").read_text(encoding="utf-8") == "kept\n"
+
+
+def _symlinked_destination(tmp_path: Path) -> Path:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to("real")
+    return tmp_path / "link"
+
+
+def _missing_destination(tmp_path: Path) -> Path:
+    return tmp_path / "missing"
+
+
+def _filesystem_root(tmp_path: Path) -> Path:
+    del tmp_path
+    return Path("/")
+
+
+@pytest.mark.parametrize(
+    ("destination", "message"),
+    [
+        (_symlinked_destination, "Refusing symlink destination"),
+        (_missing_destination, "Import destination must exist"),
+        (_filesystem_root, "Refusing dangerous destination"),
+    ],
+    ids=["a symlink", "missing", "the filesystem root"],
+)
+def test_import_destination_must_be_a_safe_directory(
+    tmp_path: Path,
+    destination: Callable[[Path], Path],
+    message: str,
+):
+    with pytest.raises(ImportRequestError, match=message):
+        import_request._validate_import_destination(destination(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("relative", "message"),
+    [
+        (".", "Import target escapes destination: .$"),
+        ("out", "Import target escapes destination: out$"),
+        (".git/config", "excluded or unmapped: .git/config"),
+        ("../x", r"Import target escapes destination: \.\./x"),
+    ],
+    ids=["the destination itself", "a link out", "metadata", "a parent"],
+)
+def test_validated_target_stays_inside_the_destination(
+    tmp_path: Path,
+    relative: str,
+    message: str,
+):
+    (tmp_path / "out").symlink_to(tmp_path.parent)
+
+    with pytest.raises(ImportRequestError, match=message):
+        import_request._validated_target(destination=tmp_path, relative_path=relative)
+
+
+def test_validated_target_refuses_a_symlink_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Python 3.12, the published floor, raises on a loop where 3.13+ returns."""
+    (tmp_path / "loop").symlink_to("loop")
+    resolve = Path.resolve
+
+    def resolve_like_312(self: Path, *, strict: bool = False) -> Path:
+        if self.name == "loop":
+            raise RuntimeError("Symlink loop")
+        return resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_like_312)
+
+    with pytest.raises(ImportRequestError, match="cannot be resolved: loop"):
+        import_request._validated_target(destination=tmp_path, relative_path="loop")
 
 
 if __name__ == "__main__":
