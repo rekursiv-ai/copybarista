@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 
 import hashlib
 import json
@@ -240,39 +241,8 @@ def load_sync_settings(path: Path) -> SyncSettings:
         )
     except tomllib.TOMLDecodeError as err:
         raise ConfigError(f"Cannot read sync config {path}: {err}") from err
-    sync = from_plain(raw.get("sync"), dict[str, object], default={})
+    sync = _ReadKeys(from_plain(raw.get("sync"), dict[str, object], default={}))
     pull_request = from_plain(raw.get("pull_request"), dict[str, object], default={})
-    # An ignored key reads as a setting that takes effect: a leftover
-    # ``validation_commands`` would look like it still chose the package's CI.
-    unknown = sorted(
-        sync.keys()
-        - {
-            "package_name",
-            "sync_label",
-            "source_root",
-            "public_repo",
-            "source_repo",
-            "copybarista_project_path",
-            "release_check_script",
-            "type_check_targets",
-            "forbidden_pr_text",
-            "export_watch_paths",
-            "validation_python_versions",
-            "system_packages",
-            "refresh_public_lockfile",
-            "skip_source_validation",
-            "npm_packages",
-            "npm_build_commands",
-            "sync_user_name",
-            "sync_user_email",
-            "sync_token_login",
-            "sync_app_slug",
-            "export_branch_prefix",
-            "import_branch_prefix",
-        },
-    )
-    if unknown:
-        raise ConfigError(f"copybarista.sync.toml sync.{unknown[0]} is not a setting.")
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
@@ -360,6 +330,11 @@ def load_sync_settings(path: Path) -> SyncSettings:
             default=False,
         ),
     )
+    # An ignored key reads as a setting that takes effect: a leftover
+    # ``validation_commands`` would look like it still chose the package's CI.
+    unknown = sorted(sync.keys() - sync.read)
+    if unknown:
+        raise ConfigError(f"copybarista.sync.toml sync.{unknown[0]} is not a setting.")
     _validate_settings(settings)
     return settings
 
@@ -1197,7 +1172,7 @@ def _yaml_list(value: object, name: str) -> list[object]:
     return cast(list[object], value)
 
 
-def _required_str(sync: dict[str, object], key: str) -> str:
+def _required_str(sync: Mapping[str, object], key: str) -> str:
     """Read a required non-empty string from the sync table."""
     value = sync.get(key, "")
     if not isinstance(value, str) or not value:
@@ -1205,7 +1180,7 @@ def _required_str(sync: dict[str, object], key: str) -> str:
     return value
 
 
-def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
+def _optional_str(sync: Mapping[str, object], key: str, *, default: str) -> str:
     """Read an optional string from the sync table."""
     value = sync.get(key, default)
     if not isinstance(value, str):
@@ -1213,7 +1188,7 @@ def _optional_str(sync: dict[str, object], key: str, *, default: str) -> str:
     return value
 
 
-def _optional_sync_bool(sync: dict[str, object], key: str, *, default: bool) -> bool:
+def _optional_sync_bool(sync: Mapping[str, object], key: str, *, default: bool) -> bool:
     """Read an optional boolean from the sync table."""
     value = sync.get(key, default)
     if not isinstance(value, bool):
@@ -1221,7 +1196,12 @@ def _optional_sync_bool(sync: dict[str, object], key: str, *, default: bool) -> 
     return value
 
 
-def _optional_pr_str(pull_request: dict[str, object], key: str, *, default: str) -> str:
+def _optional_pr_str(
+    pull_request: Mapping[str, object],
+    key: str,
+    *,
+    default: str,
+) -> str:
     """Read an optional string from the pull_request table."""
     value = pull_request.get(key, default)
     if not isinstance(value, str):
@@ -1232,7 +1212,7 @@ def _optional_pr_str(pull_request: dict[str, object], key: str, *, default: str)
 
 
 def _optional_pr_bool(
-    pull_request: dict[str, object],
+    pull_request: Mapping[str, object],
     key: str,
     *,
     default: bool,
@@ -1247,7 +1227,7 @@ def _optional_pr_bool(
 
 
 def _optional_str_tuple(
-    sync: dict[str, object],
+    sync: Mapping[str, object],
     key: str,
     *,
     default: tuple[str, ...],
@@ -1258,7 +1238,7 @@ def _optional_str_tuple(
     return _required_str_tuple(sync, key)
 
 
-def _required_str_tuple(sync: dict[str, object], key: str) -> tuple[str, ...]:
+def _required_str_tuple(sync: Mapping[str, object], key: str) -> tuple[str, ...]:
     """Read a required list of strings from the sync table."""
     value = sync.get(key, [])
     if not isinstance(value, list):
@@ -1720,3 +1700,29 @@ def _validate_python_pin(public: Path) -> None:
     lines = ignore.read_text(encoding="utf-8").splitlines() if ignore.exists() else []
     if any(line.strip() in {".python-version", "/.python-version"} for line in lines):
         raise ConfigError(".gitignore must not ignore .python-version.")
+
+
+class _ReadKeys(Mapping[str, object]):
+    """The ``[sync]`` table, recording each key the loader asks for.
+
+    The accepted keys are then the ones read, so a setting the loader stops
+    reading is rejected rather than kept in a list beside the loader.
+    ``Mapping``'s ``get`` and ``in`` both look keys up through ``__getitem__``.
+    """
+
+    def __init__(self, table: dict[str, object]) -> None:
+        self._table = table
+        self.read: set[str] = set()
+
+    @override
+    def __getitem__(self, key: str, /) -> object:
+        self.read.add(key)
+        return self._table[key]
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._table)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._table)
