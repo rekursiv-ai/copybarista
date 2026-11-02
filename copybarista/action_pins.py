@@ -72,8 +72,8 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="actions/download-artifact",
-            sha="3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-            version="v8.0.1",
+            sha="9000827ccba6bdab643e8b6fd33ac0654aef8333",
+            version="v8.0.2",
         ),
         ActionPin(
             action="actions/setup-node",
@@ -82,12 +82,12 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="actions/setup-python",
-            sha="5fda3b95a4ea91299a34e894583c3862153e4b97",
-            version="v7.0.0",
+            sha="6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+            version="v7.1.0",
         ),
         ActionPin(
             action="actions/upload-artifact",
-            sha="043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            sha="cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             version="v7",
         ),
         ActionPin(
@@ -97,22 +97,22 @@ GITHUB_ACTION_PINS: Final = {
         ),
         ActionPin(
             action="astral-sh/setup-uv",
-            sha="bec219d24cd3e171d82865faccec33120bb574f4",
-            version="v10.1.0",
+            sha="68559e99cc807c1eb7e9238fd43a15bba460eec2",
+            version="v10.3.3",
         ),
         ActionPin(
             action="docker/build-push-action",
-            sha="53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+            sha="c3c9e263c25d99ce0380d002d59b67737d91b0dc",
             version="v7",
         ),
         ActionPin(
             action="docker/login-action",
-            sha="dbcb813823bdd20940b903addbd779551569679f",
+            sha="81c6f93d4bc991e510b342a00b419b3bb4efc5c6",
             version="v4",
         ),
         ActionPin(
             action="docker/setup-buildx-action",
-            sha="37fe631027851001ddb9b187196cc803df7f5f0e",
+            sha="f87e5991a6d7451dcb8d9637bfbc97413f497069",
             version="v4",
         ),
         ActionPin(
