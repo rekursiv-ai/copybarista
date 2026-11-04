@@ -45,7 +45,9 @@ CONTROL_EXCLUDES: Final = (
 )
 NPM_WORKFLOW_FILENAME: Final = "publish-npm.yml"
 CI_COMMANDS: Final = (
-    "uv sync --frozen --all-groups",
+    # Compiled here, not on first import: pytest's `error` filter otherwise turns a
+    # dependency's SyntaxWarning (torchao 0.18's docstring) into a collection error.
+    "uv sync --frozen --all-groups --compile-bytecode",
     (
         "SKIP=superseded-at-pre-push uv run pre-commit run --all-files "
         "--hook-stage pre-commit"
