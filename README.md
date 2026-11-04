@@ -240,7 +240,7 @@ project-relative release-tree checker before opening the public PR, and
 Use `refresh_public_lockfile = true` in `copybarista.sync.toml` when the source
 lockfile contains private or source-specific entries but the public repository
 should publish its own generated `uv.lock`. Pair that with
-`uv sync --frozen --all-groups` in validation commands so public CI proves the
+`uv sync --frozen --all-groups --compile-bytecode` in validation commands so public CI proves the
 generated lockfile is current.
 
 Validate the scaffolding before wiring GitHub Actions:
