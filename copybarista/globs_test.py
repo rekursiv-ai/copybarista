@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from copybarista.errors import GlobError
-from copybarista.globs import GlobSet
+from copybarista.globs import (
+    GlobSet,
+    Globstar,
+    _escape_char_class,
+    validate_pattern,
+)
 
 
 def test_include_globstar_matches_any_depth():
@@ -224,6 +231,117 @@ def test_backslash_makes_a_glob_character_literal():
 def test_rejects_unsupported_or_unsafe_patterns(pattern: str):
     with pytest.raises(GlobError):
         GlobSet(include=(pattern,))
+
+
+@pytest.mark.parametrize("path", ["/X/aX/", "\\X\\aX\\", "X/aX"])
+def test_path_normalization_preserves_literal_edge_characters(path: str) -> None:
+    included = GlobSet(include=("X/aX",))
+    excluded = GlobSet(include=("**",), exclude=("X/aX",))
+
+    assert included.matches(path)
+    assert excluded.excludes(path)
+    assert not excluded.matches(path)
+
+
+@pytest.mark.parametrize("pattern", ["X/aX/", " X ", "a/"])
+def test_validate_pattern_strips_only_trailing_slashes(pattern: str) -> None:
+    assert validate_pattern(pattern) == pattern.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matched", "missed"),
+    [
+        ("[azc]", "z", "X"),
+        ("[a-]", "-", "b"),
+        ("[ab][cd]", "ad", "acX"),
+        ("[ab]X", "aX", "aY"),
+        ("{a,b}{c,d}", "ad", "ax"),
+        ("{a,b}X", "aX", "aY"),
+        ("**X", "a/bX", "a/bY"),
+        ("*X", "aX", "aY"),
+        ("a\\*", "a*", "abc"),
+    ],
+)
+def test_glob_tokens_keep_adjacent_literals(
+    pattern: str,
+    matched: str,
+    missed: str,
+) -> None:
+    globs = GlobSet(include=(pattern,))
+    assert globs.matches(matched)
+    assert not globs.matches(missed)
+
+
+def test_trailing_escape_is_literal_not_an_incomplete_escape() -> None:
+    globs = GlobSet(include=("a\\",))
+
+    assert validate_pattern("a\\") == "a\\"
+    assert not globs.matches("a")
+
+
+@pytest.mark.parametrize(
+    ("content", "matched", "missed"),
+    [
+        ("-a", "-a", "bz"),
+        ("a-", "-a", "bz"),
+        ("a-c", "abc", "dz"),
+        ("[]", "[]", "az"),
+        ("\\", "\\", "az"),
+        ("^", "^", "az"),
+    ],
+)
+def test_character_class_escape_preserves_regex_language(
+    content: str,
+    matched: str,
+    missed: str,
+) -> None:
+    pattern = re.compile(f"[{_escape_char_class(content)}]")
+
+    assert all(pattern.fullmatch(char) for char in matched)
+    assert all(pattern.fullmatch(char) is None for char in missed)
+
+
+@pytest.mark.parametrize("pattern", ["[z-a]", "[9-0]"])
+def test_character_classes_reject_reversed_ranges(pattern: str) -> None:
+    with pytest.raises(re.error, match="bad character range"):
+        GlobSet(include=(pattern,))
+
+
+@pytest.mark.parametrize("globstar", ["one_or_more", "zero_or_more"])
+def test_brace_choices_inherit_globstar_policy(globstar: Globstar) -> None:
+    globs = GlobSet(
+        include=("{**/a,plain}",),
+        globstar=globstar,
+    )
+
+    assert globs.matches("x/a")
+    assert globs.matches("a") == (globstar == "zero_or_more")
+    assert globs.matches("plain")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [
+        ("", "Glob pattern must not be empty"),
+        ("/a", "Glob pattern must be relative without '..': /a"),
+        ("a/../b", "Glob pattern must be relative without '..': a/../b"),
+        ("[", "Unbalanced glob syntax in pattern: ["),
+        ("]", "Unbalanced glob syntax in pattern: ]"),
+        ("[[a]", "Unbalanced glob syntax in pattern: [[a]"),
+        ("\\*a[", "Unbalanced glob syntax in pattern: \\*a["),
+        ("[]", "Empty character class in glob pattern: []"),
+        ("[!]", "Invalid character class in glob pattern: [!]"),
+        ("{a}", "Invalid brace alternation in glob pattern: {a}"),
+        ("{,a}", "Invalid brace alternation in glob pattern: {,a}"),
+    ],
+)
+def test_invalid_glob_diagnostics_identify_the_pattern(
+    pattern: str,
+    message: str,
+) -> None:
+    with pytest.raises(GlobError) as error:
+        GlobSet(include=(pattern,))
+    assert str(error.value) == message
 
 
 if __name__ == "__main__":

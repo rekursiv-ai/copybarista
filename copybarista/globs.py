@@ -161,8 +161,8 @@ def _check_balanced(*, pattern: str, left: str, right: str) -> None:
 def _glob_to_regex(
     pattern: str,
     *,
-    globstar: Globstar = "one_or_more",
-    min_brace_choices: int = 2,
+    globstar: Globstar,
+    min_brace_choices: int,
 ) -> str:
     """Translate the supported glob subset to a Python regex."""
     pattern = validate_pattern(pattern)
@@ -222,13 +222,7 @@ def _char_class_regex(*, pattern: str, start: int) -> tuple[str, int]:
 
 def _escape_char_class(content: str) -> str:
     """Escape character-class content while preserving simple ranges."""
-    escaped: list[str] = []
-    for idx, char in enumerate(content):
-        if char == "-" and 0 < idx < len(content) - 1:
-            escaped.append("-")
-        else:
-            escaped.append(re.escape(char))
-    return "".join(escaped)
+    return "".join("-" if char == "-" else re.escape(char) for char in content)
 
 
 def _brace_regex(
