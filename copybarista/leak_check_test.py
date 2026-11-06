@@ -78,6 +78,65 @@ def test_a_violation_without_a_message_names_forbidden_content() -> None:
     )
 
 
+def test_check_leaks_preserves_custom_messages_without_echoing_secrets(tmp_path: Path):
+    (tmp_path / "private.txt").write_text("SECRET-123\n", encoding="utf-8")
+    violations = check_leaks(
+        root=tmp_path,
+        policy=LeakCheck(
+            forbidden_path=(
+                ForbiddenPathRule(
+                    id="private-path",
+                    paths=("private.txt",),
+                    message="Remove the private file.",
+                ),
+            ),
+            forbidden_text=(
+                ForbiddenTextRule(
+                    id="private-token",
+                    pattern=r"SECRET-\d+",
+                    paths=("*.txt",),
+                    message="Remove the private token.",
+                ),
+            ),
+        ),
+        files=FileSelection(include=("**",), exclude=()),
+    )
+
+    assert [violation.message for violation in violations] == [
+        "Remove the private file.",
+        "Remove the private token.",
+    ]
+    assert [violation.format() for violation in violations] == [
+        "private-path: private.txt: Remove the private file.",
+        "private-token: private.txt:1: Remove the private token.",
+    ]
+    assert all("SECRET-123" not in violation.format() for violation in violations)
+
+
+def test_check_leaks_keeps_configured_text_rule_order_and_first_file_lines(
+    tmp_path: Path,
+):
+    (tmp_path / "b.txt").write_text("zeta\nzeta\nalpha\nalpha\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("alpha\nalpha\nzeta\nzeta\n", encoding="utf-8")
+    violations = check_leaks(
+        root=tmp_path,
+        policy=LeakCheck(
+            forbidden_text=(
+                ForbiddenTextRule(id="z-rule", pattern="zeta", paths=("*.txt",)),
+                ForbiddenTextRule(id="a-rule", pattern="alpha", paths=("*.txt",)),
+            ),
+        ),
+        files=FileSelection(include=("**",), exclude=()),
+    )
+
+    assert [(v.rule_id, v.path, v.line) for v in violations] == [
+        ("z-rule", "a.txt", 3),
+        ("z-rule", "b.txt", 1),
+        ("a-rule", "a.txt", 1),
+        ("a-rule", "b.txt", 3),
+    ]
+
+
 def test_enforce_leak_check_does_not_echo_matched_text(tmp_path: Path):
     (tmp_path / "module.py").write_text("token = 'SECRET-123'\n", encoding="utf-8")
     config = parse_config(

@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from copybarista.destinations import (
+    _validate_destination,
     write_folder_destination,
 )
 from copybarista.errors import ExportError
 from copybarista.workflow import StagedTree
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _staged_tree(root: Path) -> StagedTree:
@@ -65,7 +62,6 @@ def test_folder_destination_refuses_to_replace_without_force(tmp_path: Path):
             destination=destination,
             source_ref=source_ref,
             source_root=source_root,
-            replace_existing=False,
         )
 
     assert sorted(path.name for path in destination.iterdir()) == ["keep.txt"]
@@ -155,13 +151,16 @@ def test_folder_destination_rejects_destination_symlink(tmp_path: Path):
     assert target.is_dir()
 
 
-def test_folder_destination_rejects_staged_symlink_escape(tmp_path: Path):
+@pytest.mark.parametrize("nested", [False, True])
+def test_folder_destination_rejects_staged_symlink_escape(tmp_path: Path, nested: bool):
     source_ref = tmp_path / "repo"
     source_root = source_ref / "project"
     source_root.mkdir(parents=True)
     stage = tmp_path / "stage"
     stage.mkdir()
-    (stage / "escape").symlink_to("../outside.txt")
+    link_parent = stage / "subdir" if nested else stage
+    link_parent.mkdir(exist_ok=True)
+    (link_parent / "escape").symlink_to(tmp_path / "outside.txt")
 
     with pytest.raises(ExportError, match="outside staged tree"):
         write_folder_destination(
@@ -171,6 +170,42 @@ def test_folder_destination_rejects_staged_symlink_escape(tmp_path: Path):
             source_root=source_root,
             replace_existing=True,
         )
+
+
+@pytest.mark.parametrize("consume_staging", [False, True])
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_invalid_staging_preserves_existing_destination(
+    tmp_path: Path,
+    consume_staging: bool,
+    replace_existing: bool,
+):
+    source_ref = tmp_path / "repo"
+    source_root = source_ref / "project"
+    source_root.mkdir(parents=True)
+    destination = tmp_path / "out"
+    destination.mkdir()
+    (destination / "keep.txt").write_bytes(b"original\n")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "escape").symlink_to("../outside.txt")
+
+    message = (
+        "outside staged tree" if replace_existing else "pass --force to replace it"
+    )
+    with pytest.raises(ExportError, match=message):
+        write_folder_destination(
+            StagedTree(root=stage, files=(), transforms=()),
+            destination=destination,
+            source_ref=source_ref,
+            source_root=source_root,
+            replace_existing=replace_existing,
+            consume_staging=consume_staging,
+        )
+
+    assert destination.is_dir()
+    assert sorted(path.name for path in destination.iterdir()) == ["keep.txt"]
+    assert (destination / "keep.txt").read_bytes() == b"original\n"
+    assert (stage / "escape").readlink().as_posix() == "../outside.txt"
 
 
 def test_folder_destination_rejects_paths_inside_home(
@@ -194,6 +229,64 @@ def test_folder_destination_rejects_paths_inside_home(
             source_root=source_root,
             replace_existing=True,
         )
+
+
+def test_filesystem_root_is_rejected_without_publishing(tmp_path: Path):
+    with pytest.raises(ExportError):
+        _validate_destination(
+            source_ref=tmp_path / "repo",
+            source_root=tmp_path / "repo" / "project",
+            destination=Path("/").resolve(),
+            replacing_existing=True,
+        )
+
+
+def test_default_copy_keeps_staging_and_internal_symlink(tmp_path: Path):
+    source_ref = tmp_path / "repo"
+    source_root = source_ref / "project"
+    source_root.mkdir(parents=True)
+    staged = _staged_tree(tmp_path / "stage")
+    (staged.root / "link").symlink_to("README.md")
+    destination = tmp_path / "out"
+
+    result = write_folder_destination(
+        staged,
+        destination=destination,
+        source_ref=source_ref,
+        source_root=source_root,
+    )
+
+    assert result.status == "created"
+    assert (staged.root / "README.md").read_bytes() == b"hello\n"
+    assert (staged.root / "link").readlink() == Path("README.md")
+    assert (destination / "link").readlink() == Path("README.md")
+    assert (destination / "link").read_bytes() == b"hello\n"
+
+
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_new_destination_inside_home_is_allowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replace_existing: bool,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", home.as_posix())
+    source_ref = tmp_path / "repo"
+    source_root = source_ref / "project"
+    source_root.mkdir(parents=True)
+    destination = home / "out"
+
+    result = write_folder_destination(
+        _staged_tree(tmp_path / "stage"),
+        destination=destination,
+        source_ref=source_ref,
+        source_root=source_root,
+        replace_existing=replace_existing,
+    )
+
+    assert result.status == "created"
+    assert (destination / "README.md").read_bytes() == b"hello\n"
 
 
 if __name__ == "__main__":
