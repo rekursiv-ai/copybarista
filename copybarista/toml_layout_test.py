@@ -182,11 +182,41 @@ def test_code_lines_hand_each_comment_to_the_code_below_it(
         ),
         ("[t]\n\n\na = 1\n\n# End.\n", "[t]\na = 1\n"),
         ('a = """\n# not\n\n"""\n', 'a = """\n# not\n\n"""\n'),
+        ("a = 1", "a = 1"),
+        ("a = 1#UNIX\nb = 2\n", "a = 1\nb = 2\n"),
+        ('a = """\nUNIX\nkeep \t\n"""\n', 'a = """\nUNIX\nkeep \t\n"""\n'),
         ("a = 1\r\n# B.\r\nb = 2", "a = 1\r\nb = 2"),
     ],
 )
 def test_uncommented_drops_comments_and_blank_lines(text: str, expected: str):
     assert uncommented(text) == expected
+
+
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", ""])
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('a = "left{separator}right"\nb = 2', 'a = "left{separator}right"\nb = 2'),
+        (
+            '"left{separator}right" = 1 # Drop.\nb = 2',
+            '"left{separator}right" = 1\nb = 2',
+        ),
+        ('["left{separator}right"] # Drop.\nb = 2', '["left{separator}right"]\nb = 2'),
+        ("# Drop{separator}this.\na = 1\nb = 2", "a = 1\nb = 2"),
+    ],
+)
+def test_uncommented_preserves_unicode_separators_without_losing_following_keys(
+    separator: str,
+    ending: str,
+    source: str,
+    expected: str,
+) -> None:
+    newline = ending or "\n"
+    text = source.format(separator=separator).replace("\n", newline) + ending
+    kept = expected.format(separator=separator).replace("\n", newline) + ending
+
+    assert uncommented(text) == kept
 
 
 @pytest.mark.parametrize("read", [layout, code_lines, uncommented])

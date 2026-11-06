@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from io import TextIOBase
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, override
 
 import hashlib
+import os
 import re
 import subprocess
+import sys
+import textwrap
+import time
 
 import pytest
 
@@ -18,7 +23,6 @@ from copybarista.scripts.sync_import_change import (
     ImportRequest,
     _commit_author,
     _gh_pr_exists,
-    _run_import_change,
     _string_bool,
     _validate_target,
     import_branch_name,
@@ -455,7 +459,7 @@ def test_main_accepts_generic_project_validation_args(
 
     monkeypatch.setattr(sync_import_change, "run_import_sync", fake_run_import_sync)
 
-    sync_import_change.run(
+    exit_code = sync_import_change.run(
         [
             "--project-path",
             "packages/configgle",
@@ -470,9 +474,474 @@ def test_main_accepts_generic_project_validation_args(
         ],
     )
 
+    assert exit_code == 0
     assert captured[0].project_path == Path("packages/configgle")
     assert captured[0].validation_commands == ("uv sync --all-groups", "uv run pytest")
     assert not captured[0].refresh_public_lockfile
+
+
+@pytest.mark.parametrize("open_pr_only", [False, True])
+@pytest.mark.parametrize("auto_merge", [False, True])
+@pytest.mark.parametrize(
+    ("existing_pr", "fetch_status"),
+    [(False, 0), (False, 128), (True, 0)],
+)
+@pytest.mark.parametrize(
+    "retry_error",
+    [
+        "",
+        "HTTP 503",
+        "timeout",
+        "timed out",
+        "try resubmitting",
+        "temporarily unavailable",
+    ],
+)
+def test_cli_publishes_the_requested_import_with_its_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_pr_only: bool,
+    auto_merge: bool,
+    existing_pr: bool,
+    fetch_status: int,
+    retry_error: str,
+) -> None:
+    target = tmp_path / "target"
+    runner = tmp_path / "runner"
+    public_base = tmp_path / "public-base"
+    public_head = tmp_path / "public-head"
+    for directory in (target, runner, public_base, public_head):
+        directory.mkdir()
+    processes = SyncProcesses(
+        list_errors=[retry_error] if retry_error else [],
+        deny_admin=auto_merge,
+        existing_pr=existing_pr,
+        fetch_status=fetch_status,
+    )
+    delays: list[object] = []
+    monkeypatch.setattr(subprocess, "run", processes)
+    monkeypatch.setattr(time, "sleep", delays.append)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    public_sha = "b" * 40
+    branch = "widget/import/reviewed-change"
+    argv = [
+        "--target-dir",
+        str(target),
+        "--runner-temp",
+        str(runner),
+        "--public-base",
+        str(public_base),
+        "--public-head",
+        str(public_head),
+        "--report",
+        str(tmp_path / "report.json"),
+        "--project-path",
+        "packages/widget",
+        "--target-repo",
+        "example/source",
+        "--base-branch",
+        "release",
+        "--public-repo",
+        "example/widget",
+        "--public-sha",
+        public_sha,
+        "--public-base-ref",
+        "public-base-ref",
+        "--public-head-ref",
+        "public-head-ref",
+        "--branch-prefix",
+        "widget/import/",
+        "--branch",
+        branch,
+        "--sync-label",
+        "Widget",
+        "--sync-user-name",
+        "Widget Sync",
+        "--sync-user-email",
+        "widget@example.com",
+        "--open-pr",
+        "true",
+        "--auto-merge",
+        str(auto_merge).lower(),
+        "--record-on-validation-failure",
+        "false",
+        "--validation-command",
+        "uv run pytest widget",
+    ]
+    if open_pr_only:
+        argv.append("--open-pr-only")
+
+    assert sync_import_change.run(argv) == 0
+
+    calls = [command for command, _ in processes.calls]
+    publications = [
+        command
+        for command in calls
+        if command[:3] in (["gh", "pr", "create"], ["gh", "pr", "edit"])
+    ]
+    (publication,) = publications
+    if existing_pr:
+        assert publication[:4] == ["gh", "pr", "edit", branch]
+    else:
+        assert publication[:3] == ["gh", "pr", "create"]
+        assert publication[publication.index("--base") + 1] == "release"
+        assert publication[publication.index("--head") + 1] == branch
+    assert publication[publication.index("--repo") + 1] == "example/source"
+    assert (
+        publication[publication.index("--title") + 1]
+        == f"Import Widget public changes {public_sha}"
+    )
+    body_file = Path(publication[publication.index("--body-file") + 1])
+    assert body_file.parent == runner
+    body = body_file.read_text(encoding="utf-8")
+    for provenance in (
+        "Widget",
+        "example/widget",
+        public_sha,
+        "public-base-ref",
+        "public-head-ref",
+        "a" * 40,
+    ):
+        assert provenance in body
+    (commit,) = [command for command in calls if command[:2] == ["git", "commit"]]
+    assert commit[commit.index("--author") + 1] == "Widget Sync <widget@example.com>"
+    assert (
+        commit[commit.index("-m") + 1] == f"Import Widget public changes {public_sha}"
+    )
+    for expected in (
+        ["git", "rev-parse", "HEAD"],
+        ["git", "config", "user.name", "Widget Sync"],
+        ["git", "config", "user.email", "widget@example.com"],
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"refs/heads/{branch}:refs/remotes/origin/{branch}",
+        ],
+        ["git", "switch", "-C", branch],
+        ["git", "add", "packages/widget"],
+        commit,
+        ["git", "push", "--force-with-lease", "origin", branch],
+    ):
+        (options,) = [
+            options for command, options in processes.calls if command == expected
+        ]
+        assert options["cwd"] == target
+    assert (
+        calls.index(["git", "switch", "-C", branch])
+        < calls.index(["git", "add", "packages/widget"])
+        < calls.index(commit)
+        < calls.index(["git", "push", "--force-with-lease", "origin", branch])
+        < calls.index(publication)
+    )
+    merges = [command for command in calls if command[:3] == ["gh", "pr", "merge"]]
+    if auto_merge:
+        merge_argv = [
+            "gh",
+            "pr",
+            "merge",
+            branch,
+            "--repo",
+            "example/source",
+            "--squash",
+            "--subject",
+            f"Import Widget public changes {public_sha}",
+            "--body",
+            f"Widget import branch: {branch}",
+        ]
+        assert merges == [[*merge_argv, "--admin"], [*merge_argv, "--auto"]]
+        assert calls.index(publication) < calls.index(merges[0])
+    else:
+        assert not merges
+    lists = [command for command in calls if command[:3] == ["gh", "pr", "list"]]
+    assert len(lists) == (2 if retry_error else 1)
+    assert all(
+        command
+        == [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "example/source",
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ]
+        for command in lists
+    )
+    assert len(delays) == bool(retry_error)
+    assert all(isinstance(delay, (int, float)) and delay >= 0 for delay in delays)
+    imports = [command for command in calls if "import-change" in command]
+    validations = [command for command in calls if command[0] == "bash"]
+    if open_pr_only:
+        assert not imports
+        assert not validations
+        assert all(command[0] in {"git", "gh"} for command in calls)
+    else:
+        (import_command,) = imports
+        assert import_command[import_command.index("--public-base") + 1] == str(
+            public_base,
+        )
+        assert import_command[import_command.index("--public-head") + 1] == str(
+            public_head,
+        )
+        (validation,) = validations
+        assert validation[-1] == "uv run pytest widget"
+        assert (
+            calls.index(import_command)
+            < calls.index(validation)
+            < calls.index(publication)
+        )
+        (export_options,) = [
+            options
+            for command, options in processes.calls
+            if command[:3] == ["uv", "--quiet", "export"]
+        ]
+        assert export_options["cwd"] == target
+        requirements = Path(
+            import_command[import_command.index("--with-requirements") + 1],
+        )
+        assert requirements.parent == runner
+        assert requirements.read_text(encoding="utf-8") == "pyyaml>=6\n"
+        command_prefix = [
+            "uv",
+            "--quiet",
+            "run",
+            "--no-project",
+            "--with-requirements",
+            str(requirements),
+            "python",
+            "-m",
+            "copybarista",
+        ]
+        assert import_command == [
+            *command_prefix,
+            "import-change",
+            str(target / "packages/widget" / "copy.barista.toml"),
+            "--public-base",
+            str(public_base),
+            "--public-head",
+            str(public_head),
+            "--source-base",
+            str(target),
+            "--destination",
+            str(target),
+            "--merge-import",
+            "--json",
+        ]
+        (export_command,) = [command for command in calls if "--folder-dir" in command]
+        assert export_command == [
+            *command_prefix,
+            "export",
+            str(target / "packages/widget" / "copy.barista.toml"),
+            str(target),
+            "--folder-dir",
+            str(runner / "copybarista-validation-tree"),
+            "--force",
+        ]
+        (validation_options,) = [
+            options for command, options in processes.calls if command == validation
+        ]
+        assert validation_options["cwd"] == runner / "copybarista-validation-tree"
+        assert (tmp_path / "report.json").read_text(
+            encoding="utf-8",
+        ) == '{"imported":true}\n'
+        assert not (tmp_path / "report.json.validation-failed").exists()
+
+
+@pytest.mark.parametrize("settings", ["defaults", "environment", "environment-branch"])
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize("validation_status", [0, 7])
+def test_cli_defaults_and_environment_reach_the_published_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: str,
+    event: str,
+    validation_status: int,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "TARGET_REPO",
+        "BASE_BRANCH",
+        "GITHUB_REPOSITORY",
+        "GITHUB_SHA",
+        "COPYBARISTA_SYNC_USER_NAME",
+        "COPYBARISTA_SYNC_USER_EMAIL",
+        "COPYBARISTA_IMPORT_BRANCH",
+        "COPYBARISTA_IMPORT_BRANCH_PREFIX",
+        "COPYBARISTA_SYNC_LABEL",
+        "DEFAULT_SYNC_LABEL",
+        "IMPORT_REPORT",
+        "COPYBARISTA_AUTO_MERGE",
+        "RUNNER_TEMP",
+        "GITHUB_EVENT_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    target = tmp_path / "target"
+    runner = tmp_path / "runner"
+    for directory in (
+        target,
+        runner,
+        tmp_path / "public-base",
+        tmp_path / "public-head",
+    ):
+        directory.mkdir()
+    processes = SyncProcesses(deny_admin=True, validation_status=validation_status)
+    monkeypatch.setattr(subprocess, "run", processes)
+    monkeypatch.setenv("RUNNER_TEMP", str(runner))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    public_sha = "b" * 40
+    argv = [
+        "--project-path",
+        "packages/widget",
+        "--public-base-ref",
+        "public-base-ref",
+        "--public-head-ref",
+        "public-head-ref",
+        "--open-pr",
+        "true",
+        "--validation-command",
+        "uv run pytest widget",
+    ]
+    if settings == "defaults":
+        argv.extend(
+            [
+                "--target-repo",
+                "example/source",
+                "--public-repo",
+                "example/widget",
+                "--public-sha",
+                public_sha,
+            ],
+        )
+        base_branch = "main"
+        branch = "copybarista/import/sha-" + public_sha[:12]
+        label = sync_import_change.DEFAULT_SYNC_LABEL
+        user_name = sync_import_change.DEFAULT_SYNC_USER_NAME
+        user_email = sync_import_change.DEFAULT_SYNC_USER_EMAIL
+        report = tmp_path / "import-report.json"
+    else:
+        base_branch = "release"
+        branch = "widget/import/sha-" + public_sha[:12]
+        label = "Widget"
+        user_name = "Widget Sync"
+        user_email = "widget@example.com"
+        report = tmp_path / "reports" / "nested" / "requested.json"
+        for name, value in {
+            "TARGET_REPO": "example/source",
+            "BASE_BRANCH": base_branch,
+            "GITHUB_REPOSITORY": "example/widget",
+            "GITHUB_SHA": public_sha,
+            "COPYBARISTA_SYNC_USER_NAME": user_name,
+            "COPYBARISTA_SYNC_USER_EMAIL": user_email,
+            "COPYBARISTA_IMPORT_BRANCH_PREFIX": "widget/import/",
+            "COPYBARISTA_SYNC_LABEL": label,
+            "IMPORT_REPORT": str(report),
+            "COPYBARISTA_AUTO_MERGE": "false",
+        }.items():
+            monkeypatch.setenv(name, value)
+        if settings == "environment-branch":
+            branch = "widget/import/reviewed-change"
+            monkeypatch.setenv("COPYBARISTA_IMPORT_BRANCH", branch)
+
+    if validation_status and event == "pull_request":
+        with pytest.raises(SystemExit) as failed:
+            sync_import_change.run(argv)
+        assert failed.value.code == validation_status
+    else:
+        assert sync_import_change.run(argv) == 0
+    assert report.read_text(encoding="utf-8") == '{"imported":true}\n'
+    assert Path(f"{report}.validation-failed").exists() == (
+        bool(validation_status) and event == "push"
+    )
+
+    calls = [command for command, _ in processes.calls]
+    if validation_status and event == "pull_request":
+        assert all(command[0] != "gh" for command in calls)
+        assert all(
+            command[:2] not in (["git", "push"], ["git", "commit"])
+            for command, options in processes.calls
+            if options["cwd"] == target
+        )
+        return
+    (create,) = [command for command in calls if command[:3] == ["gh", "pr", "create"]]
+    assert create[create.index("--repo") + 1] == "example/source"
+    assert create[create.index("--base") + 1] == base_branch
+    assert create[create.index("--head") + 1] == branch
+    assert (
+        create[create.index("--title") + 1]
+        == f"Import {label} public changes {public_sha}"
+    )
+    body_file = Path(create[create.index("--body-file") + 1])
+    assert body_file.parent == runner
+    body = body_file.read_text(encoding="utf-8")
+    for provenance in (label, "example/widget", public_sha, "a" * 40):
+        assert provenance in body
+    assert ["git", "config", "user.name", user_name] in calls
+    assert ["git", "config", "user.email", user_email] in calls
+    (commit,) = [command for command in calls if command[:2] == ["git", "commit"]]
+    assert commit[commit.index("--author") + 1] == f"{user_name} <{user_email}>"
+    assert (
+        commit[commit.index("-m") + 1] == f"Import {label} public changes {public_sha}"
+    )
+    assert ["git", "switch", "-C", branch] in calls
+    assert ["git", "push", "--force-with-lease", "origin", branch] in calls
+    merges = [command for command in calls if command[:3] == ["gh", "pr", "merge"]]
+    if settings == "defaults":
+        admin, fallback = merges
+        assert "--admin" in admin
+        assert "--auto" in fallback
+    else:
+        assert not merges
+    (import_command,) = [command for command in calls if "import-change" in command]
+    for option, path in (
+        ("--public-base", tmp_path / "public-base"),
+        ("--public-head", tmp_path / "public-head"),
+        ("--source-base", target),
+        ("--destination", target),
+    ):
+        assert import_command[import_command.index(option) + 1] == str(path)
+    for command, options in processes.calls:
+        if command[:3] == ["uv", "--quiet", "export"] or "import-change" in command:
+            assert options["cwd"] == target
+        if command[0] == "bash":
+            assert options["cwd"] == runner / "copybarista-validation-tree"
+        if "--folder-dir" in command:
+            assert command[command.index("--folder-dir") + 1] == str(
+                runner / "copybarista-validation-tree",
+            )
+    assert (runner / "copybarista-requirements.txt").read_text(
+        encoding="utf-8",
+    ) == "pyyaml>=6\n"
+
+
+def test_cli_runner_default_is_resolved_without_writing_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[ImportRequest] = []
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+    monkeypatch.setattr(sync_import_change, "run_import_sync", requests.append)
+
+    assert (
+        sync_import_change.run(
+            [
+                "--project-path",
+                "packages/widget",
+                "--public-base-ref",
+                "public-base-ref",
+                "--public-head-ref",
+                "public-head-ref",
+            ],
+        )
+        == 0
+    )
+
+    (request,) = requests
+    assert request.runner_temp == sync_import_change.DEFAULT_RUNNER_TEMP.resolve()
 
 
 def test_export_copybarista_requirements_uses_frozen(
@@ -601,82 +1070,230 @@ def test_main_accepts_refresh_public_lockfile_arg(
     assert captured[0].refresh_public_lockfile
 
 
-def test_import_change_ignores_generated_public_lockfile(
+@pytest.mark.parametrize("head_has_lock", [False, True])
+def test_cli_refresh_preserves_public_trees_and_relocks_the_validation_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    head_has_lock: bool,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
     public_base = tmp_path / "public-base"
     public_head = tmp_path / "public-head"
     target = tmp_path / "target"
     project = target / "package"
-    for root in (public_base, public_head, project, target / "tools" / "copybarista"):
+    for root in (public_base, public_head, project):
         root.mkdir(parents=True)
     (public_base / "module.py").write_text("base\n", encoding="utf-8")
     (public_base / "uv.lock").write_text("base lock\n", encoding="utf-8")
     (public_head / "module.py").write_text("head\n", encoding="utf-8")
-    (public_head / "uv.lock").write_text("head lock\n", encoding="utf-8")
+    if head_has_lock:
+        (public_head / "uv.lock").write_text("head lock\n", encoding="utf-8")
+    (public_base / ".git").mkdir()
+    (public_base / ".git" / "HEAD").write_text("base metadata\n", encoding="utf-8")
+    (public_head / ".git").write_text("head worktree metadata\n", encoding="utf-8")
     for public in (public_base, public_head):
+        (public / "module-link.py").symlink_to("module.py")
+        (public / "missing.py").symlink_to("absent.py")
         (public / "examples/widget").mkdir(parents=True)
         (public / "examples/widget/uv.lock").write_text(
             "nested lock\n",
             encoding="utf-8",
         )
     (project / "copy.barista.toml").write_text("[workflow]\n", encoding="utf-8")
-    calls: list[list[str]] = []
+    (target / "uv.lock").write_text("source lock\n", encoding="utf-8")
+    report = tmp_path / "reports" / "nested" / "import.json"
+    processes = SyncProcesses()
+    sanitized: list[Path] = []
 
-    def fake_run(
+    def run(
         argv: list[str],
-        **_: object,
+        **options: object,
     ) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
-        sanitized_base = Path(argv[argv.index("--public-base") + 1])
-        sanitized_head = Path(argv[argv.index("--public-head") + 1])
-        assert sanitized_base != public_base
-        assert sanitized_head != public_head
-        assert (sanitized_base / "module.py").read_text(encoding="utf-8") == "base\n"
-        assert (sanitized_head / "module.py").read_text(encoding="utf-8") == "head\n"
-        assert not (sanitized_base / "uv.lock").exists()
-        assert not (sanitized_head / "uv.lock").exists()
-        assert (
-            sanitized_base / "examples/widget/uv.lock"
-        ).read_text() == "nested lock\n"
-        assert (
-            sanitized_head / "examples/widget/uv.lock"
-        ).read_text() == "nested lock\n"
-        return subprocess.CompletedProcess(argv, 0)
+        if "import-change" in argv:
+            assert options["cwd"] == target
+            for option, original, content in (
+                ("--public-base", public_base, "base\n"),
+                ("--public-head", public_head, "head\n"),
+            ):
+                copied = Path(argv[argv.index(option) + 1])
+                sanitized.append(copied)
+                assert copied != original
+                assert copied.is_relative_to(runner_temp)
+                assert (copied / "module.py").read_text(encoding="utf-8") == content
+                assert (copied / "module-link.py").is_symlink()
+                assert (copied / "module-link.py").readlink() == Path("module.py")
+                assert (copied / "missing.py").is_symlink()
+                assert (copied / "missing.py").readlink() == Path("absent.py")
+                assert not (copied / ".git").exists()
+                assert not (copied / "uv.lock").exists()
+                assert (copied / "examples/widget/uv.lock").read_text(
+                    encoding="utf-8",
+                ) == "nested lock\n"
+        done = processes(argv, **options)
+        if "--folder-dir" in argv:
+            assert options["cwd"] == target
+            tree = Path(argv[argv.index("--folder-dir") + 1])
+            (tree / "pyproject.toml").write_text(
+                "[tool.uv.sources]\n"
+                'treekle = { git = "https://example.com/treekle", branch = "main" }\n',
+                encoding="utf-8",
+            )
+        return done
 
-    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+    monkeypatch.setattr(subprocess, "run", run)
 
-    _run_import_change(
-        request=ImportRequest(
-            public_base=public_base,
-            public_head=public_head,
-            target_dir=target,
-            target_repo="rekursiv-ai/source",
-            project_path=Path("package"),
-            base_branch="main",
-            public_repo="rekursiv-ai/public",
-            public_sha="abcdef1234567890abcdef1234567890abcdef12",
-            public_base_ref="base",
-            public_head_ref="head",
-            branch="copybarista/import/sha-abcdef1234567890abcdef1234567890abcdef12",
-            sync_label="Package",
-            sync_user_name="copybarista",
-            sync_user_email="copybarista@example.com",
-            report=tmp_path / "report.json",
-            open_pr=False,
-            open_pr_only=False,
-            runner_temp=runner_temp,
-            validation_commands=(),
-            refresh_public_lockfile=True,
-        ),
-        project=project,
-        requirements=tmp_path / "copybarista-requirements.txt",
+    assert (
+        sync_import_change.run(
+            [
+                "--project-path",
+                "package",
+                "--public-base",
+                str(public_base),
+                "--public-head",
+                str(public_head),
+                "--target-dir",
+                str(target),
+                "--public-base-ref",
+                "base",
+                "--public-head-ref",
+                "head",
+                "--runner-temp",
+                str(runner_temp),
+                "--report",
+                str(report),
+                "--refresh-public-lockfile",
+                "--validation-command",
+                "uv run pytest package",
+                "--open-pr",
+                "false",
+                "--record-on-validation-failure",
+                "false",
+            ],
+        )
+        == 0
     )
 
-    assert len(calls) == 1
+    assert len(sanitized) == 2
+    assert all(not copied.exists() for copied in sanitized)
+    assert (public_base / "uv.lock").read_text(encoding="utf-8") == "base lock\n"
+    if head_has_lock:
+        assert (public_head / "uv.lock").read_text(encoding="utf-8") == "head lock\n"
+    else:
+        assert not (public_head / "uv.lock").exists()
+    assert (public_base / ".git" / "HEAD").read_text(
+        encoding="utf-8",
+    ) == "base metadata\n"
+    assert (public_head / ".git").read_text(
+        encoding="utf-8",
+    ) == "head worktree metadata\n"
+    for public, content in ((public_base, "base\n"), (public_head, "head\n")):
+        assert (public / "module.py").read_text(encoding="utf-8") == content
+        assert (public / "module-link.py").is_symlink()
+        assert (public / "module-link.py").readlink() == Path("module.py")
+        assert (public / "missing.py").is_symlink()
+    calls = [command for command, _ in processes.calls]
+    relock = ["uv", "lock", "--upgrade-package", "treekle"]
+    (relock_options,) = [
+        options for command, options in processes.calls if command == relock
+    ]
+    tree = runner_temp / "copybarista-validation-tree"
+    assert relock_options["cwd"] == tree
+    assert (tree / "uv.lock").read_text(encoding="utf-8") == "source lock\n"
+    (validation,) = [command for command in calls if command[0] == "bash"]
+    assert validation[-1] == "uv run pytest package"
+    assert (
+        calls.index(relock)
+        < calls.index(["git", "add", "--all"])
+        < calls.index(
+            validation,
+        )
+    )
+    (validation_options,) = [
+        options for command, options in processes.calls if command == validation
+    ]
+    assert validation_options["cwd"] == tree
+    assert report.read_text(encoding="utf-8") == '{"imported":true}\n'
+
+
+@pytest.mark.cli_python_subprocess
+@pytest.mark.parametrize("flow", ["refresh", "publication"])
+def test_cli_preserves_utf8_protocols_under_a_native_ascii_startup(
+    tmp_path: Path,
+    flow: str,
+) -> None:
+    """Exercise the UTF-8 protocol here and under a native ASCII startup."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        assert_cli_utf8_protocol(parent, monkeypatch=patch, flow=flow)
+    (tmp_path / "conftest.py").write_text(
+        "import sys\n"
+        f"sys.path[:] = {[str(Path(entry).resolve()) for entry in sys.path]!r}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "locale_probe_test.py").write_text(
+        textwrap.dedent(
+            f"""
+            import codecs
+            import locale
+            import sys
+
+            import pytest
+
+            from {__name__} import assert_cli_utf8_protocol
+
+
+            def test_native_ascii_protocol(tmp_path, monkeypatch):
+                assert sys.flags.utf8_mode == 0
+                assert codecs.lookup(locale.getencoding()).name == "ascii"
+                assert locale.setlocale(locale.LC_CTYPE) == "C"
+                assert_cli_utf8_protocol(
+                    tmp_path, monkeypatch=monkeypatch, flow={flow!r},
+                )
+                inputs = [tmp_path / "utf8-pyproject.toml"]
+                if {flow!r} == "refresh":
+                    inputs.append(
+                        tmp_path / "runner" / "copybarista-validation-tree"
+                        / "pyproject.toml"
+                    )
+                for path in inputs:
+                    with pytest.raises(UnicodeDecodeError):
+                        path.read_text(encoding=None)
+            """,
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "utf8=0",
+            "-m",
+            "pytest",
+            "locale_probe_test.py",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "PYTHONUTF8": "0",
+            "PYTHONCOERCECLOCALE": "0",
+            "PYTEST_ADDOPTS": "",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        },
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_run_import_sync_imports_then_validates(
@@ -1516,7 +2133,7 @@ def test_main_print_synced_base_prints_and_skips_import(
 
     monkeypatch.setattr(sync_import_change, "run_import_sync", fail_run_import_sync)
 
-    sync_import_change.run(
+    exit_code = sync_import_change.run(
         [
             "--print-synced-base",
             "--target-dir",
@@ -1528,7 +2145,31 @@ def test_main_print_synced_base_prints_and_skips_import(
         ],
     )
 
+    assert exit_code == 0
     assert capsys.readouterr().out.strip() == sha
+
+
+def test_cli_baseline_without_history_or_fallback_refuses_to_print_a_sha(
+    git: FakeGit,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _git_repo_with_commits(git, root=tmp_path, subjects=["Initial commit"])
+
+    with pytest.raises(ImportBaseError):
+        sync_import_change.run(
+            [
+                "--print-synced-base",
+                "--target-dir",
+                str(tmp_path),
+                "--sync-label",
+                "Sagent",
+                "--base-branch",
+                "main",
+            ],
+        )
+
+    assert capsys.readouterr().out == ""
 
 
 def test_main_print_synced_base_emits_fallback_without_history(
@@ -1610,6 +2251,62 @@ def test_main_print_synced_base_prefers_export_from_public_dir(
     )
 
     assert capsys.readouterr().out.strip() == public_shas[1]
+
+
+@pytest.mark.parametrize("tip", ["ledger-sha-subject", "forged-export"])
+def test_cli_baseline_authenticates_an_export_beneath_an_unreflected_tip(
+    git: FakeGit,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tip: str,
+) -> None:
+    target = tmp_path / "target"
+    public = tmp_path / "public"
+    branch = "sagent/export/main"
+    ledger_sha = git.commit(
+        public,
+        message="Imported public content",
+        files={"f": "old"},
+    )
+    export_sha = git.commit(
+        public,
+        message=f"Publish export\n\nSagent export branch: {branch}",
+        files={"f": "exported"},
+    )
+    git.branch(public, branch, at=export_sha)
+    _ = git.commit(
+        public,
+        message=(
+            ledger_sha
+            if tip == "ledger-sha-subject"
+            else f"Unreflected public change\n\nSagent export branch: {branch}"
+        ),
+        files={"f": "not reflected by source"},
+    )
+    _ = git.commit(
+        target,
+        message=f"Import Sagent public changes {ledger_sha}",
+        files={"f": "source"},
+    )
+
+    assert (
+        sync_import_change.run(
+            [
+                "--print-synced-base",
+                "--target-dir",
+                str(target),
+                "--public-dir",
+                str(public),
+                "--sync-label",
+                "Sagent",
+                "--base-branch",
+                "main",
+            ],
+        )
+        == 0
+    )
+
+    assert capsys.readouterr().out == export_sha + "\n"
 
 
 _MERGE_ARGV = [
@@ -2170,6 +2867,61 @@ class RecordingRun:
         return subprocess.CompletedProcess(argv, self.returncode, "out", "err")
 
 
+@dataclass(slots=True, kw_only=True)
+class SyncProcesses(RecordingRun):
+    """Model captured output and file redirection at the sync's process boundary."""
+
+    list_errors: list[str] = field(default_factory=list)
+    deny_admin: bool = False
+    validation_status: int = 0
+    existing_pr: bool = False
+    fetch_status: int = 0
+
+    @override
+    def __call__(
+        self,
+        argv: list[str],
+        **options: object,
+    ) -> subprocess.CompletedProcess[str]:
+        done = super(SyncProcesses, self).__call__(argv, **options)
+        output = ""
+        error = ""
+        if argv == ["git", "rev-parse", "HEAD"]:
+            output = "a" * 40 + "\n"
+        elif argv[:3] == ["git", "fetch", "origin"]:
+            done.returncode = self.fetch_status
+            if self.fetch_status:
+                error = f"fatal: couldn't find remote ref {argv[-1].split(':')[0]}\n"
+        elif argv[:3] == ["gh", "pr", "list"]:
+            if self.list_errors:
+                error = self.list_errors.pop(0)
+                done.returncode = 1
+            else:
+                output = '[{"number":17}]\n' if self.existing_pr else "[]\n"
+        elif (
+            argv[:3] == ["gh", "pr", "merge"] and "--admin" in argv and self.deny_admin
+        ):
+            error = "Pull request Protected branch hook declined\n"
+            done.returncode = 1
+        elif argv[:3] == ["uv", "--quiet", "export"]:
+            output = "pyyaml>=6\n"
+        elif "import-change" in argv:
+            output = '{"imported":true}\n'
+        elif "--folder-dir" in argv:
+            Path(argv[argv.index("--folder-dir") + 1]).mkdir()
+        elif argv[0] == "bash":
+            done.returncode = self.validation_status
+        stdout = options.get("stdout")
+        if isinstance(stdout, TextIOBase):
+            stdout.write(output)
+        return subprocess.CompletedProcess(
+            argv,
+            done.returncode,
+            output if stdout == subprocess.PIPE else None,
+            error if options.get("stderr") == subprocess.PIPE else None,
+        )
+
+
 def test_a_command_is_logged_and_run_without_the_callers_virtualenv(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -2294,6 +3046,13 @@ def test_a_red_validation_off_main_records_no_import_and_fails(
     [
         ("copybarista/import/sha-1", True),
         ("main", False),
+        ("master", False),
+        ("MASTER", True),
+        ("pkg//x", False),
+        ("pkg/@{x", False),
+        ("pkg/X", True),
+        ("pkg/x?y", False),
+        ("pkg/x\ty", False),
         ("-x", False),
         ("/x", False),
         ("x/", False),
@@ -2310,6 +3069,10 @@ def test_valid_git_branch_name_refuses_what_a_force_push_must_not_name(
     valid: bool,
 ) -> None:
     assert sync_import_change.valid_git_branch_name(branch) is valid
+
+
+def test_branch_components_keep_safe_punctuation() -> None:
+    assert sync_import_change.branch_component("A/b-._") == "A-b-._"
 
 
 def test_run_gh_replays_an_uncaptured_success(
@@ -2481,6 +3244,133 @@ def test_export_branch_from_message_refuses_a_malformed_claim(message: str) -> N
         )
         == ""
     )
+
+
+def assert_cli_utf8_protocol(
+    tmp_path: Path,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    flow: str,
+) -> None:
+    """Assert the real CLI exchanges UTF-8 files with its external tools."""
+    target = tmp_path / "target"
+    runner = tmp_path / "runner"
+    public_base = tmp_path / "public-base"
+    public_head = tmp_path / "public-head"
+    for directory in (target, runner, public_base, public_head):
+        directory.mkdir()
+    pyproject = tmp_path / "utf8-pyproject.toml"
+    pyproject.write_text(
+        "# café\n[tool.uv.sources]\n"
+        'treekle = { git = "https://example.com/treekle", branch = "main" }\n',
+        encoding="utf-8",
+    )
+    processes = Utf8Processes(pyproject=pyproject)
+    monkeypatch.setattr(subprocess, "run", processes)
+    report = tmp_path / "report.json"
+    argv = [
+        "--target-dir",
+        str(target),
+        "--runner-temp",
+        str(runner),
+        "--public-base",
+        str(public_base),
+        "--public-head",
+        str(public_head),
+        "--report",
+        str(report),
+        "--project-path",
+        "package",
+        "--target-repo",
+        "example/source",
+        "--base-branch",
+        "release",
+        "--public-repo",
+        "example/widget",
+        "--public-sha",
+        "b" * 40,
+        "--public-base-ref",
+        "base",
+        "--public-head-ref",
+        "révision",
+        "--branch-prefix",
+        "copybarista/import/",
+        "--branch",
+        "copybarista/import/locale",
+        "--sync-label",
+        "Widget",
+        "--sync-user-name",
+        "Widget Sync",
+        "--sync-user-email",
+        "widget@example.com",
+        "--auto-merge",
+        "false",
+        "--open-pr",
+        "false",
+        "--record-on-validation-failure",
+        "false",
+        "--validation-command",
+        "validate-widget",
+    ]
+    argv.append("--refresh-public-lockfile" if flow == "refresh" else "--open-pr-only")
+
+    assert sync_import_change.run(argv) == 0
+
+    if flow == "publication":
+        assert processes.bodies == [
+            (
+                "Imports Widget public repository changes into the source repository.\n\n"
+                "- Public repository: `example/widget`\n"
+                f"- Public SHA: `{'b' * 40}`\n"
+                "- Public base: `base`\n"
+                "- Public head: `révision`\n"
+                f"- Source base: `{'a' * 40}`\n"
+                "- Import report: generated by `copybarista import-change`\n\n"
+                "Regenerate this PR before merging if source `main` changes.\n"
+            ).encode(),
+        ]
+        return
+    tree = runner / "copybarista-validation-tree"
+    calls = [command for command, _ in processes.calls]
+    relock = ["uv", "lock", "--upgrade-package", "treekle"]
+    (relock_options,) = [
+        options for command, options in processes.calls if command == relock
+    ]
+    assert relock_options["cwd"] == tree
+    (validation,) = [command for command in calls if command[0] == "bash"]
+    assert validation[-1] == "validate-widget"
+    assert calls.index(relock) < calls.index(["git", "add", "--all"])
+    assert calls.index(["git", "add", "--all"]) < calls.index(validation)
+    (validation_options,) = [
+        options for command, options in processes.calls if command == validation
+    ]
+    assert validation_options["cwd"] == tree
+    assert (tree / "pyproject.toml").read_bytes() == pyproject.read_bytes()
+    assert report.read_text(encoding="utf-8") == '{"imported":true}\n'
+
+
+@dataclass(slots=True, kw_only=True)
+class Utf8Processes(SyncProcesses):
+    """Supply UTF-8 export input and consume the published PR's actual bytes."""
+
+    pyproject: Path
+    bodies: list[bytes] = field(default_factory=list)
+
+    @override
+    def __call__(
+        self,
+        argv: list[str],
+        **options: object,
+    ) -> subprocess.CompletedProcess[str]:
+        done = super(Utf8Processes, self).__call__(argv, **options)
+        if "--folder-dir" in argv:
+            tree = Path(argv[argv.index("--folder-dir") + 1])
+            exported = tree / "pyproject.toml"
+            exported.write_bytes(self.pyproject.read_bytes())
+        if argv[:3] == ["gh", "pr", "create"]:
+            body_file = Path(argv[argv.index("--body-file") + 1])
+            self.bodies.append(body_file.read_bytes())
+        return done
 
 
 def _seven() -> int:

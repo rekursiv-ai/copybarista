@@ -13,7 +13,11 @@ import pytest
 from copybarista import transforms
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
-from copybarista.manifest import ManifestEntry
+from copybarista.manifest import (
+    ManifestEntry,
+    TransformFileReport,
+    TransformReport,
+)
 from copybarista.transforms import (
     apply_transforms,
     strip_source_regions,
@@ -24,6 +28,8 @@ from copybarista.transforms import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from copybarista.globs import Globstar
 
 
 @pytest.mark.parametrize(
@@ -1634,6 +1640,603 @@ def test_uncomment_block_strips_a_bare_hash_too(tmp_path: Path):
     )
 
     assert path.read_text(encoding="utf-8") == "a = 1\nb = 2\n"
+
+
+@pytest.mark.parametrize("globstar", [None, "zero_or_more", "one_or_more"])
+def test_transform_batch_applies_its_globstar_to_root_and_nested_files(
+    tmp_path: Path,
+    globstar: Globstar | None,
+):
+    (tmp_path / "pkg").mkdir()
+    root_file = tmp_path / "m.py"
+    nested_file = tmp_path / "pkg" / "m.py"
+    root_file.write_text("old\n", encoding="utf-8")
+    nested_file.write_text("old\n", encoding="utf-8")
+    transform = Transform(
+        id="rename",
+        type="replace",
+        path="**/m.py",
+        before="old",
+        after="new",
+    )
+
+    if globstar is None:
+        (report,) = apply_transforms(tmp_path, (transform,))
+    else:
+        (report,) = apply_transforms(tmp_path, (transform,), globstar=globstar)
+
+    assert nested_file.read_text(encoding="utf-8") == "new\n"
+    if globstar == "zero_or_more":
+        assert root_file.read_text(encoding="utf-8") == "new\n"
+        assert (report.changed, report.count) == (2, 2)
+        assert [file.destination for file in report.files] == ["m.py", "pkg/m.py"]
+    else:
+        assert root_file.read_text(encoding="utf-8") == "old\n"
+        assert (report.changed, report.count) == (1, 1)
+        assert [file.destination for file in report.files] == ["pkg/m.py"]
+
+
+def test_transform_after_move_matches_the_new_destination(tmp_path: Path):
+    (tmp_path / "old.py").write_text("old old\n", encoding="utf-8")
+
+    moved, replaced = apply_transforms(
+        tmp_path,
+        (
+            Transform(id="move", type="move", path="old.py", destination="pkg/new.py"),
+            Transform(
+                id="replace",
+                type="replace",
+                path="pkg/new.py",
+                before="old",
+                after="new",
+            ),
+        ),
+    )
+
+    assert not (tmp_path / "old.py").exists()
+    assert (tmp_path / "pkg" / "new.py").read_text(encoding="utf-8") == "new new\n"
+    assert (moved.changed, moved.count) == (1, 1)
+    assert moved.files == (
+        TransformFileReport(source="old.py", destination="pkg/new.py", count=1),
+    )
+    assert (replaced.changed, replaced.count) == (1, 2)
+    assert replaced.files == (
+        TransformFileReport(source="pkg/new.py", destination="pkg/new.py", count=2),
+    )
+
+
+@pytest.mark.parametrize(
+    ("marker", "line", "removed"),
+    [
+        ("M", "M M:x", True),
+        ("M", "M:x M M:y", True),
+        (":", "::", True),
+        ("M", "M:extended", False),
+    ],
+)
+def test_internal_line_search_checks_every_marker_occurrence(
+    tmp_path: Path,
+    marker: str,
+    line: str,
+    removed: bool,
+):
+    source = f"keep\n{line}\ntail\n"
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="inline",
+                type="internal_lines",
+                path="m.py",
+                start=marker,
+                required=False,
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == ("keep\ntail\n" if removed else source)
+    assert (report.changed, report.count) == (int(removed), int(removed))
+    assert report.files == (
+        (TransformFileReport(source="m.py", destination="m.py", count=1),)
+        if removed
+        else ()
+    )
+
+
+def test_internal_regions_use_the_total_kept_prefix_length():
+    prefix = "alpha\nlonger kept line\n"
+    hidden = "hidden # INT\n"
+    source = prefix + hidden + "omega\n"
+    transform = Transform(
+        id="internal",
+        type="internal_lines",
+        path="m.py",
+        start="# INT",
+    )
+
+    exported, regions = strip_source_regions(source, transform)
+
+    assert exported == prefix + "omega\n"
+    assert regions == ((len(prefix), hidden),)
+    assert exported[: len(prefix)] + hidden + exported[len(prefix) :] == source
+
+
+def test_noninclusive_regions_skip_each_retained_end_marker():
+    transform = Transform(
+        id="strip",
+        type="strip_block",
+        path="m.py",
+        start="S",
+        end="E",
+        inclusive=False,
+    )
+    source = "SxE\nSyE"
+
+    exported, regions = strip_source_regions(source, transform)
+
+    assert exported == "E\nE"
+    assert regions == ((0, "Sx"), (2, "Sy"))
+    reconstructed = exported
+    for offset, removed in reversed(regions):
+        reconstructed = reconstructed[:offset] + removed + reconstructed[offset:]
+    assert reconstructed == source
+
+
+def test_regions_reject_a_nested_start_before_a_later_complete_block(tmp_path: Path):
+    source = "SnestedSxE\nSyE"
+    transform = Transform(
+        id="strip",
+        type="strip_block",
+        path="m.py",
+        start="S",
+        end="E",
+    )
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(TransformError):
+        strip_source_regions(source, transform)
+    with pytest.raises(TransformError):
+        apply_transforms(tmp_path, (transform,))
+
+    assert path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize(
+    ("source", "exported"),
+    [
+        ("head\nkeep\n  SxE\n  tail\n", "head\nkeep\n  tail\n"),
+        ("SxE\nnext\n", "\nnext\n"),
+        ("prefixSxE\nnext\n", "prefix\nnext\n"),
+        ("head\nSxE\n  tail\n", "head\n  tail\n"),
+        ("head\nSxE\nXXtail\n", "head\nXXtail\n"),
+    ],
+)
+def test_inclusive_regions_preserve_the_kept_boundary_text(
+    tmp_path: Path,
+    source: str,
+    exported: str,
+):
+    transform = Transform(
+        id="strip",
+        type="strip_block",
+        path="m.py",
+        start="S",
+        end="E",
+    )
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(tmp_path, (transform,))
+    region_export, regions = strip_source_regions(source, transform)
+
+    assert path.read_text(encoding="utf-8") == exported
+    assert region_export == exported
+    assert (report.changed, report.count) == (1, 1)
+    assert report.files == (
+        TransformFileReport(source="m.py", destination="m.py", count=1),
+    )
+    reconstructed = region_export
+    for offset, removed in reversed(regions):
+        reconstructed = reconstructed[:offset] + removed + reconstructed[offset:]
+    assert reconstructed == source
+
+
+@pytest.mark.parametrize("first_is_symlink", [False, True])
+@pytest.mark.parametrize(
+    ("transform", "source", "exported", "count"),
+    [
+        (
+            Transform(id="r", type="replace", path="*.py", before="old", after="new"),
+            "old old\n",
+            "new new\n",
+            2,
+        ),
+        (
+            Transform(id="s", type="strip_block", path="*.py", start="# S", end="# E"),
+            "keep\n# S\nhidden\n# E\nlast\n",
+            "keep\nlast\n",
+            1,
+        ),
+        (
+            Transform(id="i", type="internal_lines", path="*.py", start="# S"),
+            "keep\nhidden # S\nlast\n",
+            "keep\nlast\n",
+            1,
+        ),
+        (
+            Transform(id="u", type="uncomment", path="*.py", start="# U"),
+            "keep\n# public # U\nlast\n",
+            "keep\npublic\nlast\n",
+            1,
+        ),
+    ],
+)
+def test_text_transforms_continue_past_an_earlier_unchanged_entry(
+    tmp_path: Path,
+    *,
+    first_is_symlink: bool,
+    transform: Transform,
+    source: str,
+    exported: str,
+    count: int,
+):
+    first = tmp_path / "a.py"
+    target = tmp_path / "target.txt"
+    target.write_text(source, encoding="utf-8")
+    if first_is_symlink:
+        first.symlink_to(target)
+    else:
+        first.write_text("unchanged\n", encoding="utf-8")
+    last = tmp_path / "z.py"
+    last.write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (transform,),
+        files=(_entry(source="project/z.py", destination="z.py"),),
+    )
+
+    assert first.is_symlink() == first_is_symlink
+    assert first.read_text(encoding="utf-8") == (
+        source if first_is_symlink else "unchanged\n"
+    )
+    assert target.read_text(encoding="utf-8") == source
+    assert last.read_text(encoding="utf-8") == exported
+    assert (report.changed, report.count) == (1, count)
+    assert report.files == (
+        TransformFileReport(source="project/z.py", destination="z.py", count=count),
+    )
+
+
+def test_replace_expands_configured_regex_groups(tmp_path: Path):
+    path = tmp_path / "m.py"
+    path.write_text("old old\n", encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="capture",
+                type="replace",
+                path="m.py",
+                before="${name}",
+                after="new_${name}",
+                regex_groups=(("name", "old"),),
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "new_old new_old\n"
+    assert (report.changed, report.count) == (1, 2)
+    assert report.files == (
+        TransformFileReport(source="m.py", destination="m.py", count=2),
+    )
+
+
+def test_optional_identical_replacement_reports_no_change(tmp_path: Path):
+    path = tmp_path / "m.py"
+    path.write_text("same same\n", encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="identity",
+                type="replace",
+                path="m.py",
+                before="same",
+                after="same",
+                required=False,
+            ),
+        ),
+    )
+
+    assert path.read_text(encoding="utf-8") == "same same\n"
+    assert (report.changed, report.count, report.files) == (0, 0, ())
+
+
+def test_required_identical_replacement_rejects_a_matched_no_op(tmp_path: Path):
+    path = tmp_path / "m.py"
+    path.write_text("same same\n", encoding="utf-8")
+
+    with pytest.raises(TransformError):
+        apply_transforms(
+            tmp_path,
+            (
+                Transform(
+                    id="identity",
+                    type="replace",
+                    path="m.py",
+                    before="same",
+                    after="same",
+                ),
+            ),
+        )
+
+    assert path.read_text(encoding="utf-8") == "same same\n"
+
+
+@pytest.mark.parametrize(
+    ("transform", "source", "exported"),
+    [
+        (
+            Transform(id="s", type="strip_block", path="*.py", start="# S", end="# E"),
+            "keep\n# S\nhidden\n# E\nlast\n",
+            "keep\nlast\n",
+        ),
+        (
+            Transform(id="u", type="uncomment", path="*.py", start="# U"),
+            "keep\n# public # U\nlast\n",
+            "keep\npublic\nlast\n",
+        ),
+    ],
+)
+def test_strip_and_uncomment_aggregate_distinct_file_counts(
+    tmp_path: Path,
+    transform: Transform,
+    source: str,
+    exported: str,
+):
+    (tmp_path / "a.py").write_text(source * 2, encoding="utf-8")
+    (tmp_path / "b.py").write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (transform,),
+        files=(_entry(source="project/a.py", destination="a.py"),),
+    )
+
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == exported * 2
+    assert (tmp_path / "b.py").read_text(encoding="utf-8") == exported
+    assert (report.changed, report.count) == (2, 3)
+    assert report.files == (
+        TransformFileReport(source="project/a.py", destination="a.py", count=2),
+        TransformFileReport(source="b.py", destination="b.py", count=1),
+    )
+
+
+def test_move_builds_nested_parents_and_reports_mapped_and_unmapped_files(
+    tmp_path: Path,
+):
+    (tmp_path / "old" / "sub").mkdir(parents=True)
+    (tmp_path / "old" / "a.txt").write_text("first\n", encoding="utf-8")
+    (tmp_path / "old" / "sub" / "b.txt").write_text("second\n", encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (Transform(id="move", type="move", path="old", destination="new/nested/pkg"),),
+        files=(_entry(source="project/a.txt", destination="old/a.txt"),),
+    )
+
+    assert not (tmp_path / "old").exists()
+    assert (tmp_path / "new/nested/pkg/a.txt").read_text(encoding="utf-8") == "first\n"
+    assert (tmp_path / "new/nested/pkg/sub/b.txt").read_text(
+        encoding="utf-8",
+    ) == "second\n"
+    assert (report.changed, report.count) == (2, 2)
+    assert report.files == (
+        TransformFileReport(
+            source="project/a.txt",
+            destination="new/nested/pkg/a.txt",
+            count=1,
+        ),
+        TransformFileReport(
+            source="old/sub/b.txt",
+            destination="new/nested/pkg/sub/b.txt",
+            count=1,
+        ),
+    )
+
+
+def test_text_transform_reports_sort_by_path_segments(tmp_path: Path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "m.py").write_text("old\n", encoding="utf-8")
+    (tmp_path / "a-m.py").write_text("old\n", encoding="utf-8")
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="replace",
+                type="replace",
+                path="**",
+                before="old",
+                after="new",
+            ),
+        ),
+    )
+
+    assert (tmp_path / "a" / "m.py").read_text(encoding="utf-8") == "new\n"
+    assert (tmp_path / "a-m.py").read_text(encoding="utf-8") == "new\n"
+    assert (report.changed, report.count) == (2, 2)
+    assert report.files == (
+        TransformFileReport(source="a/m.py", destination="a/m.py", count=1),
+        TransformFileReport(source="a-m.py", destination="a-m.py", count=1),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "exported", "count"),
+    [
+        (
+            (
+                "# copybarista:if internal\nhidden\n# copybarista:else\n# public\n"
+                "# copybarista:endif"
+            ),
+            "public",
+            1,
+        ),
+        (
+            (
+                "# copybarista:if internal\n# copybarista:else\n# public\n"
+                "# copybarista:endif\n"
+            ),
+            "public\n",
+            1,
+        ),
+        (
+            (
+                "prefix\n# copybarista:if internal\none\n# copybarista:else\n# first\n"
+                "# copybarista:endif\nmiddle\n# copybarista:if internal\ntwo\n"
+                "# copybarista:else\n# second\n# copybarista:endif\ntail"
+            ),
+            "prefix\nfirst\nmiddle\nsecond\ntail",
+            2,
+        ),
+    ],
+)
+def test_else_blocks_complete_and_keep_each_public_branch(
+    tmp_path: Path,
+    source: str,
+    exported: str,
+    count: int,
+):
+    transform = _if_else("config.py")
+    path = tmp_path / "config.py"
+    path.write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(tmp_path, (transform,))
+
+    assert path.read_text(encoding="utf-8") == exported
+    assert strip_source_text(source, transform) == exported
+    assert (report.changed, report.count) == (1, count)
+    assert report.files == (
+        TransformFileReport(source="config.py", destination="config.py", count=count),
+    )
+
+
+def test_inline_uncomment_completes_between_ordinary_lines(tmp_path: Path):
+    source = "prefix\n# first # U\nmiddle\n# second # U\ntail"
+    exported = "prefix\nfirst\nmiddle\nsecond\ntail"
+    transform = Transform(id="inline", type="uncomment", path="m.py", start="# U")
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+
+    (report,) = apply_transforms(tmp_path, (transform,))
+
+    assert path.read_text(encoding="utf-8") == exported
+    assert uncomment_source_text(source, transform) == (exported, 2)
+    assert (report.changed, report.count) == (1, 2)
+    assert report.files == (
+        TransformFileReport(source="m.py", destination="m.py", count=2),
+    )
+
+
+def test_real_ruff_cleans_and_formats_only_the_stage_from_another_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage = tmp_path / "stage"
+    outside = tmp_path / "outside"
+    source = "import os\nvalue= [1,2]\n"
+    for root in (stage, outside):
+        (root / "pkg" / "a").mkdir(parents=True)
+        (root / "ruff.toml").write_text(
+            '[lint]\nselect = ["F401"]\n',
+            encoding="utf-8",
+        )
+        (root / "pkg" / "a" / "m.py").write_text(source, encoding="utf-8")
+        (root / "pkg" / "a-m.py").write_text(source, encoding="utf-8")
+    (stage / "pkg" / "clean.py").write_text("value = 3\n", encoding="utf-8")
+    monkeypatch.chdir(outside)
+
+    (report,) = apply_transforms(
+        stage,
+        (Transform(id="ruff", type="ruff_format", path="pkg"),),
+        files=(_entry(source="project/m.py", destination="pkg/a/m.py"),),
+    )
+
+    assert (stage / "pkg" / "a" / "m.py").read_text(encoding="utf-8") == (
+        "value = [1, 2]\n"
+    )
+    assert (stage / "pkg" / "a-m.py").read_text(encoding="utf-8") == (
+        "value = [1, 2]\n"
+    )
+    assert (stage / "pkg" / "clean.py").read_text(encoding="utf-8") == "value = 3\n"
+    assert (outside / "pkg" / "a" / "m.py").read_text(encoding="utf-8") == source
+    assert (outside / "pkg" / "a-m.py").read_text(encoding="utf-8") == source
+    assert report == TransformReport(
+        id="ruff",
+        type="ruff_format",
+        path="pkg",
+        changed=2,
+        count=2,
+        files=(
+            TransformFileReport(
+                source="project/m.py",
+                destination="pkg/a/m.py",
+                count=1,
+            ),
+            TransformFileReport(
+                source="pkg/a-m.py",
+                destination="pkg/a-m.py",
+                count=1,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("target", ["pkg", "pkg/deep/m.py"])
+def test_real_ruff_reports_nested_files_under_a_relative_stage_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    stage = tmp_path / "work" / "stage"
+    (stage / "pkg" / "deep").mkdir(parents=True)
+    (stage / "ruff.toml").write_text(
+        '[lint]\nselect = ["F401"]\n',
+        encoding="utf-8",
+    )
+    module = stage / "pkg" / "deep" / "m.py"
+    module.write_text("import os\nvalue= [1,2]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    (report,) = apply_transforms(
+        stage.relative_to(tmp_path),
+        (Transform(id="ruff-relative", type="ruff_format", path=target),),
+        files=(_entry(source="project/deep/m.py", destination="pkg/deep/m.py"),),
+    )
+
+    assert module.read_text(encoding="utf-8") == "value = [1, 2]\n"
+    assert report == TransformReport(
+        id="ruff-relative",
+        type="ruff_format",
+        path=target,
+        changed=1,
+        count=1,
+        files=(
+            TransformFileReport(
+                source="project/deep/m.py",
+                destination="pkg/deep/m.py",
+                count=1,
+            ),
+        ),
+    )
 
 
 def _if_else(path: str) -> Transform:

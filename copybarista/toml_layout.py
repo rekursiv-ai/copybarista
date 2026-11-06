@@ -158,7 +158,8 @@ def uncommented(text: str) -> str:
       LayoutError: ``text`` is not TOML.
 
     """
-    lines = text.splitlines(keepends=True)
+    lines = text.split("\n")
+    lines = [line + "\n" for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
     kept: list[str] = []
     # The run closing the file is comment and blank lines alone, so it goes whole.
     for code in (c for c in code_lines(text) if c.code or not c.lead):
