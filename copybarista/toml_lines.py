@@ -112,7 +112,8 @@ def parse(text: str) -> Document:
         tomllib.loads(text)
     except tomllib.TOMLDecodeError as err:
         raise LinesError(str(err)) from err
-    lines = text.splitlines(keepends=True)
+    lines = text.split("\n")
+    lines = [line + "\n" for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
     statements = _Scanner(text=text).statements()
     first = statements[0].start if statements else len(lines)
     preamble = _preamble_end(lines[:first], whole=not statements)

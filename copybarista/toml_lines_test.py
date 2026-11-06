@@ -146,6 +146,44 @@ def test_parse_ends_a_last_statement_without_a_line_break_with_the_text():
     assert doc.footer == ()
 
 
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"])
+def test_parse_keeps_unicode_separators_inside_their_entry(separator: str) -> None:
+    text = f'a = "left{separator}right"\n'
+
+    doc = parse(text)
+
+    assert doc.blocks[0].entries == (Entry(lead=(), key=("a",), text=text),)
+    assert doc.footer == ()
+    assert doc.text() == text
+
+
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", ""])
+def test_parse_keeps_unicode_separators_with_their_header_key_and_comment(
+    separator: str,
+    ending: str,
+) -> None:
+    newline = ending or "\n"
+    header = f'["left{separator}right"] # Header{separator}remark.{newline}'
+    lead = f"# About{separator}key.{newline}"
+    entry = f'"key{separator}name" = 1{newline}'
+    footer = f"# End{separator}comment.{ending}"
+    text = header + lead + entry + footer
+
+    doc = parse(text)
+
+    assert doc.blocks[1] == Block(
+        lead=(),
+        header=header,
+        path=(f"left{separator}right",),
+        array=False,
+        entries=(Entry(lead=(lead,), key=(f"key{separator}name",), text=entry),),
+        tail=(),
+    )
+    assert doc.footer == (footer,)
+    assert doc.text() == text
+
+
 def test_parse_reads_dotted_and_quoted_keys():
     doc = parse('[t]\n"a.b" = 1\nc.d = 2\n')
     assert [entry.key for entry in doc.blocks[1].entries] == [("a.b",), ("c", "d")]
