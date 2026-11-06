@@ -46,6 +46,17 @@ def test_count_reports_number_of_matches() -> None:
     assert template.count("nothing here") == 0
 
 
+def test_pure_interpolation_rewrites_and_counts_without_literal_text() -> None:
+    template = compile_replace(
+        before="${word}",
+        after="<${word}>",
+        regex_groups=(("word", "[a-z]+"),),
+    )
+
+    assert template.apply_counted("one 12 two") == ("<one> 12 <two>", 2)
+    assert template.apply_counted("123") == ("123", 0)
+
+
 def test_dotted_submodule_reverse_rewrites_only_real_module_tokens() -> None:
     # Reverse rewrites a genuine submodule reference.
     assert (

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import tomllib
+
+from treekle import PlainTree, from_plain
 
 import pytest
 
@@ -22,10 +24,25 @@ from copybarista.toml_lines import (
 )
 
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
 _CWD: Final = Path(__file__).resolve().parent
 
 # The nearest checkout root: the monorepo's, or the export's one level up.
 _ROOT: Final = next(p for p in _CWD.parents if (p / "pyproject.toml").is_file())
+
+
+@pytest.fixture(autouse=True)
+def isolate_toml_caches() -> Iterator[None]:
+    parse.cache_clear()
+    spelled_key.cache_clear()
+    try:
+        yield
+    finally:
+        parse.cache_clear()
+        spelled_key.cache_clear()
 
 
 def test_parse_splits_a_file_into_preamble_blocks_and_footer():
@@ -140,6 +157,58 @@ def test_parse_reads_array_tables_as_separate_blocks():
     assert [block.array for block in doc.blocks[1:]] == [True, True]
 
 
+def test_parse_preserves_indented_comments_and_array_headers():
+    text = "  # Top.\n\na = 1\n\t# Tail.\n\n  [[X.item]] # Header.\nX.key = 2\n"
+    doc = parse(text)
+    assert doc.preamble == ("  # Top.\n", "\n")
+    assert doc.blocks[0].tail == ("\t# Tail.\n",)
+    block = doc.blocks[1]
+    assert (block.lead, block.header, block.path, block.array) == (
+        ("\n",),
+        "  [[X.item]] # Header.\n",
+        ("X", "item"),
+        True,
+    )
+    assert block.entries == (Entry(lead=(), key=("X", "key"), text="X.key = 2\n"),)
+    assert doc.text() == text
+
+
+@pytest.mark.parametrize("key", ["X", "aX", "a.X", '""', r'"x\""'])
+def test_parse_keeps_bare_and_escaped_key_boundaries(key: str):
+    text = f"{key} = 1\n"
+    doc = parse(text)
+    assert doc.blocks[0].entries == (Entry(lead=(), key=split_key(key), text=text),)
+    assert doc.text() == text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "[\n [1, # Inner.\n 2],\n {X = 3},\n]",
+        '[\n "first",\n # Between.\n "second",\n]',
+        '[\n """""",\n 1,\n]',
+        '[\n """x"""",\n 1,\n]',
+        '[\n """x""""",\n 1,\n]',
+        "[\n " + r'"""\"""' + '\n[not.a.header]\n""",\n 1,\n]',
+        "[\n " + r'"""x\"""' + '\n# Still string.\n""",\n 1,\n]',
+        r'["""long content\""""]',
+        '["""long content"""" ]',
+        '["""long content""""]',
+        '["""long content"""""]',
+    ],
+)
+def test_parse_keeps_nested_values_and_internal_comments_in_their_entry(value: str):
+    text = f"a = {value}\n# About b.\nb = 2\n"
+    doc = parse(text)
+    assert doc.blocks[0].entries == (
+        Entry(lead=(), key=("a",), text=f"a = {value}\n"),
+        Entry(lead=("# About b.\n",), key=("b",), text="b = 2\n"),
+    )
+    assert doc.text() == text
+    values = from_plain(tomllib.loads(f"v = {value}"), dict[str, PlainTree])
+    assert spelled_key(value) == value_key(values["v"])
+
+
 def test_parse_keeps_a_multiline_string_in_one_entry():
     doc = parse('a = """\n# not a comment\n[not.a.header]\n"""\nb = 1\n')
     assert [entry.key for entry in doc.blocks[0].entries] == [("a",), ("b",)]
@@ -161,6 +230,9 @@ def test_parse_ends_a_multiline_string_after_the_quotes_it_holds():
         ('"a=b" = 1', ('"a=b" ', " 1")),
         ("'a=b'.c = 2", ("'a=b'.c ", " 2")),
         ('"a\\"=" = 3', ('"a\\"=" ', " 3")),
+        ('"" = 1', ('"" ', " 1")),
+        (r'"x\"" = 1', (r'"x\"" ', " 1")),
+        ("X.key = 1", ("X.key ", " 1")),
     ],
 )
 def test_split_entry_splits_at_the_first_equals_outside_a_quoted_key(
@@ -175,6 +247,15 @@ def test_split_entry_splits_at_the_first_equals_outside_a_quoted_key(
     [
         ('[a."b]c"]  # note', ('[a."b]c"]', "  # note")),
         ("  [[tool.x]]", ("  [[tool.x]]", "")),
+        ('  ["]"] # note', ('  ["]"]', " # note")),
+        ('  [["]"]] # note', ('  [["]"]]', " # note")),
+        ("[X] # note", ("[X]", " # note")),
+        ("[ab] # note", ("[ab]", " # note")),
+        ("[[ab]] # note", ("[[ab]]", " # note")),
+        ("[ab]", ("[ab]", "")),
+        ("[[ab]]", ("[[ab]]", "")),
+        ('[""] # note', ('[""]', " # note")),
+        (r'["x\""] # note', (r'["x\""]', " # note")),
     ],
 )
 def test_split_header_splits_after_the_closing_bracket(

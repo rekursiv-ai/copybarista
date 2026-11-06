@@ -73,13 +73,13 @@ def write_folder_destination(
         replacing_existing=replace_existing and destination.exists(),
     )
     status: DestinationStatus = "updated" if destination.exists() else "created"
-    if destination.exists():
-        if not replace_existing:
-            raise ExportError(
-                f"Destination already exists; pass --force to replace it: {destination}",
-            )
-        shutil.rmtree(destination)
+    if destination.exists() and not replace_existing:
+        raise ExportError(
+            f"Destination already exists; pass --force to replace it: {destination}",
+        )
     validate_staged_symlinks(staged_tree.root)
+    if destination.exists():
+        shutil.rmtree(destination)
     if consume_staging:
         shutil.move(str(staged_tree.root), destination)
     else:
