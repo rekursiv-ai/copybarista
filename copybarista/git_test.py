@@ -7,6 +7,7 @@ from pathlib import Path
 
 import hashlib
 import shutil
+import tempfile
 
 import pytest
 
@@ -62,7 +63,10 @@ def test_local_remote_path_accepts_relative_local_path():
 def test_export_git_requires_destination_url(tmp_path: Path):
     config = _workflow_config(git=GitDestination())
 
-    with pytest.raises(ExportError, match="url"):
+    with pytest.raises(
+        ExportError,
+        match=r"^destination\.git\.url is required for Git export$",
+    ):
         git.export_git(config=config, source_ref=tmp_path)
 
 
@@ -105,6 +109,10 @@ def test_write_git_destination_uses_temporary_worktree(
     (source / "pkg").mkdir(parents=True)
     (source / "README.md").write_text("hello\n", encoding="utf-8")
     (source / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    given = GitRuntime(git="g")
     observed: list[tuple[bool, bool, bool]] = []
 
     def fake_prepare(
@@ -114,7 +122,10 @@ def test_write_git_destination_uses_temporary_worktree(
         runtime: GitRuntime | None = None,
     ) -> None:
         assert destination.url == "ssh://example.com/repo.git"
-        assert runtime is not None
+        assert runtime is given
+        assert worktree.name == "worktree"
+        assert worktree.parent.parent == temp_root
+        assert worktree.parent.name.startswith("copybarista-git-worktree-")
         worktree.mkdir()
         (worktree / ".git").mkdir()
         (worktree / "stale.txt").write_text("stale\n", encoding="utf-8")
@@ -128,8 +139,8 @@ def test_write_git_destination_uses_temporary_worktree(
         runtime: GitRuntime | None = None,
     ) -> str:
         assert destination.branch == "main"
-        assert origin_rev_id == ""
-        assert runtime is not None
+        assert origin_rev_id == "source123"
+        assert runtime is given
         observed.append(
             (
                 (worktree / ".git").is_dir(),
@@ -145,11 +156,14 @@ def test_write_git_destination_uses_temporary_worktree(
     result = write_git_destination(
         StagedTree(root=source, files=(), transforms=()),
         destination=GitDestination(url="ssh://example.com/repo.git", branch="main"),
+        origin_rev_id="source123",
+        runtime=given,
     )
 
     assert result.status == "updated"
     assert result.ref == "abc123"
     assert observed == [(True, False, True)]
+    assert not any(temp_root.iterdir())
 
 
 def test_replace_worktree_contents_preserves_nested_submodules(tmp_path: Path):
@@ -550,7 +564,10 @@ def test_commit_message_without_an_origin_is_the_summary_alone():
 
 
 def test_write_git_destination_requires_a_url(tmp_path: Path):
-    with pytest.raises(ExportError, match=r"destination\.git\.url is required"):
+    with pytest.raises(
+        ExportError,
+        match=r"^destination\.git\.url is required for Git export$",
+    ):
         write_git_destination(
             StagedTree(root=tmp_path, files=(), transforms=()),
             destination=GitDestination(),
@@ -577,7 +594,8 @@ def test_write_git_destination_reports_noop_when_nothing_was_committed(
         origin_rev_id: str = "",
         runtime: GitRuntime | None = None,
     ) -> str:
-        del destination, worktree, origin_rev_id, runtime
+        del destination, worktree, runtime
+        assert origin_rev_id == ""
         return ""
 
     monkeypatch.setattr(git, "_prepare_destination", prepare)
