@@ -96,10 +96,11 @@ def _render(base: str, delta: str) -> str:
             '[t]\n# Why.\na = ["x", "y"]\n',
         ),
         # ``[[key]]`` with no operation replaces the array of tables whole.
-        (
-            "[[i]]\nn = 1\n\n[[i]]\nn = 2\n\n[u]\n",
+        pytest.param(
+            "[[i]]\nn = 1\n[i.sub]\nx = 1\n\n[[i]]\nn = 2\n[i.sub]\nx = 2\n\n[u]\n",
             "# Only.\n[[i]]\nn = 3\n\n[[i]]\nn = 4\n",
             "# Only.\n[[i]]\nn = 3\n\n[[i]]\nn = 4\n\n[u]\n",
+            id="replace-array-with-owned-subtables",
         ),
         # A header comment is a header edit.
         ("[t]\na = 1\n", "[t]  # Why.\n", "[t]  # Why.\na = 1\n"),
@@ -197,6 +198,16 @@ def _render(base: str, delta: str) -> str:
 )
 def test_render_applies_each_operation_in_place(base: str, delta: str, expected: str):
     assert _render(base, delta) == expected
+
+
+def test_render_unescapes_each_table_path_component() -> None:
+    assert (
+        render(
+            '["!tool".lint]\nn = 1\n',
+            '["=!tool".lint]\nn = 2\n',
+        )
+        == '["!tool".lint]\nn = 2\n'
+    )
 
 
 @pytest.mark.parametrize(

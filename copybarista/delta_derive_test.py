@@ -281,6 +281,14 @@ def test_derive_values_of_a_comment_edit_is_empty(base: str, target: str):
     assert derive_values(base, target) == ""
 
 
+def test_derive_values_keeps_table_comments_when_its_last_key_is_deleted() -> None:
+    base = "a = 1\n\n# About t.\n[t]  # Why.\n# About x.\nx = 2\n"
+    target = "a = 1\n\n[t]\n"
+    expected = "a = 1\n\n# About t.\n[t]  # Why.\n"
+
+    assert render(base, derive_values(base, target)) == expected
+
+
 @pytest.mark.parametrize(
     ("base", "target"),
     [
@@ -367,6 +375,12 @@ def test_derive_values_keeps_each_kept_entry_s_comments_as_a_list_changes_length
             'a = "z"\n',
             'a = "z"\n',
             id="multi-line",
+        ),
+        pytest.param(
+            'a = "z"  # Why.\n',
+            'a = """x\ny"""\n',
+            'a = """x\ny"""\n',
+            id="becomes-multi-line",
         ),
         # A one-line list keeps its remark through a by-entry edit.
         pytest.param(

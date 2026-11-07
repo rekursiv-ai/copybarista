@@ -1346,6 +1346,37 @@ def test_fold_of_an_unchanged_render_keeps_only_the_delta(tmp_path: Path):
     }
 
 
+def test_fold_preserves_extends_and_rename_when_reloaded(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('paths = ["src/stubs"]\nkeep = 1\n')
+    (tmp_path / "shared.delta.toml").write_text("keep = 2\n")
+    delta = _delta(tmp_path, body="keep = 3\n", extends=("shared.delta.toml",))
+    delta.write_text(
+        delta.read_text() + '\n[pyproject.rename]\n"src/stubs" = "typings"\n',
+    )
+    source = PyprojectSource.load(delta, source_ref=tmp_path)
+    public = 'paths = ["typings"]\nkeep = 4\n'
+
+    folded = source.fold(public)
+    assert _plain(folded)["pyproject"] == {
+        "base": "pyproject.toml",
+        "extends": ["shared.delta.toml"],
+        "rename": {"src/stubs": "typings"},
+    }
+    delta.write_text(folded)
+    assert PyprojectSource.load(delta, source_ref=tmp_path).render() == public
+
+
+def test_fold_removes_the_last_override_without_losing_settings(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("a = 1\n")
+    delta = _delta(tmp_path, body="a = 2\n")
+    source = PyprojectSource.load(delta, source_ref=tmp_path)
+
+    folded = source.fold("a = 1\n")
+    assert _plain(folded) == {"pyproject": {"base": "pyproject.toml"}}
+    delta.write_text(folded)
+    assert PyprojectSource.load(delta, source_ref=tmp_path).render() == "a = 1\n"
+
+
 def test_fold_spells_an_entry_appended_to_a_base_list_as_an_addition(
     tmp_path: Path,
 ):
