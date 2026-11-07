@@ -2108,28 +2108,39 @@ def test_transform_survives_the_raw_config_round_trip(transform: Transform):
     assert round_tripped == transform
 
 
-def test_translate_outputs_copybarista_toml(tmp_path: Path):
+@pytest.mark.parametrize("workflow_name", ["export", "publish"])
+def test_translate_outputs_copybarista_toml(tmp_path: Path, workflow_name: str):
     config_path = _write_sky(
         tmp_path,
         """
-        core.workflow(
-            name = "export",
-            origin = folder.origin(),
-            destination = folder.destination(),
-            origin_files = glob(["**"]),
-            destination_files = glob(["**"]),
-            authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
-            mode = "SQUASH",
-            transformations = [],
-        )
+        def workflow(name, files):
+            core.workflow(
+                name = name,
+                origin = folder.origin(),
+                destination = folder.destination(),
+                origin_files = glob(files),
+                destination_files = glob(["**"]),
+                authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+                mode = "SQUASH",
+                transformations = [],
+            )
+
+        workflow("export", ["export.py"])
+        workflow("publish", ["publish.py"])
         """,
     )
 
-    translated = translate_copy_bara_sky_to_toml(config_path)
+    translated = translate_copy_bara_sky_to_toml(
+        config_path,
+        workflow_name=workflow_name,
+    )
 
     assert "[workflow]" in translated
-    assert 'name = "export"' in translated
+    assert f'name = "{workflow_name}"' in translated
     assert "[files]" in translated
+    translated_path = tmp_path / "translated.toml"
+    translated_path.write_text(translated, encoding="utf-8")
+    assert load_config(translated_path).files.include == (f"{workflow_name}.py",)
 
 
 def test_cli_translate_writes_output(tmp_path: Path):
