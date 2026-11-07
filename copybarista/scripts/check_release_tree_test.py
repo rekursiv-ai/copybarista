@@ -52,7 +52,7 @@ def test_check_tree_accepts_package_validation_workflow_name(tmp_path: Path):
 
 def test_check_tree_allows_deliberate_forbidden_text_fixtures(tmp_path: Path):
     _write_required_tree(tmp_path)
-    fixture = tmp_path / "copybarista/scripts/check_pr_text_test.py"
+    fixture = tmp_path / "copybarista/scripts/check_release_tree_test.py"
     fixture.write_text("value = 'mono" + "repo/lib'\n", encoding="utf-8")
 
     assert check_tree(root=tmp_path) == ()
@@ -275,7 +275,7 @@ def test_check_tree_rejects_each_source_only_config_token(tmp_path: Path):
 
 def test_check_tree_ignores_skipped_and_symlinked_text_files(tmp_path: Path):
     _write_required_tree(tmp_path)
-    skipped = tmp_path / "copybarista/scripts/check_pr_text_test.py"
+    skipped = tmp_path / "copybarista/scripts/check_release_tree_test.py"
     skipped.write_text("loop" + "/experimental\n", encoding="utf-8")
     source = tmp_path / "docs/source.md"
     source.parent.mkdir()

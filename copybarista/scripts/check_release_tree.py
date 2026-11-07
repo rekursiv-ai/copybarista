@@ -49,7 +49,6 @@ TEXT_SCAN_NAMES = frozenset((".gitignore", ".pre-commit-config.yaml"))
 TEXT_SCAN_SUFFIXES = frozenset((".md", ".mmd", ".py", ".toml", ".yaml", ".yml"))
 TEXT_SCAN_SKIP_PATHS = frozenset(
     (
-        "copybarista/scripts/check_pr_text_test.py",
         "copybarista/scripts/check_release_tree.py",
         "copybarista/scripts/check_release_tree_test.py",
     ),
