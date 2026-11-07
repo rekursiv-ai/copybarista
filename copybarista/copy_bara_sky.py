@@ -210,7 +210,8 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
             raw["regex_groups"] = dict(transform.regex_groups)
         if transform.module:
             raw["module"] = True
-        if transform.reverse_before or transform.reverse_after:
+        # ``parse_config`` requires the two together, so one stands for both.
+        if transform.reverse_before:
             raw["reverse_before"] = transform.reverse_before
             raw["reverse_after"] = transform.reverse_after
     elif transform.type == "move":
@@ -234,11 +235,7 @@ def _transform_to_raw(transform: Transform) -> dict[str, object]:
     return raw
 
 
-def _load_translated_workflow(
-    path: Path,
-    *,
-    workflow_name: str = "export",
-) -> TranslatedWorkflow:
+def _load_translated_workflow(path: Path, *, workflow_name: str) -> TranslatedWorkflow:
     """Load a supported `copy.bara.sky` workflow as a translated workflow."""
     try:
         source = textwrap.dedent(path.read_text(encoding="utf-8"))
@@ -321,8 +318,8 @@ class _CopyBaraSkyParser:
         params = [arg.arg for arg in function.args.args]
         if len(call.args) > len(params):
             raise ConfigError(f"Too many positional args for helper {function.name}")
-        for name, value in zip(params, call.args, strict=False):
-            local_env[name] = self._eval(value, env)
+        for index, value in enumerate(call.args):
+            local_env[params[index]] = self._eval(value, env)
         for keyword in call.keywords:
             if keyword.arg is None:
                 raise ConfigError("Unsupported **kwargs in copy.bara.sky helper call")
@@ -386,7 +383,7 @@ class _CopyBaraSkyParser:
         mode = _require_string(kwargs.get("mode", "SQUASH"), "core.workflow.mode")
         if mode != "SQUASH":
             raise ConfigError("Only mode = 'SQUASH' is supported")
-        if _call_name_from_value(kwargs.get("origin")) != "folder.origin":
+        if kwargs.get("origin") != "folder.origin":
             raise ConfigError("Only folder.origin() is supported")
         destination = kwargs.get("destination")
         if not isinstance(destination, DestinationSpec):
@@ -434,8 +431,9 @@ class _CopyBaraSkyParser:
         )
         # A file relocated out of an extra origin root must leave that root's copy
         # too, as Copybara's move takes it out of the selection.
+        # A relocate copy always has a source: ``parse_config`` rejects an empty one.
         relocated = tuple(
-            f"{item.source}/{pattern}" if item.source else pattern
+            f"{item.source}/{pattern}"
             for item in transformations
             if isinstance(item, CopySpec) and item.relocate
             for pattern in item.include
@@ -513,7 +511,6 @@ class _CopyBaraSkyParser:
         # Pass 1: locate the source-root move so its prefix/root is known before
         # classifying the other moves, which may appear before or after it.
         source_root_move = self._source_root_move(transformations, origin_roots)
-        prefix = source_root_move.destination if source_root_move is not None else ""
         root = source_root_move.source if source_root_move is not None else ""
         parsed: list[Transform] = []
         back_moves: list[FileMove] = []
@@ -523,7 +520,7 @@ class _CopyBaraSkyParser:
             if isinstance(item, MoveSpec):
                 if item is source_root_move:
                     continue
-                back = _prefix_back_move(item, prefix)
+                back = _prefix_back_move(item, source_root_move)
                 if back is not None:
                     # Preserve the back-move verbatim and in order: it structurally
                     # mirrors the .sky ``core.move("<prefix>/x", "x")``, so the
@@ -666,11 +663,11 @@ class _CopyBaraSkyParser:
     def _eval_dict(self, node: ast.Dict, env: dict[str, object]) -> dict[str, str]:
         """Evaluate a string-to-string dict literal (``core.replace`` groups)."""
         result: dict[str, str] = {}
-        for key_node, value_node in zip(node.keys, node.values, strict=True):
+        for index, key_node in enumerate(node.keys):
             if key_node is None:
                 raise ConfigError("Unsupported dict unpacking in copy.bara.sky")
             key = self._eval(key_node, env)
-            value = self._eval(value_node, env)
+            value = self._eval(node.values[index], env)
             if not isinstance(key, str) or not isinstance(value, str):
                 raise ConfigError("copy.bara.sky dict keys and values must be strings")
             result[key] = value
@@ -924,7 +921,10 @@ class _CopyBaraSkyParser:
         after = _require_string(kwargs.get("after", ""), "core.replace.after")
         paths = _replace_paths(kwargs.get("paths"))
         regex_groups = _regex_groups(kwargs.get("regex_groups"))
-        multiline = kwargs.get("multiline", False)
+        multiline = _require_bool(
+            kwargs.get("multiline", False),
+            "core.replace.multiline",
+        )
         if regex_groups:
             if paths.exclude:
                 raise ConfigError("core.replace paths must not have exclude patterns")
@@ -1035,11 +1035,14 @@ class _CopyBaraSkyParser:
 # an ordered ``[[files.moves]]`` entry, structurally mirroring the .sky move. Recognized
 # only when a prefix exists and the destination is exactly the source with the
 # ``<prefix>/`` stripped.
-def _prefix_back_move(move: MoveSpec, prefix: str) -> FileMove | None:
+def _prefix_back_move(
+    move: MoveSpec,
+    source_root_move: MoveSpec | None,
+) -> FileMove | None:
     """Return the ordered back-move that keeps a subtree at root, or None."""
-    if not prefix:
+    if source_root_move is None or not source_root_move.destination:
         return None
-    prefix_slash = f"{prefix}/"
+    prefix_slash = f"{source_root_move.destination}/"
     if not move.source.startswith(prefix_slash):
         return None
     if move.destination == move.source.removeprefix(prefix_slash):
@@ -1072,7 +1075,7 @@ def _bind_subtree_excludes(
             for pattern in origin_excludes
             if pattern.startswith(prefix)
         )
-        bound.append(replace(copy, exclude=(*copy.exclude, *under)) if under else copy)
+        bound.append(replace(copy, exclude=(*copy.exclude, *under)))
     return tuple(bound)
 
 
@@ -1093,7 +1096,7 @@ def _add_sweep_exclude(
     root = source_root.rstrip("/")
     if root and copy_source != root and not copy_source.startswith(f"{root}/"):
         return
-    rel = copy_source.removeprefix(root).removeprefix("/") if root else copy_source
+    rel = copy_source.removeprefix(root).removeprefix("/")
     excludes.extend(f"{rel}/{pattern}" if rel else pattern for pattern in include)
 
 
@@ -1131,18 +1134,19 @@ def _reject_unrepresentable_flatten(
     """Reject a ``core.move(SRC, "")`` the selection cannot account for."""
     roots = _origin_move_roots(origin_include)
     selected = set(origin_include)
-    for move in moves:
-        if move.destination or move.source in ("", "."):
-            continue
-        if not roots:
-            if "**" in origin_include:
-                raise ConfigError(
-                    "core.move flattening a subtree under a whole-tree origin "
-                    "selection (glob(['**'])) is unsupported: it mixes "
-                    "lifted-subtree and identity-kept paths, which has no single "
-                    "source_root/destination_prefix",
-                )
-            continue
+    flattens = [
+        move for move in moves if not move.destination and move.source not in ("", ".")
+    ]
+    if not roots:
+        if flattens and "**" in origin_include:
+            raise ConfigError(
+                "core.move flattening a subtree under a whole-tree origin "
+                "selection (glob(['**'])) is unsupported: it mixes "
+                "lifted-subtree and identity-kept paths, which has no single "
+                "source_root/destination_prefix",
+            )
+        return
+    for move in flattens:
         if (
             move.source not in selected
             and move.source not in roots
@@ -1177,14 +1181,8 @@ def _call_name_from_expr(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        parent = _call_name_from_expr(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
+        return f"{_call_name_from_expr(node.value)}.{node.attr}"
     return "<unsupported>"
-
-
-def _call_name_from_value(value: object) -> str:
-    """Return a call sentinel value if the expression evaluated to one."""
-    return value if isinstance(value, str) else ""
 
 
 def _git_destination_fields(destination: DestinationSpec) -> tuple[str, str]:
@@ -1355,18 +1353,17 @@ def _fuse_renamed_origin_copies(
         for transform in transforms
         if transform.type == "move"
     }
+    # Every origin copy is an identity copy, so its destination is its source path.
     fused = tuple(
         replace(file_copy, destination=renames[file_copy.destination])
-        if file_copy.source == file_copy.destination
-        and file_copy.destination in renames
+        if file_copy.destination in renames
         else file_copy
         for file_copy in copies
     )
     consumed = {
         file_copy.destination
         for file_copy in copies
-        if file_copy.source == file_copy.destination
-        and file_copy.destination in renames
+        if file_copy.destination in renames
     }
     # Folding moves into copies routes around ``config._validate_moves_injective``,
     # which rejects a non-injective MOVE sequence because the import reverse is an
@@ -1514,27 +1511,16 @@ def _marker_transform(
                 f"core.replace on a ':{uncomment_kind}' marker requires a start "
                 "and end marker to delimit the block it uncomments",
             )
-        return Transform(
-            id="",
-            type="uncomment",
-            path="",
-            start=markers[0],
-            end=markers[-1],
-        )
+        start, end = markers
+        return Transform(id="", type="uncomment", path="", start=start, end=end)
     if after:
         return None
     if conditional and kinds:
         return _conditional_transform(found, conditional_kinds=conditional_kinds)
     if len(markers) == 1:
         return Transform(id="", type="internal_lines", path="", start=markers[0])
-    return Transform(
-        id="",
-        type="strip_block",
-        path="",
-        start=markers[0],
-        end=markers[-1],
-        inclusive=True,
-    )
+    start, end = markers
+    return Transform(id="", type="strip_block", path="", start=start, end=end)
 
 
 def _conditional_transform(
@@ -1558,7 +1544,6 @@ def _conditional_transform(
         start=by_kind[conditional_kinds[0]],
         end=by_kind[conditional_kinds[2]],
         else_marker=by_kind[conditional_kinds[1]],
-        inclusive=True,
     )
 
 

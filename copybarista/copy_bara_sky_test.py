@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
+
+import ast
+import locale
+import re
 
 import pytest
 
 from copybarista.cli import main
 from copybarista.config import (
     FileCopy,
+    FileMove,
     Transform,
     _parse_transform,
     load_config,
     parse_config,
 )
 from copybarista.copy_bara_sky import (
+    AuthorSpec,
+    DestinationSpec,
+    MoveSpec,
     TranslatedWorkflow,
+    _add_sweep_exclude,
+    _author_from_string,
+    _CopyBaraSkyParser,
+    _folder_destination_from_call,
+    _marker_transform,
+    _strip_markers,
+    _strip_prefixes,
+    _strip_prefixes_and_file_copies,
     _transform_to_raw,
+    load_copy_bara_sky_config,
     translate_copy_bara_sky_to_toml,
 )
 from copybarista.errors import ConfigError
@@ -32,6 +50,11 @@ def _write_sky(tmp_path: Path, source: str) -> Path:
     config_path = tmp_path / "copy.bara.sky"
     config_path.write_text(source, encoding="utf-8")
     return config_path
+
+
+def _exactly(message: str) -> str:
+    """Return a ``match`` pattern accepting ``message`` and nothing else."""
+    return f"^{re.escape(message)}$"
 
 
 # A literal ``:internal`` block, which a multiline ``core.replace`` recovers as a
@@ -343,7 +366,7 @@ def test_rejects_missing_sky_authoring(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="authoring"):
+    with pytest.raises(ConfigError, match=r"^core\.workflow\.authoring is required$"):
         load_config(config_path)
 
 
@@ -498,7 +521,10 @@ def test_rejects_core_reverse_move(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match=r"core\.reverse"):
+    with pytest.raises(
+        ConfigError,
+        match=r"^core\.reverse only supports reversible transforms$",
+    ):
         load_config(config_path)
 
 
@@ -951,7 +977,14 @@ def test_rejects_subtree_flatten_under_whole_tree_selection(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="whole-tree"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.move flattening a subtree under a whole-tree origin selection "
+            "(glob(['**'])) is unsupported: it mixes lifted-subtree and "
+            "identity-kept paths, which has no single source_root/destination_prefix",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -1232,7 +1265,12 @@ def test_rejects_sky_replace_multiline_without_multiline_true(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="multiline"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace before containing newlines requires multiline = True",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -1764,7 +1802,14 @@ def test_rejects_external_marker_spelled_as_a_deletion(tmp_path: Path):
         multiline="multiline = True, ",
     )
 
-    with pytest.raises(ConfigError, match="external"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace on a ':external' marker with an empty after would "
+            "delete the lines the marker exists to uncomment; re-emit the "
+            "captured group instead",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -1837,7 +1882,10 @@ def test_rejects_marker_recovery_without_multiline(tmp_path: Path):
         groups='{ "indent" : "[^\\\\n]*", "note" : "[^\\\\n]*" }',
     )
 
-    with pytest.raises(ConfigError, match="multiline"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly("core.replace on a marker requires multiline = True"),
+    ):
         load_config(config_path)
 
 
@@ -1857,7 +1905,13 @@ def test_rejects_a_lone_uncomment_marker(tmp_path: Path):
         multiline="multiline = True, ",
     )
 
-    with pytest.raises(ConfigError, match="start and end marker"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace on a ':external' marker requires a start and end "
+            "marker to delimit the block it uncomments",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -1890,7 +1944,10 @@ def test_rejects_a_single_line_marker_without_multiline(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="marker requires multiline"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly("core.replace on a marker requires multiline = True"),
+    ):
         load_config(config_path)
 
 
@@ -1914,7 +1971,14 @@ def test_rejects_a_replacement_mixing_marker_kinds(tmp_path: Path):
         multiline="multiline = True, ",
     )
 
-    with pytest.raises(ConfigError, match="one marker kind"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace marker replacement spans more than one marker kind "
+            "(:external, :internal); a replacement means one thing, so it must "
+            "carry one kind",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -1935,7 +1999,13 @@ def test_rejects_an_uncomment_marker_block_with_a_stray_third_marker(tmp_path: P
         multiline="multiline = True, ",
     )
 
-    with pytest.raises(ConfigError, match="at most a start and end marker"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace marker replacement supports at most a start and end "
+            "marker, got 3",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -2008,7 +2078,13 @@ def test_rejects_marker_strip_with_more_than_two_markers(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="at most a start and end"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(
+            "core.replace marker replacement supports at most a start and end "
+            "marker, got 3",
+        ),
+    ):
         load_config(config_path)
 
 
@@ -2336,7 +2412,10 @@ def test_rejects_unsupported_sky_option(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match=r"Unsupported copy\.bara\.sky call"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly("Unsupported copy.bara.sky call: git.origin"),
+    ):
         load_config(config_path)
 
 
@@ -2356,111 +2435,232 @@ def test_rejects_missing_sky_workflow(tmp_path: Path):
         """,
     )
 
-    with pytest.raises(ConfigError, match="Workflow 'export' not found"):
+    with pytest.raises(
+        ConfigError,
+        match=_exactly("Workflow 'export' not found in copy.bara.sky: other"),
+    ):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        ("", "<none>"),
+        (
+            (
+                "core.workflow(name = 'a', origin = folder.origin(), "
+                "destination = folder.destination(), authoring = AUTHOR)\n"
+                "core.workflow(name = 'b', origin = folder.origin(), "
+                "destination = folder.destination(), authoring = AUTHOR)\n"
+            ),
+            "a, b",
+        ),
+    ],
+)
+def test_a_missing_workflow_names_every_workflow_found(
+    tmp_path: Path,
+    body: str,
+    names: str,
+):
+    config_path = _write_sky(
+        tmp_path,
+        f"AUTHOR = authoring.pass_thru('Demo <demo@copybarista.test>')\n{body}",
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=_exactly(f"Workflow 'export' not found in copy.bara.sky: {names}"),
+    ):
         load_config(config_path)
 
 
 def test_rejects_invalid_sky_syntax(tmp_path: Path):
     config_path = _write_sky(tmp_path, "core.workflow(")
+    path = re.escape(str(config_path))
 
-    with pytest.raises(ConfigError, match=r"Unsupported copy\.bara\.sky syntax"):
+    with pytest.raises(
+        ConfigError,
+        match=rf"^Unsupported copy\.bara\.sky syntax in {path}: .* \(copy\.bara\.sky, line 1\)$",
+    ):
         load_config(config_path)
 
 
 @pytest.mark.parametrize(
-    ("source", "match"),
+    ("source", "message"),
     [
-        ("for item in []:\n    pass\n", "Unsupported top-level"),
-        ("load('//tools:defs.bzl', 'workflow')\n", "Unsupported top-level call"),
-        ("A = B = 'value'\n", "Only simple NAME"),
-        ("ROOT = MISSING\n", "Unknown name"),
-        ("ROOT = 1 + 2\n", "Only string concatenation"),
-        ("ROOT = {'bad': 1}\n", "dict keys and values must be strings"),
+        (
+            "for item in []:\n    pass\n",
+            "Unsupported top-level copy.bara.sky statement: For",
+        ),
+        (
+            "load('//tools:defs.bzl', 'workflow')\n",
+            "Unsupported top-level call in copy.bara.sky: load",
+        ),
+        ("A = B = 'value'\n", "Only simple NAME = value assignments are supported"),
+        ("ROOT = MISSING\n", "Unknown name in copy.bara.sky: MISSING"),
+        ("ROOT = 'a' + 1\n", "Only string concatenation is supported"),
+        (
+            "FILES = glob(['*'], exclude = 'x')\n",
+            "glob exclude must be a list of strings",
+        ),
+        ("move = core.move(1, 'b')\n", "core.move source must be a string"),
+        ("move = core.move('a', 1)\n", "core.move destination must be a string"),
+        ("copy = core.copy(1, 'b')\n", "core.copy source must be a string"),
+        ("copy = core.copy('a', 1)\n", "core.copy destination must be a string"),
+        (
+            "author = authoring.pass_thru(1)\n",
+            "authoring.pass_thru author must be a string",
+        ),
+        (
+            "author = authoring.pass_thru('Demo <demo@x.test')\n",
+            "authoring.pass_thru author must be 'Name <email>'",
+        ),
+        (
+            "t = core.replace(before = 1, after = 'b', paths = glob(['a.py']))\n",
+            "core.replace.before must be a string",
+        ),
+        (
+            "t = core.replace(before = 'a', after = 1, paths = glob(['a.py']))\n",
+            "core.replace.after must be a string",
+        ),
+        (
+            "t = core.replace(before = 'a', paths = glob(['a.py']), multiline = 'yes')\n",
+            "core.replace.multiline must be a boolean",
+        ),
+        ("group = core.reverse('x')\n", "core.reverse transformations must be a list"),
+        (
+            "group = core.transform('x')\n",
+            "core.transform transformations must be a list",
+        ),
+        (
+            "group = core.transform([], reversal = 'x')\n",
+            "core.transform reversal must be a list",
+        ),
+        (
+            (
+                "t = core.replace(before = '${i}# copybarista:internal${n}\\n', "
+                "after = '', paths = glob(['a.py']), "
+                "regex_groups = {'i': '[^\\\\n]*', 'n': '[^\\\\n]*'})\n"
+            ),
+            "core.replace on a marker requires multiline = True",
+        ),
+        (
+            (
+                "t = core.replace(before = '# copybarista:if\\na\\n', after = '', "
+                "paths = glob(['a.py']), multiline = True)\n"
+            ),
+            (
+                "core.replace conditional marker block requires :if, :else, :endif; "
+                "missing :else, :endif"
+            ),
+        ),
+        ("ROOT = {'bad': 1}\n", "copy.bara.sky dict keys and values must be strings"),
         (
             (
                 "transform = core.replace(before='a', after='b', "
                 "paths=glob(['a.txt']), regex_groups=['not', 'a', 'dict'])\n"
             ),
-            "regex_groups must be a dict",
+            "core.replace.regex_groups must be a dict",
         ),
-        ("FILES = glob()\n", r"glob\(\.\.\.\) requires one include list"),
-        ("FILES = glob('**')\n", "glob include must be a list"),
-        ("origin = folder.origin(path = 'repo')\n", "folder.origin"),
-        ("dest = folder.destination(path = 'out')\n", "folder.destination"),
-        ("move = core.move('src')\n", "core.move requires"),
+        ("FILES = glob()\n", "glob(...) requires one include list"),
+        ("FILES = glob('**')\n", "glob include must be a list of strings"),
+        (
+            "origin = folder.origin(path = 'repo')\n",
+            "folder.origin() options are not supported",
+        ),
+        (
+            "dest = folder.destination(path = 'out')\n",
+            "folder.destination() options are not supported",
+        ),
+        ("move = core.move('src')\n", "core.move requires source and destination args"),
         (
             "transform = core.replace('old', after='new', paths=glob(['a.txt']))\n",
-            "core.replace positional args",
+            "core.replace positional args are not supported",
         ),
-        ("transform = core.replace(before='old', after='new')\n", "paths"),
+        (
+            "transform = core.replace(before='old', after='new')\n",
+            "core.replace.paths must be a list of strings",
+        ),
         (
             (
                 "transform = core.replace(before='old', after='new', "
                 "paths=glob(['a.txt']), first_only=True)\n"
             ),
-            "Unsupported argument",
+            "Unsupported argument for core.replace: first_only",
         ),
         (
             "author = authoring.pass_thru('Missing brackets')\n",
-            "authoring.pass_thru author",
+            "authoring.pass_thru author must be 'Name <email>'",
         ),
-        ("author = authoring.pass_thru('Demo <>')\n", "must be 'Name <email>'"),
+        (
+            "author = authoring.pass_thru('Demo <>')\n",
+            "authoring.pass_thru author must be 'Name <email>'",
+        ),
         (
             "author = authoring.pass_thru('A <a@x.test>', 'B <b@x.test>')\n",
-            "accepts one author string",
+            "authoring.pass_thru accepts one author string",
         ),
         (
             "author = authoring.pass_thru('A <a@x.test>', default = 'B <b@x.test>')\n",
-            "author specified twice",
+            "authoring.pass_thru author specified twice",
         ),
-        ("author = authoring.pass_thru()\n", "requires an author string"),
-        ("ROOT = b'bytes'\n", "Unsupported literal"),
+        (
+            "author = authoring.pass_thru()\n",
+            "authoring.pass_thru requires an author string",
+        ),
+        ("ROOT = b'bytes'\n", "Unsupported literal in copy.bara.sky: b'bytes'"),
         ("ROOT = ('a', 'b')\n", "Unsupported copy.bara.sky expression: Tuple"),
-        ("ROOT = {**{}}\n", "Unsupported dict unpacking"),
+        ("ROOT = {**{}}\n", "Unsupported dict unpacking in copy.bara.sky"),
         ("ROOT = (lambda: 'a')()\n", "Unsupported copy.bara.sky call: <unsupported>"),
-        ("FILES = glob(['**'], **{})\n", r"Unsupported \*\*kwargs in glob"),
+        ("FILES = glob(['**'], **{})\n", "Unsupported **kwargs in glob"),
         ("FILES = glob([1])\n", "glob include must be a list of strings"),
         (
             "move = core.move('a', 'b', paths = 'a/*')\n",
-            r"core\.move paths must be glob",
+            "core.move paths must be glob(...)",
         ),
         (
             "move = core.move('a', 'b', paths = glob(['*'], exclude = ['x']))\n",
-            "core.move paths must not have exclude",
+            "core.move paths must not have exclude patterns",
         ),
-        ("copy = core.copy('a')\n", "core.copy requires source and destination"),
+        ("copy = core.copy('a')\n", "core.copy requires source and destination args"),
         (
             "copy = core.copy('a', 'b', paths = 'a/*')\n",
-            r"core\.copy paths must be glob",
+            "core.copy paths must be glob(...)",
         ),
         (
             "copy = core.copy('a', 'b', paths = glob(['*'], exclude = ['x']))\n",
-            "core.copy paths must not have exclude",
+            "core.copy paths must not have exclude patterns",
         ),
-        ("group = core.transform([], [])\n", "accepts one transformation list"),
+        (
+            "group = core.transform([], [])\n",
+            "core.transform accepts one transformation list",
+        ),
         (
             "group = core.transform([], transformations = [])\n",
-            "transformations specified twice",
+            "core.transform transformations specified twice",
         ),
-        ("group = core.transform()\n", "requires one transformation list"),
+        (
+            "group = core.transform()\n",
+            "core.transform requires one transformation list",
+        ),
         (
             "group = core.transform([], ignore_noop = 'yes')\n",
-            r"core\.transform\.ignore_noop must be a boolean",
+            "core.transform.ignore_noop must be a boolean",
         ),
         (
             (
                 f"group = core.transform([{_REPLACE_AB}, {_REPLACE_AB}], "
                 f"reversal = [{_REPLACE_AB}])\n"
             ),
-            "explicit reversal supports one transform",
+            "core.transform explicit reversal supports one transform",
         ),
         (
             f"group = core.transform([core.move('a', 'b')], reversal = [{_REPLACE_AB}])\n",
-            "explicit reversal supports core.replace",
+            "core.transform explicit reversal supports core.replace",
         ),
         (
             f"group = core.transform([{_STRIP}], reversal = [{_REPLACE_AB}])\n",
-            "explicit reversal supports core.replace",
+            "core.transform explicit reversal supports core.replace",
         ),
         ("group = core.reverse()\n", "core.reverse requires one transformation list"),
         (
@@ -2472,14 +2672,14 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
                 "t = core.replace(after = 'b', paths = glob(['a.py']), "
                 "regex_groups = {'x': 'a'})\n"
             ),
-            r"core\.replace\.before must be non-empty",
+            "core.replace.before must be non-empty",
         ),
         (
             (
                 "t = core.replace(before = '${x}', after = 'b', "
                 "paths = glob(['*.py'], exclude = ['b.py']), regex_groups = {'x': 'a'})\n"
             ),
-            "core.replace paths must not have exclude",
+            "core.replace paths must not have exclude patterns",
         ),
         (
             (
@@ -2491,14 +2691,14 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
         ),
         (
             "t = core.replace(after = 'b', paths = glob(['a.py']), multiline = True)\n",
-            r"core\.replace\.before must be non-empty",
+            "core.replace.before must be non-empty",
         ),
         (
             (
                 "t = core.replace(before = 'a\\nb', after = 'c', "
                 "paths = glob(['*.py'], exclude = ['b.py']), multiline = True)\n"
             ),
-            "core.replace paths must not have exclude",
+            "core.replace paths must not have exclude patterns",
         ),
         (
             f"t = {_STRIP_TWO_PATHS}\n",
@@ -2510,41 +2710,52 @@ def test_rejects_invalid_sky_syntax(tmp_path: Path):
                 "# copybarista:endif\\n', after = '', paths = glob(['a.py']), "
                 "multiline = True)\n"
             ),
-            "requires :if, :else, :endif; missing :else",
+            "core.replace conditional marker block requires :if, :else, :endif; missing :else",
         ),
         (
             "t = core.replace(after = 'b', paths = glob(['a.py']))\n",
-            r"core\.replace\.before must be non-empty",
+            "core.replace.before must be non-empty",
         ),
         (
             (
                 "t = core.replace(before = 'a', after = 'b', "
                 "paths = glob(['*.py'], exclude = ['b.py']))\n"
             ),
-            "core.replace paths must not have exclude",
+            "core.replace paths must not have exclude patterns",
         ),
     ],
 )
-def test_rejects_unsupported_sky_expressions(tmp_path: Path, source: str, match: str):
+def test_rejects_unsupported_sky_expressions(
+    tmp_path: Path,
+    source: str,
+    message: str,
+):
     config_path = _write_sky(tmp_path, source)
 
-    with pytest.raises(ConfigError, match=match):
+    with pytest.raises(ConfigError, match=_exactly(message)):
         load_config(config_path)
 
 
 @pytest.mark.parametrize(
-    ("body", "match"),
+    ("body", "message"),
     [
-        ("helper('one', 'two')\n", "Too many positional args"),
-        ("helper()\n", "Missing helper args"),
-        ("helper(name='export', **{})\n", r"\*\*kwargs"),
+        ("helper('a', 'b', 'c')\n", "Too many positional args for helper helper"),
+        ("helper()\n", "Missing helper args for helper: name, root"),
+        (
+            "helper(name='export', root='', **{})\n",
+            "Unsupported **kwargs in copy.bara.sky helper call",
+        ),
     ],
 )
-def test_rejects_unsupported_sky_helper_calls(tmp_path: Path, body: str, match: str):
+def test_rejects_unsupported_sky_helper_calls(
+    tmp_path: Path,
+    body: str,
+    message: str,
+):
     config_path = _write_sky(
         tmp_path,
         f"""
-        def helper(name):
+        def helper(name, root):
             core.workflow(
                 name = name,
                 origin = folder.origin(),
@@ -2558,21 +2769,23 @@ def test_rejects_unsupported_sky_helper_calls(tmp_path: Path, body: str, match: 
         """,
     )
 
-    with pytest.raises(ConfigError, match=match):
+    with pytest.raises(ConfigError, match=_exactly(message)):
         load_config(config_path)
 
 
 @pytest.mark.parametrize(
-    ("helper_body", "match"),
+    ("helper_body", "message"),
     [
-        ("print('unsupported')", "Unsupported helper call"),
-        ("value = 'unsupported'", "Unsupported helper body"),
+        ("print('unsupported')", "Unsupported helper call in helper: print"),
+        ("value = 'unsupported'", "Unsupported helper body in helper: Assign"),
+        ("value = print('unsupported')", "Unsupported helper body in helper: Assign"),
+        ("'docstring'", "Unsupported helper body in helper: Expr"),
     ],
 )
 def test_rejects_unsupported_sky_helper_bodies(
     tmp_path: Path,
     helper_body: str,
-    match: str,
+    message: str,
 ):
     config_path = _write_sky(
         tmp_path,
@@ -2584,19 +2797,19 @@ def test_rejects_unsupported_sky_helper_bodies(
         """,
     )
 
-    with pytest.raises(ConfigError, match=match):
+    with pytest.raises(ConfigError, match=_exactly(message)):
         load_config(config_path)
 
 
 @pytest.mark.parametrize(
-    ("workflow_kwargs", "match"),
+    ("workflow_kwargs", "message"),
     [
-        ("'positional'", "core.workflow positional args"),
-        ("name='export', mode='ITERATIVE'", "Only mode"),
-        ("name='export'", "Only folder.origin"),
+        ("'positional'", "core.workflow positional args are not supported"),
+        ("name='export', mode='ITERATIVE'", "Only mode = 'SQUASH' is supported"),
+        ("name='export'", "Only folder.origin() is supported"),
         (
             "name='export', origin=folder.origin(), destination='bad'",
-            "Only folder.destination",
+            "Only folder.destination() or git.destination() is supported",
         ),
         (
             (
@@ -2604,7 +2817,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "transformations='bad'"
             ),
-            "transformations",
+            "core.workflow.transformations must be a list",
         ),
         (
             (
@@ -2612,7 +2825,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "transformations=['bad']"
             ),
-            "Unsupported transformation",
+            "Unsupported transformation: 'bad'",
         ),
         (
             (
@@ -2620,7 +2833,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['src/**']), "
                 "transformations=[core.move('project', '')]"
             ),
-            "outside core.move source root",
+            "origin_files pattern is outside core.move source root: project",
         ),
         (
             (
@@ -2628,7 +2841,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['project/**']), "
                 "transformations=[core.move('project', ''), core.move('project', '')]"
             ),
-            "Only one source-root core.move",
+            "Only one source-root core.move transform is supported",
         ),
         (
             (
@@ -2636,7 +2849,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "destination_files=glob(['src/**']), transformations=[]"
             ),
-            "Only destination_files",
+            'Only destination_files = glob(["**"]) is supported because Copybarista rewrites the whole destination tree',
         ),
         (
             (
@@ -2644,7 +2857,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "destination_files=glob(['**'], exclude=['old/**']), transformations=[]"
             ),
-            "Only destination_files",
+            'Only destination_files = glob(["**"]) is supported because Copybarista rewrites the whole destination tree',
         ),
         (
             (
@@ -2652,7 +2865,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=['**'], "
                 "transformations=[]"
             ),
-            r"core\.workflow\.origin_files must be glob",
+            "core.workflow.origin_files must be glob(...)",
         ),
         (
             (
@@ -2660,21 +2873,21 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), destination_files=['**'], "
                 "transformations=[]"
             ),
-            r"core\.workflow\.destination_files must be glob",
+            "core.workflow.destination_files must be glob(...)",
         ),
         (
             (
                 "name='export', origin=folder.origin(), "
                 "destination=folder.destination(), authoring='Demo', transformations=[]"
             ),
-            "authoring must be authoring.pass_thru",
+            "core.workflow.authoring must be authoring.pass_thru",
         ),
         (
             (
                 "name='export', origin=folder.origin(), "
                 "destination=folder.destination(), authoring=None, transformations=[]"
             ),
-            "authoring must be authoring.pass_thru",
+            "core.workflow.authoring must be authoring.pass_thru",
         ),
         (
             (
@@ -2682,7 +2895,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "transformations=[core.transform([core.move('a', 'b')])]"
             ),
-            "Unsupported transformation",
+            "Unsupported transformation: [MoveSpec(source='a', destination='b')]",
         ),
         (
             (
@@ -2691,7 +2904,7 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "origin_files=glob(['project/**'], exclude=['other/a.py']), "
                 "transformations=[core.move('project', '')]"
             ),
-            "exclude pattern is outside core.move source root: other/a.py",
+            "origin_files exclude pattern is outside core.move source root: other/a.py",
         ),
         (
             (
@@ -2699,14 +2912,27 @@ def test_rejects_unsupported_sky_helper_bodies(
                 "destination=folder.destination(), origin_files=glob(['**']), "
                 "transformations=[core.move('.', 'pkg')]"
             ),
-            r"origin_files pattern is outside core\.move source root: \.$",
+            "origin_files pattern is outside core.move source root: .",
+        ),
+        (
+            (
+                "name='export', origin=folder.origin(), "
+                "destination=folder.destination(), origin_files=glob(['**']), "
+                "transformations=[core.move('.', '')]"
+            ),
+            "origin_files pattern is outside core.move source root: .",
+        ),
+        ("mode=1", "core.workflow.mode must be a string"),
+        (
+            "name=1, origin=folder.origin(), destination=folder.destination()",
+            "core.workflow.name must be a string",
         ),
     ],
 )
 def test_rejects_unsupported_sky_workflows(
     tmp_path: Path,
     workflow_kwargs: str,
-    match: str,
+    message: str,
 ):
     if "authoring" not in workflow_kwargs and not workflow_kwargs.startswith("'"):
         workflow_kwargs = (
@@ -2720,8 +2946,432 @@ def test_rejects_unsupported_sky_workflows(
         """,
     )
 
-    with pytest.raises(ConfigError, match=match):
+    with pytest.raises(ConfigError, match=_exactly(message)):
         load_config(config_path)
+
+
+_NAMED_SKY = """
+NAME = "export"
+AUTHOR = "Demo Export <demo@copybarista.test>"
+SPARE = authoring.pass_thru(default = AUTHOR)
+ROOT = "project"
+SUFFIX = "/**"
+TESTS = "tests"
+DOCS = "docs"
+BEFORE = "old"
+AFTER = "new"
+FILES = ["a.py"]
+KEY = "g"
+PATTERN = "[a-z]+"
+REPLACE = core.replace(before = BEFORE, after = AFTER, paths = glob(FILES))
+
+def helper(name, author):
+    core.workflow(
+        name = name,
+        origin = folder.origin(),
+        destination = folder.destination(),
+        origin_files = glob([ROOT + SUFFIX]),
+        authoring = authoring.pass_thru(author),
+        transformations = [
+            core.move(ROOT, ""),
+            core.move(ROOT + "/t", TESTS, paths = glob(FILES)),
+            core.copy(ROOT + "/d", DOCS, paths = glob(FILES)),
+            core.transform(transformations = [REPLACE]),
+            core.transform([REPLACE]),
+            core.reverse([REPLACE]),
+            core.replace(
+                before = "${g}!",
+                after = "${g}?",
+                paths = FILES,
+                regex_groups = {KEY: PATTERN},
+            ),
+        ],
+    )
+
+helper(NAME, AUTHOR)
+"""
+
+_LITERAL_SKY = """
+REPLACE = core.replace(before = "old", after = "new", paths = glob(["a.py"]))
+
+core.workflow(
+    name = "export",
+    origin = folder.origin(),
+    destination = folder.destination(),
+    origin_files = glob(["project/**"]),
+    authoring = authoring.pass_thru("Demo Export <demo@copybarista.test>"),
+    transformations = [
+        core.move("project", ""),
+        core.move("project/t", "tests", paths = glob(["a.py"])),
+        core.copy("project/d", "docs", paths = glob(["a.py"])),
+        core.transform(transformations = [REPLACE]),
+        core.transform([REPLACE]),
+        core.reverse([REPLACE]),
+        core.replace(
+            before = "${g}!",
+            after = "${g}?",
+            paths = ["a.py"],
+            regex_groups = {"g": "[a-z]+"},
+        ),
+    ],
+)
+"""
+
+
+def test_names_resolve_to_the_values_they_hold_in_every_argument(tmp_path: Path):
+    named = _write_sky(tmp_path, _NAMED_SKY)
+    literal = tmp_path / "literal" / "copy.bara.sky"
+    literal.parent.mkdir()
+    literal.write_text(_LITERAL_SKY, encoding="utf-8")
+
+    assert load_config(named) == load_config(literal)
+
+
+def test_transforms_keep_their_order_and_ordinal_ids(tmp_path: Path):
+    config_path = _write_sky(
+        tmp_path,
+        f"""
+        core.workflow(
+            origin = folder.origin(),
+            destination = folder.destination(),
+            authoring = authoring.pass_thru("Demo <demo@copybarista.test>"),
+            transformations = [
+                core.copy("src", "dst"),
+                {_STRIP},
+                core.move("old.py", "new.py"),
+                core.transform([
+                    core.replace(before = "a", after = "b", paths = glob(["b.py"])),
+                    core.replace(before = "a", after = "b", paths = glob(["c.py"])),
+                ]),
+                core.replace(before = "a", after = "b", paths = glob(["d.py"])),
+            ],
+        )
+        """,
+    )
+
+    config = load_copy_bara_sky_config(config_path)
+
+    assert [transform.id for transform in config.transforms] == [
+        "2:strip_block:a.py",
+        "3:move:old.py",
+        "4.1:replace:b.py",
+        "4.2:replace:c.py",
+        "5.1:replace:d.py",
+    ]
+    assert config.name == "export"
+    assert config.files.copy == (FileCopy(source="src", destination="dst"),)
+    assert config.files.moves == ()
+    assert (config.git.committer_name, config.git.committer_email) == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("origin_files", "transformations", "moves", "copies", "renamed"),
+    [
+        pytest.param(
+            '["**"]',
+            'core.move("", "pkg")',
+            (FileMove(path="", destination="pkg"),),
+            (),
+            [],
+            id="whole-tree-to-prefix",
+        ),
+        pytest.param(
+            '["**"]',
+            'core.move("", "")',
+            (),
+            (),
+            [],
+            id="whole-tree-identity",
+        ),
+        pytest.param(
+            '["pkg/**", "LICENSE"]',
+            'core.move("pkg", ""), core.move("pkg/.export", ""), '
+            'core.move("pkg/a.py", "b.py")',
+            (),
+            (
+                FileCopy(source="LICENSE", destination="LICENSE"),
+                FileCopy(
+                    source="pkg/.export",
+                    destination=".",
+                    use_default_python_excludes=True,
+                ),
+            ),
+            [("pkg/a.py", "b.py")],
+            id="subtree-copy-then-rename",
+        ),
+    ],
+)
+def test_source_root_moves_place_the_package(
+    tmp_path: Path,
+    *,
+    origin_files: str,
+    transformations: str,
+    moves: tuple[FileMove, ...],
+    copies: tuple[FileCopy, ...],
+    renamed: list[tuple[str, str]],
+):
+    config_path = _write_sky(
+        tmp_path,
+        f"""
+        core.workflow(
+            origin = folder.origin(),
+            destination = folder.destination(),
+            origin_files = glob({origin_files}),
+            authoring = authoring.pass_thru("Demo <demo@copybarista.test>"),
+            transformations = [{transformations}],
+        )
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert (config.files.moves, config.files.copy) == (moves, copies)
+    assert [(t.path, t.destination) for t in config.transforms] == renamed
+
+
+def test_a_utf8_config_reads_under_an_ascii_locale(tmp_path: Path):
+    config_path = _write_sky(
+        tmp_path,
+        """
+        core.workflow(
+            origin = folder.origin(),
+            destination = git.destination(url = "file:///tmp/x.git"),
+            authoring = authoring.pass_thru("Zoë <zoe@copybarista.test>"),
+        )
+        """,
+    )
+    previous = locale.setlocale(locale.LC_CTYPE)
+    locale.setlocale(locale.LC_CTYPE, "C")
+    try:
+        config = load_config(config_path)
+    finally:
+        locale.setlocale(locale.LC_CTYPE, previous)
+
+    assert config.git.committer_name == "Zoë"
+
+
+@pytest.mark.parametrize(
+    ("value", "author"),
+    [
+        ("Xavier <Xavier@x.test>", AuthorSpec(name="Xavier", email="Xavier@x.test")),
+        ("Ops <team> <ops@x.test>", AuthorSpec(name="Ops <team>", email="ops@x.test")),
+    ],
+)
+def test_author_splits_at_the_last_angle_bracket(value: str, author: AuthorSpec):
+    assert _author_from_string(value) == author
+
+
+def test_strip_markers_keeps_the_blank_line_after_the_last_end_marker():
+    assert _strip_markers("# s\nx  # e\n# e\n\n") == ("# s", "# e\n\n")
+
+
+def test_strip_prefixes_drop_the_root_and_its_trailing_slash():
+    patterns = ("PIX/", "PIX/a.py", "LICENSE")
+
+    assert _strip_prefixes(patterns[:2], "PIX/") == ("a.py",)
+    assert _strip_prefixes_and_file_copies(patterns, "PIX/") == (
+        ("a.py",),
+        (FileCopy(source="LICENSE", destination="LICENSE"),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "root", "excludes"),
+    [
+        ("PIX/.export", "PIX/", [".export/**"]),
+        ("vendor", "", ["vendor/**"]),
+        ("other/x", "PIX", []),
+    ],
+)
+def test_sweep_excludes_are_relative_to_the_source_root(
+    source: str,
+    root: str,
+    excludes: list[str],
+):
+    found: list[str] = []
+
+    _add_sweep_exclude(found, source, root, ("**",))
+
+    assert found == excludes
+
+
+def test_folder_destination_is_a_folder():
+    call = ast.parse("folder.destination()", mode="eval").body
+    assert isinstance(call, ast.Call)
+
+    assert _folder_destination_from_call(call) == DestinationSpec(kind="folder")
+
+
+def _evaluated(expression: str) -> object:
+    """Return what the parser evaluates one ``copy.bara.sky`` expression to."""
+    parser = _CopyBaraSkyParser(module=ast.Module(body=[], type_ignores=[]))
+    return parser._eval(ast.parse(expression, mode="eval").body, {})
+
+
+_R1 = Transform(id="", type="replace", path="a.py", before="a", after="b")
+_R2 = Transform(id="", type="replace", path="a.py", before="c", after="d")
+_STRIPPED = Transform(
+    id="",
+    type="strip_block",
+    path="a.py",
+    start="# copybarista:internal:start",
+    end="# copybarista:internal:end",
+)
+
+
+@pytest.mark.parametrize(
+    ("expression", "value"),
+    [
+        pytest.param(
+            "core.replace(before = 'a', paths = glob(['a.py', 'b.py']))",
+            [
+                Transform(id="", type="replace", path="a.py", before="a"),
+                Transform(id="", type="replace", path="b.py", before="a"),
+            ],
+            id="literal",
+        ),
+        pytest.param(
+            "core.replace(before = 'a\\nb', after = 'c', paths = ['a.py'], "
+            "multiline = True)",
+            [Transform(id="", type="replace", path="a.py", before="a\nb", after="c")],
+            id="multiline",
+        ),
+        pytest.param(
+            "core.replace(before = '${g}', after = 'x', paths = ['a.py'], "
+            "regex_groups = {'g': 'a'})",
+            [
+                Transform(
+                    id="",
+                    type="replace",
+                    path="a.py",
+                    before="${g}",
+                    after="x",
+                    regex_groups=(("g", "a"),),
+                ),
+            ],
+            id="regex-groups",
+        ),
+        pytest.param(
+            "core.replace(before = '# copybarista:internal', after = 'kept', "
+            "paths = ['a.py'])",
+            [
+                Transform(
+                    id="",
+                    type="replace",
+                    path="a.py",
+                    before="# copybarista:internal",
+                    after="kept",
+                ),
+            ],
+            id="marker-text-that-keeps-content",
+        ),
+        pytest.param(
+            "core.replace(before = '# copybarista:internal\\n', after = '', "
+            "paths = ['a.py'], multiline = True)",
+            Transform(
+                id="",
+                type="internal_lines",
+                path="a.py",
+                start="# copybarista:internal",
+            ),
+            id="internal-lines",
+        ),
+        pytest.param(_STRIP, _STRIPPED, id="strip-block"),
+        pytest.param(f"core.transform([{_REPLACE_AB}])", [_R1], id="group"),
+        pytest.param(
+            f"core.transform([{_REPLACE_AB}], ignore_noop = True)",
+            [replace(_R1, required=False)],
+            id="ignore-noop",
+        ),
+        pytest.param(
+            "core.transform([core.move('a', 'b')], ignore_noop = True)",
+            [MoveSpec(source="a", destination="b")],
+            id="ignore-noop-move",
+        ),
+        pytest.param(
+            f"core.transform([{_REPLACE_AB}, {_STRIP}], reversal = [])",
+            [replace(_R1, reversible=False), _STRIPPED],
+            id="forward-only",
+        ),
+        pytest.param(
+            "core.transform([core.move('a', 'b')], reversal = [])",
+            [MoveSpec(source="a", destination="b")],
+            id="forward-only-move",
+        ),
+        pytest.param(
+            f"core.reverse([{_REPLACE_AB}, "
+            "core.replace(before = 'c', after = 'd', paths = glob(['a.py']))])",
+            [
+                replace(_R2, before="d", after="c"),
+                replace(_R1, before="b", after="a"),
+            ],
+            id="reverse",
+        ),
+    ],
+)
+def test_expressions_evaluate_to_their_transforms(expression: str, value: object):
+    assert _evaluated(expression) == value
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "transform"),
+    [
+        pytest.param(
+            "# copybarista:external:start\n# x\n# copybarista:external:end\n",
+            "x",
+            Transform(
+                id="",
+                type="uncomment",
+                path="",
+                start="# copybarista:external:start",
+                end="# copybarista:external:end",
+            ),
+            id="uncomment",
+        ),
+        pytest.param(
+            "# copybarista:internal\n",
+            "",
+            Transform(
+                id="",
+                type="internal_lines",
+                path="",
+                start="# copybarista:internal",
+            ),
+            id="internal-lines",
+        ),
+        pytest.param(
+            "# copybarista:internal:start\nx\n# copybarista:internal:end\n",
+            "",
+            Transform(
+                id="",
+                type="strip_block",
+                path="",
+                start="# copybarista:internal:start",
+                end="# copybarista:internal:end",
+            ),
+            id="strip-block",
+        ),
+        pytest.param(
+            "# copybarista:if\na\n# copybarista:else\n# b\n# copybarista:endif\n",
+            "",
+            Transform(
+                id="",
+                type="strip_block",
+                path="",
+                start="# copybarista:if",
+                end="# copybarista:endif",
+                else_marker="# copybarista:else",
+            ),
+            id="conditional",
+        ),
+    ],
+)
+def test_marker_transform_is_pathless_until_a_path_claims_it(
+    before: str,
+    after: str,
+    transform: Transform,
+):
+    assert _marker_transform(before=before, after=after) == transform
 
 
 if __name__ == "__main__":
