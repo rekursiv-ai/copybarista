@@ -1129,12 +1129,13 @@ def test_the_export_leaves_validation_to_public_ci():
     assert "--validation-command" not in export_workflow(_settings(), inputs=())
 
 
-def test_every_hook_ci_skips_runs_at_pre_push():
-    """A hook skipped at pre-commit runs in its stronger pre-push form instead.
+def test_every_hook_ci_skips_runs_in_its_other_stage():
+    """A hook ``CI_COMMANDS`` skips in one stage runs, as strong, in the other.
 
-    ``CI_COMMANDS`` skips the ``superseded-at-pre-push`` alias at pre-commit and
-    then runs the pre-push stage, so a hook given that alias with no pre-push
-    counterpart would run nowhere in public CI.
+    The commit stage skips the per-file type checks for their ``-global`` twins
+    at pre-push. The pre-push stage skips its pytest tiers because the commit
+    stage's ``pytest`` hook, over every file, already ran each test once, measured
+    for ``coverage-floor``; a hook skipped in both would run nowhere.
     """
     # The nearest one up: the monorepo nests this package a level deeper than
     # the public repository does.
@@ -1152,19 +1153,27 @@ def test_every_hook_ci_skips_runs_at_pre_push():
         for repo in from_plain(config["repos"], list[dict[str, object]])
         for hook in from_plain(repo.get("hooks", []), list[object])
     ]
-    skipped = [
-        hook["id"] for hook in hooks if hook.get("alias") == "superseded-at-pre-push"
-    ]
-    pre_push = {
-        hook["id"]
-        for hook in hooks
-        if "pre-push" in from_plain(hook.get("stages", []), list[str])
+    staged = {
+        stage: {
+            str(hook["id"])
+            for hook in hooks
+            if stage in from_plain(hook.get("stages", []), list[str])
+        }
+        for stage in ("pre-commit", "pre-push")
     }
 
-    assert "SKIP=superseded-at-pre-push" in CI_COMMANDS[1]
+    def skipped(command: str) -> set[str]:
+        return set(shlex.split(command)[0].removeprefix("SKIP=").split(","))
+
+    at_commit, at_push = skipped(CI_COMMANDS[1]), skipped(CI_COMMANDS[2])
+    assert "--hook-stage pre-commit" in CI_COMMANDS[1]
     assert "--hook-stage pre-push" in CI_COMMANDS[2]
-    assert skipped
-    assert [hook for hook in skipped if f"{hook}-global" not in pre_push] == []
+    assert at_commit == {"ty-check", "pyrefly-check"}
+    assert {f"{hook}-global" for hook in at_commit} <= staged["pre-push"]
+    assert at_push == {
+        hook for hook in staged["pre-push"] if hook.startswith("pytest-")
+    }
+    assert {"pytest", "coverage-floor"} <= staged["pre-commit"] - at_commit
 
 
 def test_the_export_job_installs_no_system_packages():

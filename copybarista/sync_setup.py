@@ -49,18 +49,25 @@ CI_COMMANDS: Final = (
     # dependency's SyntaxWarning (torchao 0.18's docstring) into a collection error.
     "uv sync --frozen --all-groups --compile-bytecode",
     (
-        "SKIP=superseded-at-pre-push uv run pre-commit run --all-files "
+        "SKIP=ty-check,pyrefly-check uv run pre-commit run --all-files "
         "--hook-stage pre-commit"
     ),
-    "uv run pre-commit run --all-files --hook-stage pre-push",
+    (
+        "SKIP=pytest-global,pytest-slow-global,pytest-ci-smoke-global,"
+        "pytest-integration-global uv run pre-commit run --all-files "
+        "--hook-stage pre-push"
+    ),
 )
 """What every public package's CI runs, and the import gate with it.
 
 The same for every package: a check one package needs is a test in that
 package, which these run. Per-package command lists drifted apart, and the
 gates ran them differently from CI, so a command that passed the export failed
-every public PR. The per-file ty, pyrefly and pytest hooks are skipped because
-the pre-push stage runs a stronger form of each.
+every public PR. The per-file ty and pyrefly hooks are skipped because the
+pre-push stage runs a stronger form of each. The tests run once, in the commit
+stage's ``pytest`` hook: ``--all-files`` spools every test, which runs every
+runnable tier measured per test, and ``coverage-floor`` reads that run. So the
+pre-push stage skips its pytest tiers, which would run the same tests again.
 """
 DEFAULT_SYNC_USER_NAME: Final = "copybarista"
 DEFAULT_SYNC_USER_EMAIL: Final = "copybarista@example.com"
