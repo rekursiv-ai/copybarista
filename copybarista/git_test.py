@@ -713,6 +713,43 @@ class TestRealGit:
         assert second.status == "noop"
         assert second.ref == config.git.url
 
+    @pytest.mark.parametrize("nested", [False, True])
+    @pytest.mark.parametrize("target_is_directory", [False, True])
+    def test_write_git_destination_preserves_safe_symlinks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        nested: bool,
+        target_is_directory: bool,
+    ) -> None:
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text("", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        staging = tmp_path / "staging"
+        parent = staging / "package" if nested else staging
+        parent.mkdir(parents=True)
+        target = parent / "target"
+        if target_is_directory:
+            target.mkdir()
+            target = target / "data.txt"
+        target.write_text("payload\n", encoding="utf-8")
+        (parent / "link").symlink_to("target", target_is_directory=target_is_directory)
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+
+        result = write_git_destination(
+            StagedTree(root=staging, files=(), transforms=()),
+            destination=_remote_config(remote).git,
+            runtime=GitRuntime(cache_root=tmp_path / "cache"),
+        )
+
+        link = (parent / "link").relative_to(staging).as_posix()
+        assert result.status == "updated"
+        entry = _git_output(remote, "ls-tree", "main", "--", link)
+        assert entry.split(maxsplit=2)[:2] == ["120000", "blob"]
+        assert _git_output(remote, "show", f"main:{link}") == "target"
+
     def test_export_git_does_not_initialize_invalid_existing_local_remote(
         self,
         tmp_path: Path,
