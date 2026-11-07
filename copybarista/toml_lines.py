@@ -29,6 +29,7 @@ from dataclasses import dataclass
 import functools
 import itertools
 import math
+import re
 import tomllib
 
 from treekle import PlainTree, from_plain
@@ -203,7 +204,7 @@ def spell(keys: KeyPath) -> str:
 
     """
     return ".".join(
-        key if _is_bare(key) and not key.startswith("-") else _quoted(key)
+        key if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", key) else _quoted(key)
         for key in keys
     )
 
@@ -258,12 +259,6 @@ def spelled_key(spelled: str) -> object:
     """Return the ``value_key`` of the TOML value ``spelled`` writes."""
     return value_key(
         from_plain(tomllib.loads(f"v = {spelled}"), dict[str, PlainTree])["v"],
-    )
-
-
-def _is_bare(key: str) -> bool:
-    return bool(key) and all(
-        char.isascii() and (char.isalnum() or char in "_-") for char in key
     )
 
 
@@ -416,7 +411,7 @@ class _Scanner:
                 self.advance(2 if escapes and self.text[self.pos] == "\\" else 1)
             # Up to two quotes before the closing three belong to the string.
             run = 3
-            while run < 5 and self.text.startswith(quote, self.pos + run):
+            while self.text.startswith(quote, self.pos + run):
                 run += 1
             self.advance(run)
             return

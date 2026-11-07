@@ -25,6 +25,9 @@ def test_build_report_times_copybarista_export(tmp_path: Path):
 
     assert report.copybarista.name == "copybarista"
     assert len(report.copybarista.runs) == 2
+    assert report.copybarista.runs == tuple(
+        sample.total_sec for sample in report.copybarista.samples
+    )
     assert report.copybarista.median_sec > 0
     assert report.copybarista.file_count == 1
     assert report.copybarista.byte_count == len("hello\n")
@@ -61,7 +64,7 @@ def test_report_json_is_machine_readable():
 def test_build_report_requires_at_least_one_run(tmp_path: Path):
     config_path, source_ref = _demo_export(tmp_path)
 
-    with pytest.raises(ValueError, match="at least one run"):
+    with pytest.raises(ValueError, match=r"^Benchmark requires at least one run$"):
         bench.build_report(config_path=config_path, source_ref=source_ref, runs=0)
 
 

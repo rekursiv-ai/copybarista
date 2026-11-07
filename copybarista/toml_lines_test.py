@@ -307,6 +307,7 @@ def test_split_header_splits_after_the_closing_bracket(
     ("keys", "spelled"),
     [
         (("tool", "uv"), "tool.uv"),
+        (("snake_case", "Kebab-9"), "snake_case.Kebab-9"),
         (("a.b", "-x", ""), '"a.b"."-x".""'),
         (('q"\\', "é"), '"q\\"\\\\"."é"'),
     ],
