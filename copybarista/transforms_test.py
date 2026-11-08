@@ -1030,8 +1030,22 @@ def test_ruff_format_uses_current_python_environment(
         ),
     )
 
-    assert calls[0][:3] == [sys.executable, "-m", "ruff"]
-    assert calls[1][:3] == [sys.executable, "-m", "ruff"]
+    assert calls == [
+        [sys.executable, "-m", "ruff", "format", "--no-cache", "."],
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            "--fix",
+            "--extend-select",
+            "COM812",
+            "--exit-zero",
+            "--no-cache",
+            ".",
+        ],
+        [sys.executable, "-m", "ruff", "format", "--no-cache", "."],
+    ]
 
 
 def test_ruff_format_reports_a_same_size_rewrite_within_one_tick(
@@ -1556,7 +1570,9 @@ def test_ruff_format_reports_a_failed_ruff_run(
 ):
     class FailingRunner:
         def run(self, argv: list[str], **_: object) -> object:
-            raise ExportError(f"{argv[3]} exited 2")
+            if argv[3] == "check":
+                raise ExportError(f"{argv[3]} exited 2")
+            return object()
 
     monkeypatch.setattr(transforms, "CommandRunner", FailingRunner)
     (tmp_path / "module.py").write_text("x = 1\n", encoding="utf-8")
