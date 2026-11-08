@@ -22,7 +22,12 @@ from copybarista.config import (
     parse_config,
 )
 from copybarista.errors import ExportError
-from copybarista.workflow import MoveSequence, WorkflowRunner
+from copybarista.workflow import (
+    MoveSequence,
+    WorkflowRunner,
+    _apply_transform_destinations,
+    _StagedFile,
+)
 
 
 if TYPE_CHECKING:
@@ -455,6 +460,42 @@ def test_workflow_runner_manifest_tracks_moved_directory(tmp_path: Path):
     assert (staged.root / "pkg/__init__.py").is_file()
     assert [(entry.source, entry.destination) for entry in staged.files] == [
         ("project/_stubs/pkg/__init__.py", "pkg/__init__.py"),
+    ]
+
+
+def test_manifest_moves_continue_after_text_transforms() -> None:
+    entries = (
+        _StagedFile(source="project/pkg/a.py", destination="pkg/a.py"),
+        _StagedFile(source="project/README.md", destination="README.md"),
+        _StagedFile(source="project/NOTICE", destination="NOTICE"),
+    )
+    config = _config(
+        transforms=(
+            Transform(
+                id="replace-import",
+                type="replace",
+                path="pkg/a.py",
+                before="private",
+                after="public",
+            ),
+            Transform(id="move-pkg", type="move", path="pkg", destination="lib"),
+            Transform(id="format-pkg", type="ruff_format", path="lib"),
+            Transform(id="move-lib", type="move", path="lib", destination="dist"),
+            Transform(
+                id="move-readme",
+                type="move",
+                path="README.md",
+                destination="docs/README.md",
+            ),
+        ),
+    )
+
+    moved = _apply_transform_destinations(entries, config=config)
+
+    assert [(entry.source, entry.destination) for entry in moved] == [
+        ("project/pkg/a.py", "dist/a.py"),
+        ("project/README.md", "docs/README.md"),
+        ("project/NOTICE", "NOTICE"),
     ]
 
 
