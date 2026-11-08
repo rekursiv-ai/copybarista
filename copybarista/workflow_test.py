@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from unittest.mock import Mock
 
 import re
 
 import pytest
 
+from copybarista import workflow
 from copybarista.config import (
     FileCopy,
     FileMove,
@@ -22,11 +24,15 @@ from copybarista.config import (
     parse_config,
 )
 from copybarista.errors import ExportError
+from copybarista.globs import GlobSet, Globstar
 from copybarista.workflow import (
     MoveSequence,
     WorkflowRunner,
     _apply_transform_destinations,
+    _copy_file,
+    _copy_selected,
     _StagedFile,
+    _write_generated,
 )
 
 
@@ -59,13 +65,53 @@ def test_workflow_runner_reports_missing_source_root(tmp_path: Path):
 def test_workflow_runner_allows_empty_selection(tmp_path: Path):
     source_ref = tmp_path / "repo"
     (source_ref / "project").mkdir(parents=True)
+    staging = tmp_path / "nested" / "stage"
+    runner = WorkflowRunner(config=_config(), source_ref=source_ref)
 
-    staged = WorkflowRunner(config=_config(), source_ref=source_ref).stage(
-        tmp_path / "stage",
-    )
+    staged = runner.stage(staging)
 
     assert staged.files == ()
     assert staged.transforms == ()
+    assert staging.is_dir()
+    assert runner.stage(staging) == staged
+
+
+@pytest.mark.parametrize("globstar", ["one_or_more", "zero_or_more"])
+def test_workflow_forwards_globstar_to_selection_copies_and_transforms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    globstar: Globstar,
+) -> None:
+    source_ref = tmp_path / "repo"
+    (source_ref / "project").mkdir(parents=True)
+    config = replace(
+        _config(
+            copies=(
+                FileCopy(source="shared", destination="lib", include=("**/*.py",)),
+            ),
+        ),
+        globstar=globstar,
+    )
+    config = replace(config, files=replace(config.files, include=("**/*.py",)))
+    selecting, copying, transforming = (Mock(return_value=()) for _ in range(3))
+    monkeypatch.setattr(workflow, "_copy_selected", selecting)
+    monkeypatch.setattr(workflow, "_copy_additional", copying)
+    monkeypatch.setattr(workflow, "apply_transforms", transforming)
+    staging = tmp_path / "stage"
+
+    WorkflowRunner(config=config, source_ref=source_ref).stage(staging)
+
+    for operation in (selecting, copying):
+        operation.assert_called_once()
+        matcher = cast(GlobSet, operation.call_args.kwargs["matcher"])
+        assert matcher.matches("module.py") == (globstar == "zero_or_more")
+        assert matcher.matches("pkg/module.py")
+    transforming.assert_called_once_with(
+        root=staging,
+        transforms=config.transforms,
+        files=(),
+        globstar=globstar,
+    )
 
 
 def test_workflow_runner_keeps_root_sources_relative(tmp_path: Path):
@@ -497,6 +543,70 @@ def test_manifest_moves_continue_after_text_transforms() -> None:
         ("project/README.md", "docs/README.md"),
         ("project/NOTICE", "NOTICE"),
     ]
+
+
+def test_copy_selection_continues_after_a_withheld_file(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "pyproject.delta.toml").write_text("private delta\n", encoding="utf-8")
+    (source / "z.py").write_text("public module\n", encoding="utf-8")
+    staging = tmp_path / "stage"
+
+    entries = _copy_selected(
+        source,
+        staging=staging,
+        matcher=GlobSet(include=("**",)),
+        prefixer=MoveSequence(moves=()),
+        source_prefix="project",
+        withheld="project/pyproject.delta.toml",
+    )
+
+    assert entries == (_StagedFile(source="project/z.py", destination="z.py"),)
+    assert (staging / "z.py").read_text(encoding="utf-8") == "public module\n"
+    assert not (staging / "pyproject.delta.toml").exists()
+
+
+def test_file_copies_share_an_existing_destination_directory(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("module content\n", encoding="utf-8")
+    staging = tmp_path / "stage"
+
+    entries = tuple(
+        _copy_file(
+            source_ref=tmp_path,
+            source_path=source,
+            staging=staging,
+            destination=destination,
+        )
+        for destination in ("pkg/a.py", "pkg/b.py")
+    )
+
+    assert entries == (
+        _StagedFile(source="module.py", destination="pkg/a.py"),
+        _StagedFile(source="module.py", destination="pkg/b.py"),
+    )
+    assert (staging / "pkg/a.py").read_text(encoding="utf-8") == "module content\n"
+    assert (staging / "pkg/b.py").read_text(encoding="utf-8") == "module content\n"
+
+
+def test_generated_files_share_an_existing_destination_directory(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "stage"
+    entries = tuple(
+        _write_generated(staging=staging, file_write=file_write)
+        for file_write in (
+            FileWrite(path="pkg/a.py", content="first module\n"),
+            FileWrite(path="pkg/b.py", content="second module\n"),
+        )
+    )
+
+    assert entries == (
+        _StagedFile(source="<generated:pkg/a.py>", destination="pkg/a.py"),
+        _StagedFile(source="<generated:pkg/b.py>", destination="pkg/b.py"),
+    )
+    assert (staging / "pkg/a.py").read_text(encoding="utf-8") == "first module\n"
+    assert (staging / "pkg/b.py").read_text(encoding="utf-8") == "second module\n"
 
 
 @pytest.mark.parametrize(
