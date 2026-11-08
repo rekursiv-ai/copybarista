@@ -654,6 +654,11 @@ def _ruff_format(
     newest_tick = _newest_tick_contents(root=root, snapshot=before)
     runner = CommandRunner()
     try:
+        # Formatting exposes compact multiline brackets; COM812 then explodes them.
+        runner.run(
+            [sys.executable, "-m", "ruff", "format", "--no-cache", transform.path],
+            cwd=root,
+        )
         runner.run(
             [
                 sys.executable,
@@ -661,6 +666,8 @@ def _ruff_format(
                 "ruff",
                 "check",
                 "--fix",
+                "--extend-select",
+                "COM812",
                 "--exit-zero",
                 "--no-cache",
                 transform.path,
