@@ -1074,6 +1074,28 @@ def test_ruff_format_reports_a_same_size_rewrite_within_one_tick(
     assert [file.destination for file in report.files] == ["module.py"]
 
 
+def test_ruff_format_of_a_directory_with_no_files_reports_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty target has no newest tick, and nothing for ruff to change."""
+    (tmp_path / "empty").mkdir()
+
+    class IdleRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            del argv
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", IdleRunner)
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (Transform(id="ruff", type="ruff_format", path="empty"),),
+    )
+
+    assert (report.changed, report.count, report.files) == (0, 0, ())
+
+
 def test_ruff_format_reports_only_files_whose_bytes_changed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2217,19 +2239,20 @@ def test_real_ruff_cleans_and_formats_only_the_stage_from_another_cwd(
 
 
 @pytest.mark.parametrize("target", ["pkg", "pkg/deep/m.py"])
-def test_real_ruff_reports_nested_files_under_a_relative_stage_root(
+def test_ruff_format_reports_nested_files_under_a_relative_stage_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target: str,
 ) -> None:
     stage = tmp_path / "work" / "stage"
     (stage / "pkg" / "deep").mkdir(parents=True)
-    (stage / "ruff.toml").write_text(
-        '[lint]\nselect = ["F401"]\n',
-        encoding="utf-8",
-    )
     module = stage / "pkg" / "deep" / "m.py"
     module.write_text("import os\nvalue= [1,2]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        transforms,
+        "CommandRunner",
+        partial(_Rewriter, path=module, text="value = [1, 2]\n", keep_mtime=False),
+    )
     monkeypatch.chdir(tmp_path)
 
     (report,) = apply_transforms(

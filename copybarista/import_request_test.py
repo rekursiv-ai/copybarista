@@ -16,7 +16,7 @@ import tomllib
 
 import pytest
 
-from copybarista import import_request
+from copybarista import import_request, transforms
 from copybarista.cli import main
 from copybarista.config import (
     FileMove,
@@ -554,10 +554,40 @@ def test_a_pyproject_change_is_carried_by_key(
     )
 
 
+class _Ruff:
+    """Ruff as a process that rewrites the spans it was scripted for.
+
+    ``format`` rewrites each scripted span in every ``.py`` file under its path;
+    ``check --fix`` changes nothing. What the merge decides is the subject, not
+    what Ruff prints, which ``transforms_test`` checks against the real one.
+    """
+
+    formatted: dict[str, str] = {}  # noqa: RUF012 -- each test sets its own.
+
+    def run(self, argv: list[str], *, cwd: Path | None = None, **_: object) -> None:
+        assert cwd is not None
+        if "format" not in argv:
+            return
+        target = cwd / argv[-1]
+        for path in [target] if target.is_file() else sorted(target.rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for span, formatted in self.formatted.items():
+                text = text.replace(span, formatted)
+            path.write_text(text, encoding="utf-8")
+
+
 def test_merge_import_accepts_a_public_change_the_export_reformats(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Formatting alone, ruff's on the render and none on public, is not a loss."""
+    monkeypatch.setattr(
+        _Ruff,
+        "formatted",
+        {"max(\n    1,\n    2\n)": "max(1, 2)"},
+    )
+    monkeypatch.setattr(import_request, "CommandRunner", _Ruff)
+    monkeypatch.setattr(transforms, "CommandRunner", _Ruff)
     source_base = tmp_path / "source-base"
     (source_base / "pkg").mkdir(parents=True)
     (source_base / "pkg/module.py").write_text("VALUE = 1\n", encoding="utf-8")

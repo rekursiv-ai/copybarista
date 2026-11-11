@@ -9,6 +9,7 @@ import stat
 
 import pytest
 
+from copybarista import transforms
 from copybarista.config import load_config
 from copybarista.errors import ExportError, LeakCheckError
 from copybarista.export import export_folder
@@ -270,38 +271,57 @@ def test_folder_export_moves_apply_in_order(tmp_path: Path):
     ]
 
 
-def test_folder_export_can_run_ruff_format_transform(tmp_path: Path):
+class _Sorter:
+    """Ruff as a process whose ``format`` sorts each ``.py`` file's lines.
+
+    What the export does with the transform's edits is the subject; what Ruff
+    does to a file is ``transforms_test``'s, and the real-Ruff export test below.
+    """
+
+    def run(self, argv: list[str], *, cwd: Path | None = None, **_: object) -> None:
+        assert cwd is not None
+        if "format" not in argv:
+            return
+        for path in sorted((cwd / argv[-1]).rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            formatted = "".join(sorted(text.splitlines(keepends=True)))
+            if formatted != text:
+                path.write_text(formatted, encoding="utf-8")
+
+
+_RUFF_FORMAT_CONFIG = """
+    [workflow]
+    name = "project"
+    mode = "squash"
+    source_root = "project"
+
+    [files]
+    include = ["**"]
+
+    [[transform]]
+    type = "ruff_format"
+    path = "."
+    """
+
+
+@pytest.mark.parametrize(
+    ("source", "changed"),
+    [("import sys\nimport os\n", 1), ("VALUE = 1\n", 0)],
+    ids=["rewritten", "noop"],
+)
+def test_folder_export_ships_and_reports_the_ruff_format_transform(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    changed: int,
+):
+    monkeypatch.setattr(transforms, "CommandRunner", _Sorter)
     source_ref = tmp_path / "repo"
     project = source_ref / "project"
     project.mkdir(parents=True)
-    (project / "pyproject.toml").write_text(
-        """
-        [tool.ruff]
-        fix = true
-
-        [tool.ruff.lint]
-        select = ["I"]
-        """,
-        encoding="utf-8",
-    )
-    (project / "module.py").write_text("import sys\nimport os\n", encoding="utf-8")
+    (project / "module.py").write_text(source, encoding="utf-8")
     config_path = tmp_path / "copy.barista.toml"
-    config_path.write_text(
-        """
-        [workflow]
-        name = "project"
-        mode = "squash"
-        source_root = "project"
-
-        [files]
-        include = ["**"]
-
-        [[transform]]
-        type = "ruff_format"
-        path = "."
-        """,
-        encoding="utf-8",
-    )
+    config_path.write_text(_RUFF_FORMAT_CONFIG, encoding="utf-8")
 
     manifest = export_folder(
         load_config(config_path),
@@ -310,14 +330,16 @@ def test_folder_export_can_run_ruff_format_transform(tmp_path: Path):
         force=True,
     )
 
-    assert (tmp_path / "out" / "module.py").read_text(encoding="utf-8") == (
-        "import os\nimport sys\n"
+    assert (tmp_path / "out" / "module.py").read_text(encoding="utf-8") == "".join(
+        sorted(source.splitlines(keepends=True)),
     )
     assert manifest.transforms[0].type == "ruff_format"
-    assert manifest.transforms[0].changed == 1
+    assert manifest.transforms[0].changed == changed
+    assert len(manifest.transforms[0].files) == changed
 
 
 def test_folder_export_ruff_format_allows_unfixable_lint_after_fixes(tmp_path: Path):
+    """The one export through the real Ruff: it reads the project's own config."""
     source_ref = tmp_path / "repo"
     project = source_ref / "project"
     project.mkdir(parents=True)
@@ -440,40 +462,6 @@ def test_folder_export_fails_on_leak_check_violation(tmp_path: Path):
             destination=tmp_path / "out",
             force=True,
         )
-
-
-def test_folder_export_ruff_format_allows_noop(tmp_path: Path):
-    source_ref = tmp_path / "repo"
-    project = source_ref / "project"
-    project.mkdir(parents=True)
-    (project / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
-    config_path = tmp_path / "copy.barista.toml"
-    config_path.write_text(
-        """
-        [workflow]
-        name = "project"
-        mode = "squash"
-        source_root = "project"
-
-        [files]
-        include = ["**"]
-
-        [[transform]]
-        type = "ruff_format"
-        path = "."
-        """,
-        encoding="utf-8",
-    )
-
-    manifest = export_folder(
-        load_config(config_path),
-        source_ref=source_ref,
-        destination=tmp_path / "out",
-        force=True,
-    )
-
-    assert manifest.transforms[0].changed == 0
-    assert manifest.transforms[0].files == ()
 
 
 def test_folder_export_requires_force_for_existing_destination(tmp_path: Path):
