@@ -34,6 +34,7 @@ import tomllib
 from treekle import ReadError, from_plain, json_loads
 
 from copybarista.config import Transform, load_config
+from copybarista.lib.files import tempclaim
 from copybarista.scripts.sync_import_change import (
     ImportBaseError,
     branch_component,
@@ -708,8 +709,16 @@ def _log(message: str) -> None:
 
 def _run_export_sync(request: ExportRequest) -> None:
     """Run export sync against the request's public checkout."""
+    with tempclaim.claimed_directory(
+        Path(tempfile.gettempdir()),
+        prefix="copybarista-public-",
+    ) as export_dir:
+        _sync_through(request, export_dir=export_dir)
+
+
+def _sync_through(request: ExportRequest, *, export_dir: Path) -> None:
+    """Export into ``export_dir``, then sync it to the public checkout."""
     project = request.source_dir / request.project_path
-    export_dir = Path(tempfile.mkdtemp(prefix="copybarista-public-"))
     manifest = request.runner_temp / "copybarista-manifest.json"
     _log("Resolving export PR replay state.")
     pr_plan = _resolve_pr_replay_plan(request=request, pr_template="")

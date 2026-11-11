@@ -2922,6 +2922,76 @@ def test_run_export_sync_renders_body_with_exported_pr_template(
     assert "Exported template placeholder" not in opened[0]
 
 
+def test_run_export_sync_removes_its_export_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    public_dir = tmp_path / "public"
+    public_dir.mkdir()
+    exported: list[Path] = []
+
+    def fake_export_public_tree(
+        *,
+        project: Path,
+        source_dir: Path,
+        export_dir: Path,
+        manifest: Path,
+    ) -> None:
+        del project, source_dir, manifest
+        exported.append(export_dir)
+        (export_dir / "module.py").write_text("source\n", encoding="utf-8")
+
+    def fake_resolve_pr_replay_plan(
+        *,
+        request: ExportRequest,
+        pr_template: str,
+    ) -> sync_export_pr.PrReplayPlan:
+        del request, pr_template
+        return sync_export_pr.PrReplayPlan(
+            state=_pr_state(),
+            body="",
+            replay_base="",
+            replay_base_digest="",
+            current_pr=None,
+        )
+
+    def fake_open_or_update_export_pr(
+        *,
+        request: ExportRequest,
+        pr_plan: sync_export_pr.PrReplayPlan,
+    ) -> bool:
+        del request, pr_plan
+        return False
+
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_resolve_pr_replay_plan",
+        fake_resolve_pr_replay_plan,
+    )
+    monkeypatch.setattr(sync_export_pr, "_export_public_tree", fake_export_public_tree)
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_open_or_update_export_pr",
+        fake_open_or_update_export_pr,
+    )
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            source_dir=tmp_path,
+            public_dir=public_dir,
+            skip_source_validation=True,
+        ),
+    )
+
+    assert (public_dir / "module.py").read_text(encoding="utf-8") == "source\n"
+    assert [path.parent for path in exported] == [scratch]
+    assert list(scratch.iterdir()) == []
+
+
 @pytest.mark.parametrize("pr_open", [True, False], ids=["pr", "no-pr"])
 def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
     monkeypatch: pytest.MonkeyPatch,
