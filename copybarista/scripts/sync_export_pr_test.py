@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TextIO
 
@@ -56,7 +57,7 @@ from copybarista.sync_setup import SyncSettings, write_sync_scaffold
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -3655,14 +3656,7 @@ def test_await_upstream_exports_waits_until_each_run_completes(
     calls: list[tuple[list[str], dict[str, object]]] = []
     sleeps: list[float] = []
 
-    def fake_run_gh(
-        argv: list[str],
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout=next(statuses))
-
-    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(sync_export_pr, "_run_gh", partial(_answered, calls, statuses))
     monkeypatch.setattr(time, "sleep", sleeps.append)
 
     _await_upstream_exports(
@@ -5747,6 +5741,17 @@ def test_pr_text_rewrites_with_the_projects_replace_rules(tmp_path: Path) -> Non
     assert sync_export_pr._rewrite_public_text("see loop.pkg.cli", transforms) == (
         "see pkg.cli"
     )
+
+
+def _answered(
+    calls: list[tuple[list[str], dict[str, object]]],
+    statuses: Iterator[str],
+    argv: list[str],
+    **kwargs: object,
+) -> subprocess.CompletedProcess[str]:
+    """Note one ``gh`` call and answer it with the next of ``statuses``."""
+    calls.append((argv, kwargs))
+    return subprocess.CompletedProcess(argv, 0, stdout=next(statuses))
 
 
 if __name__ == "__main__":
