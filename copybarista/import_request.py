@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from os import walk
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import difflib
 import itertools
@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 from treekle import ReadError
 
@@ -37,6 +38,7 @@ from copybarista.pyproject import DeltaConflictError, PyprojectSource, same_rend
 from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
+    apply_transforms,
     line_has_marker_token,
     strip_source_regions,
     strip_source_text,
@@ -584,14 +586,15 @@ class ChangeRequestImporter:
         try:
             if self.merge_import:
                 applied = self._merge_changes(plan.changes)
+                if self.verify:
+                    # Source drift makes the re-export legitimately differ from
+                    # public head, so it must instead carry each change public made.
+                    self._check_carries_public_changes(applied)
             else:
                 applied = tuple(self._apply_change(change) for change in plan.changes)
                 if self.verify:
                     # Strict mode reverses the public head exactly, so its
-                    # re-export must reproduce public head. Merge mode folds in
-                    # independent source drift, so its export legitimately differs
-                    # from public head; the merge path verifies each reversal
-                    # per-file instead (see _check_merge_reversal).
+                    # re-export must reproduce public head.
                     self._check_public_head()
         except Exception:
             _restore_originals(originals)
@@ -631,9 +634,14 @@ class ChangeRequestImporter:
             public_path=change.public,
             source_path=change.source,
             merged_public=public_path.read_bytes(),
-            ours_public=self._public_base_bytes(change.public),
+            # Public held another kind of entry here, which no source line exports.
+            ours_public=(
+                None
+                if change.action == "type_changed"
+                else self._public_base_bytes(change.public)
+            ),
         )
-        if change.action == "type_changed" or target.is_symlink() or target.is_dir():
+        if target.is_symlink() or target.is_dir():
             _delete_path(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(head_data)
@@ -723,25 +731,27 @@ class ChangeRequestImporter:
     # workdir; we read a single re-export as its equivalent). But a path under no
     # relocation rule is NOT shipped by the export -- it lives at its identical path in
     # the source tree and is absent from the export. For such an identity path
-    # (``change.source == change.public``) fall back to the source file directly, so the
-    # merge sees the real local side rather than an empty string that would spuriously
-    # conflict with the incoming public edit.
+    # (``source == public``) fall back to the source file directly, so the merge sees the
+    # real local side rather than an empty string that would spuriously conflict with the
+    # incoming public edit.
     def _ours_public_entry(
         self,
         *,
-        change: ImportChange,
+        public: str,
+        source: str,
+        source_root: Path,
         source_export: Path,
     ) -> TreeEntry | None:
-        """Return the source's public-space file-like state for merge."""
-        exported = source_export / change.public
+        """Return the public-space file-like state of ``source_root`` at ``public``."""
+        exported = source_export / public
         if exported.is_symlink():
             return _tree_symlink(exported)
         if exported.is_file():
             return _tree_file(exported)
         # The export never ships a relocated tree, so its new home is the local side.
-        relocated = PathMapper(config=self.config).relocated_source_path(change.public)
-        if change.source in (change.public, relocated):
-            source_file = self.source_base / change.source
+        relocated = PathMapper(config=self.config).relocated_source_path(public)
+        if source in (public, relocated):
+            source_file = source_root / source
             if source_file.is_symlink():
                 return _tree_symlink(source_file)
             if source_file.is_file():
@@ -828,13 +838,15 @@ class ChangeRequestImporter:
     #
     # Whole-document, not per line: ``strip_block`` and ``internal_lines`` reinsert
     # multi-line regions.
+    # ``ours_public`` is ``None`` when public held no file at the path to pair with the
+    # source's, so the reversed text is the whole file.
     def _reverse_changed_lines(
         self,
         *,
         public_path: str,
         source_path: str,
         merged_public: bytes,
-        ours_public: bytes,
+        ours_public: bytes | None,
     ) -> bytes:
         """Reverse the public text, then restore lines the edit never touched."""
         if not self.merge_import:
@@ -849,12 +861,13 @@ class ChangeRequestImporter:
             data=merged_public,
         )
         source_file = self.source_base / source_path
-        if not source_file.is_file() or source_file.is_symlink():
+        if ours_public is None or not source_file.is_file() or source_file.is_symlink():
             return reversed_whole
         try:
-            source_lines = source_file.read_text(encoding="utf-8").splitlines(
-                keepends=True,
-            )
+            # pragma: no mutate start -- Linux's default encoding is UTF-8 (PEP 538).
+            text = source_file.read_text(encoding="utf-8")
+            # pragma: no mutate end
+            source_lines = text.splitlines(keepends=True)
             reversed_lines = reversed_whole.decode().splitlines(keepends=True)
         except UnicodeDecodeError:
             return reversed_whole
@@ -913,14 +926,17 @@ class ChangeRequestImporter:
             return self._apply_change(change), False
         head_entry = _tree_file(public_path)
         ours_entry = self._ours_public_entry(
-            change=change,
+            public=change.public,
+            source=change.source,
+            source_root=self.source_base,
             source_export=source_export,
         )
+        ours_public = ours_entry.data if ours_entry is not None else b""
         if self._is_pyproject(change):
             return self._merge_pyproject(
                 change=change,
                 target=target,
-                ours=ours_entry.data if ours_entry is not None else b"",
+                ours=ours_public,
                 head=head_entry.data,
             )
         if ours_entry == head_entry:
@@ -930,24 +946,21 @@ class ChangeRequestImporter:
             return self._apply_change(change), False
         if ours_entry is not None and ours_entry.kind != "file":
             return self._apply_change(change), False
-        head_public = head_entry.data
-        ours_public = ours_entry.data if ours_entry is not None else b""
-        base_public = (
-            base_entry.data
-            if base_entry is not None and base_entry.kind == "file"
-            else b""
-        )
+        # A base of another kind is a ``type_changed`` change, handled above. With no
+        # base, both sides added the file and differ, which diff3 can only conflict on.
+        if base_entry is None:
+            return change, True
         merged_public, conflicted = _three_way_merge(
             current=ours_public,
-            base=base_public,
-            incoming=head_public,
+            base=base_entry.data,
+            incoming=head_entry.data,
         )
         if conflicted:
             # The caller rolls the whole import back on any conflict, so the
             # conflict-marker bytes are never a valid final tree. Don't reverse
             # (which can raise on marker text), write, or reformat them -- report
             # the conflict and leave the destination untouched.
-            return _with_outcome(change, "merged"), True
+            return change, True
         merged_source = self._reverse_changed_lines(
             public_path=change.public,
             source_path=change.source,
@@ -1382,6 +1395,76 @@ class ChangeRequestImporter:
                 raise ImportRequestError(
                     "Imported source tree does not reproduce public head",
                 )
+
+    # Keyed on public's own diff, not the plan, so a change the plan misrouted or wrongly
+    # skipped still counts; the plan supplies only where a path the export never ships
+    # lives in the source. Public's trees pass through the same ``ruff_format`` the
+    # render did, so formatting alone never reads as a lost change.
+    def _check_carries_public_changes(self, applied: tuple[ImportChange, ...]) -> None:
+        """Verify the imported destination carries every change public made."""
+        sources = {change.public: change.source for change in applied}
+        # pragma: no mutate start -- A scratch directory's name is never read.
+        with (
+            tempfile.TemporaryDirectory(prefix="import-request-") as exported,
+            tempfile.TemporaryDirectory(prefix="import-request-") as base_dir,
+            tempfile.TemporaryDirectory(prefix="import-request-") as head_dir,
+        ):
+            # pragma: no mutate end
+            export_folder(
+                config=self.config,
+                source_ref=self.destination,
+                destination=Path(exported),
+                force=True,
+            )
+            base = self._formatted(self.public_base, destination=Path(base_dir))
+            head = self._formatted(self.public_head, destination=Path(head_dir))
+            lost: list[str] = []
+            for change in (
+                TreeSnapshot.from_root(self.public_base)
+                .diff(TreeSnapshot.from_root(self.public_head))
+                .changes
+            ):
+                ours = self._ours_public_entry(
+                    public=change.path,
+                    # An unplanned path names no source; any non-path stand-in reads alike.
+                    source=sources.get(change.path, ""),  # pragma: no mutate
+                    source_root=self.destination,
+                    source_export=Path(exported),
+                )
+                # A delta folds public's edit key by key, so it is carried by key.
+                carried = (
+                    _carries_pyproject_change
+                    if change.path == "pyproject.toml" and self.config.files.pyproject
+                    else _contains_public_change
+                )
+                if not carried(
+                    base=base.entries.get(change.path),
+                    ours=ours,
+                    head=head.entries.get(change.path),
+                ):
+                    lost.append(change.path)
+        if lost:
+            raise ImportRequestError(
+                "Imported source tree does not reproduce the public change to: "
+                + ", ".join(lost),
+            )
+
+    def _formatted(self, public: Path, *, destination: Path) -> TreeSnapshot:
+        """Return ``public`` as the export's ``ruff_format`` transforms leave it."""
+        # pragma: no mutate start -- Skipping a public checkout's history only saves time.
+        shutil.copytree(
+            public,
+            destination,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(*VCS_DIRS),
+            dirs_exist_ok=True,
+        )
+        # pragma: no mutate end
+        _ = apply_transforms(
+            destination,
+            tuple(t for t in self.config.transforms if t.type == "ruff_format"),
+        )
+        return TreeSnapshot.from_root(destination)
 
     # A rendered ``pyproject.toml`` is compared by content: folding a public edit
     # into the delta re-renders it in the renderer's own spelling, so a hand-
@@ -2276,6 +2359,77 @@ def _same_render(left: bytes, right: bytes) -> bool:
         return same_render(left.decode(), right.decode())
     except (UnicodeDecodeError, DeltaError):
         return left == right
+
+
+# Carried means merging public's change onto the render changes nothing, so loop's own
+# edits beside it survive and only a conflict or an absent change fails. Text git cannot
+# merge (binary) is carried only verbatim.
+def _contains_public_change(
+    *,
+    base: TreeEntry | None,
+    ours: TreeEntry | None,
+    head: TreeEntry | None,
+) -> bool:
+    """Return whether ``ours`` already carries public's ``base`` to ``head`` change."""
+    if ours == head:
+        return True
+    # A file public added, or a type it changed, is carried only verbatim.
+    if (
+        ours is None
+        or head is None
+        or base is None
+        or ours.kind != "file"
+        or head.kind != "file"
+        or base.kind != "file"
+    ):
+        return False
+    if base.executable != head.executable != ours.executable:
+        return False
+    try:
+        merged, conflicted = _three_way_merge(
+            current=ours.data,
+            base=base.data,
+            incoming=head.data,
+        )
+    except ImportRequestError:
+        return False
+    return not conflicted and merged == ours.data
+
+
+# Comments are not compared: the fold rejects a public comment edit before this runs.
+def _carries_pyproject_change(
+    *,
+    base: TreeEntry | None,
+    ours: TreeEntry | None,
+    head: TreeEntry | None,
+) -> bool:
+    """Return whether ``ours`` holds every value public's ``pyproject.toml`` edit set."""
+    if ours is None or head is None:
+        return ours == head
+    before = _toml_leaves(base.data if base is not None else b"")
+    after = _toml_leaves(head.data)
+    now = _toml_leaves(ours.data)
+    return all(
+        now.get(key) == after.get(key)
+        for key in before.keys() | after.keys()
+        if before.get(key) != after.get(key)
+    )
+
+
+def _toml_leaves(data: bytes) -> dict[tuple[str, ...], object]:
+    """Return each non-table value of a TOML document, keyed by its dotted path."""
+    leaves: dict[tuple[str, ...], object] = {}
+    pending: list[tuple[tuple[str, ...], dict[str, object]]] = [
+        ((), tomllib.loads(data.decode())),
+    ]
+    while pending:
+        prefix, table = pending.pop()
+        for key, value in table.items():
+            if isinstance(value, dict):
+                pending.append(((*prefix, key), cast(dict[str, object], value)))
+            else:
+                leaves[(*prefix, key)] = value
+    return leaves
 
 
 # Shells to ``git merge-file``, the diff3 engine Copybara's ``MergeImportTool`` uses.

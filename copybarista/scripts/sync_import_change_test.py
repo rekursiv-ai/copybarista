@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, override
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -620,18 +621,26 @@ def test_cli_publishes_the_requested_import_with_its_provenance(
             f"refs/heads/{branch}:refs/remotes/origin/{branch}",
         ],
         ["git", "switch", "-C", branch],
-        ["git", "add", "packages/widget"],
+        ["git", "add", "--all"],
         commit,
         ["git", "push", "--force-with-lease", "origin", branch],
     ):
-        (options,) = [
-            options for command, options in processes.calls if command == expected
-        ]
-        assert options["cwd"] == target
+        # The validation tree runs its own ``git add --all``; the target's is the ledger.
+        assert [
+            options["cwd"]
+            for command, options in processes.calls
+            if command == expected
+        ].count(target) == 1
+    in_target = [
+        command for command, options in processes.calls if options["cwd"] == target
+    ]
     assert (
-        calls.index(["git", "switch", "-C", branch])
-        < calls.index(["git", "add", "packages/widget"])
-        < calls.index(commit)
+        in_target.index(["git", "switch", "-C", branch])
+        < in_target.index(["git", "add", "--all"])
+        < in_target.index(commit)
+    )
+    assert (
+        calls.index(commit)
         < calls.index(["git", "push", "--force-with-lease", "origin", branch])
         < calls.index(publication)
     )
@@ -751,6 +760,57 @@ def test_cli_publishes_the_requested_import_with_its_provenance(
             encoding="utf-8",
         ) == '{"imported":true}\n'
         assert not (tmp_path / "report.json.validation-failed").exists()
+
+
+# Real git, not ``FakeGit``: what a pathspec stages, a deletion included, is the
+# behavior under test, and only git can say what git does.
+def test_the_import_commit_holds_every_path_the_import_wrote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``[[files.copy]]`` source outside the project is committed, not dropped."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    target = tmp_path / "target"
+    for path in ("packages/widget/core.py", "lib/posix/child.py", "lib/gone.py"):
+        (target / path).parent.mkdir(parents=True, exist_ok=True)
+        _ = (target / path).write_text("old\n", encoding="utf-8")
+
+    executable = shutil.which("git")
+    assert executable is not None
+
+    def git(*args: str) -> str:
+        return subprocess.run(  # noqa: S603 -- Resolved git and fixed argv, no shell.
+            [executable, "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    _ = git("init", "--quiet", "--initial-branch=main")
+    _ = git("add", "--all")
+    _ = git("commit", "--quiet", "-m", "base")
+    _ = (target / "packages/widget/core.py").write_text("new\n", encoding="utf-8")
+    _ = (target / "lib/posix/child.py").write_text("new\n", encoding="utf-8")
+    (target / "lib/gone.py").unlink()
+    request = replace(
+        _import_request(target_dir=target),
+        project_path=Path("packages/widget"),
+    )
+
+    sync_import_change._commit_import(request=request)
+
+    assert git("log", "-1", "--format=%s").strip() == import_commit_subject(
+        request.sync_label,
+        request.public_sha,
+    )
+    assert git("ls-tree", "-r", "--name-only", "HEAD").split() == [
+        "lib/posix/child.py",
+        "packages/widget/core.py",
+    ]
+    assert git("show", "HEAD:lib/posix/child.py") == "new\n"
+    assert not git("status", "--porcelain")
 
 
 @pytest.mark.parametrize("settings", ["defaults", "environment", "environment-branch"])
@@ -1425,8 +1485,8 @@ def test_push_import_records_ledger_despite_validation_failure(
         del branch, repo, cwd
         return False
 
-    def fake_has_changes(*, path: Path, rel: Path) -> bool:
-        del path, rel
+    def fake_has_changes(*, path: Path) -> bool:
+        del path
         return True
 
     monkeypatch.setattr(
@@ -3157,34 +3217,62 @@ def test_export_public_tree_replaces_a_stale_tree_and_seeds_the_lock(
     assert not (tree / "stale").exists()
 
 
-def test_an_open_import_pr_is_edited_in_place(
+@pytest.mark.parametrize(("exists", "verb"), [(True, "edit"), (False, "create")])
+@pytest.mark.parametrize("changed", [True, False])
+def test_the_import_pr_is_published_from_the_target_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    exists: bool,
+    verb: str,
+    changed: bool,
 ) -> None:
-    github_calls: list[list[str]] = []
+    """Every GitHub call runs in the target, and an empty import says so."""
+    github_calls: list[tuple[list[str], object]] = []
+    asked: list[tuple[str, object]] = []
 
     def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n")
 
-    def run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        github_calls.append(argv)
+    def run_gh(argv: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+        github_calls.append((argv, options["cwd"]))
         return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def pr_exists(*, branch: str, repo: str, cwd: Path) -> bool:
+        del branch, repo
+        asked.append(("pr", cwd))
+        return exists
+
+    def has_changes(*, path: Path) -> bool:
+        asked.append(("changes", path))
+        return changed
 
     monkeypatch.setattr(sync_import_change, "_run", run)
     monkeypatch.setattr(sync_import_change, "_run_gh", run_gh)
-    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", _pr_exists)
-    request = replace(_import_request(target_dir=tmp_path), auto_merge=False)
+    monkeypatch.setattr(sync_import_change, "_gh_pr_exists", pr_exists)
+    monkeypatch.setattr(sync_import_change, "_git_has_changes", has_changes)
+    request = _import_request(target_dir=tmp_path)
 
     sync_import_change._open_or_update_target_pr(request=request)
 
-    assert [argv[:4] for argv in github_calls] == [["gh", "pr", "edit", request.branch]]
+    assert asked == [("changes", tmp_path), ("pr", tmp_path)]
+    publish, merge = (argv for argv, _ in github_calls)
+    assert publish[:3] == ["gh", "pr", verb]
+    assert merge[:3] == ["gh", "pr", "merge"]
+    assert {cwd for _, cwd in github_calls} == {tmp_path}
+    body_file = Path(publish[publish.index("--body-file") + 1])
+    assert body_file == tmp_path / "copybarista-import-change-pr-body.md"
+    assert request.public_sha in body_file.read_text(encoding="utf-8")
+    logged = "Import produced no target changes; recording the SHA anyway.\n"
+    assert (logged in capsys.readouterr().err) is not changed
 
 
 @pytest.mark.parametrize(
     ("porcelain", "changed"),
     [(" M package/a.py\n", True), ("", False)],
 )
-def test_git_has_changes_reads_git_status_under_the_path(
+def test_git_has_changes_reads_git_status_of_the_whole_checkout(
     monkeypatch: pytest.MonkeyPatch,
     porcelain: str,
     changed: bool,
@@ -3197,13 +3285,10 @@ def test_git_has_changes_reads_git_status_under_the_path(
 
     monkeypatch.setattr(sync_import_change, "_run", run)
 
-    assert (
-        sync_import_change._git_has_changes(path=Path("t"), rel=Path("package"))
-        is changed
-    )
+    assert sync_import_change._git_has_changes(path=Path("t")) is changed
     assert calls == [
         (
-            ["git", "status", "--porcelain", "package"],
+            ["git", "status", "--porcelain"],
             {"cwd": Path("t"), "check": False, "capture": True},
         ),
     ]
@@ -3384,10 +3469,6 @@ def _requirements_in_runner_temp(*, target_dir: Path, runner_temp: Path) -> Path
 
 def _import_nothing(**_: object) -> None:
     return None
-
-
-def _pr_exists(**_: object) -> bool:
-    return True
 
 
 if __name__ == "__main__":

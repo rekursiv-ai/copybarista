@@ -928,12 +928,12 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
 # already had.
 #
 # An empty diff at this point is the strongest possible yes: the three-way merge applied
-# without conflict and ``_validate_target`` passed the full gate suite on the exported
-# result. A transform that dropped content, or a wrong ``--public-base``, raises before
-# reaching this function.
+# without conflict, the importer checked that the re-export carries every change
+# public made (``_check_carries_public_changes``), and ``_validate_target`` passed the
+# full gate suite on the exported result.
 def _open_or_update_target_pr(*, request: ImportRequest) -> None:
     """Commit the import and create or update the target PR."""
-    if not _git_has_changes(path=request.target_dir, rel=request.project_path):
+    if not _git_has_changes(path=request.target_dir):
         _log("Import produced no target changes; recording the SHA anyway.")
 
     branch = request.branch
@@ -943,39 +943,19 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
         capture=True,
     ).stdout.strip()
     body_file = request.runner_temp / "copybarista-import-change-pr-body.md"
-    body_file.write_text(
-        import_change_pr_body(
-            public_repo=request.public_repo,
-            public_sha=request.public_sha,
-            public_base_ref=request.public_base_ref,
-            public_head_ref=request.public_head_ref,
-            source_base_ref=source_base_ref,
-            sync_label=request.sync_label,
-        ),
-        encoding="utf-8",
+    body = import_change_pr_body(
+        public_repo=request.public_repo,
+        public_sha=request.public_sha,
+        public_base_ref=request.public_base_ref,
+        public_head_ref=request.public_head_ref,
+        source_base_ref=source_base_ref,
+        sync_label=request.sync_label,
     )
+    # pragma: no mutate start -- Linux's default encoding is UTF-8 (PEP 538).
+    body_file.write_text(body, encoding="utf-8")
+    # pragma: no mutate end
 
-    _run(["git", "config", "user.name", request.sync_user_name], cwd=request.target_dir)
-    _run(
-        ["git", "config", "user.email", request.sync_user_email],
-        cwd=request.target_dir,
-    )
-    _fetch_branch(branch=branch, cwd=request.target_dir)
-    _run(["git", "switch", "-C", branch], cwd=request.target_dir)
-    _run(["git", "add", str(request.project_path)], cwd=request.target_dir)
-    _run(
-        [
-            "git",
-            "commit",
-            # The commit IS the ledger, so it must exist even with no diff.
-            "--allow-empty",
-            "--author",
-            _commit_author(request.sync_user_name, request.sync_user_email),
-            "-m",
-            import_commit_subject(request.sync_label, request.public_sha),
-        ],
-        cwd=request.target_dir,
-    )
+    _commit_import(request=request)
     _run(
         ["git", "push", "--force-with-lease", "origin", branch],
         cwd=request.target_dir,
@@ -1028,6 +1008,33 @@ def _open_or_update_target_pr(*, request: ImportRequest) -> None:
             sync_label=request.sync_label,
             cwd=request.target_dir,
         )
+
+
+# The whole tree validation checked: an import also writes ``[[files.copy]]`` sources
+# outside the project, and staging the project alone committed a subset of it.
+def _commit_import(*, request: ImportRequest) -> None:
+    """Commit the imported checkout on the import branch as its ledger entry."""
+    _run(["git", "config", "user.name", request.sync_user_name], cwd=request.target_dir)
+    _run(
+        ["git", "config", "user.email", request.sync_user_email],
+        cwd=request.target_dir,
+    )
+    _fetch_branch(branch=request.branch, cwd=request.target_dir)
+    _run(["git", "switch", "-C", request.branch], cwd=request.target_dir)
+    _run(["git", "add", "--all"], cwd=request.target_dir)
+    _run(
+        [
+            "git",
+            "commit",
+            # The commit IS the ledger, so it must exist even with no diff.
+            "--allow-empty",
+            "--author",
+            _commit_author(request.sync_user_name, request.sync_user_email),
+            "-m",
+            import_commit_subject(request.sync_label, request.public_sha),
+        ],
+        cwd=request.target_dir,
+    )
 
 
 def _pr_title_sha(public_sha: str) -> str:
@@ -1099,10 +1106,10 @@ def _commit_author(name: str, email: str) -> str:
     return f"{name} <{email}>"
 
 
-def _git_has_changes(*, path: Path, rel: Path) -> bool:
-    """Return whether a checkout has changes under a relative path."""
+def _git_has_changes(*, path: Path) -> bool:
+    """Return whether a checkout has changes anywhere, as the commit stages them all."""
     result = _run(
-        ["git", "status", "--porcelain", str(rel)],
+        ["git", "status", "--porcelain"],
         cwd=path,
         check=False,
         capture=True,
