@@ -3648,14 +3648,18 @@ def test_the_export_fails_when_public_ci_does_not_finish_in_time(
 
 def test_await_upstream_exports_waits_until_each_run_completes(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The lock waits for a sibling export of the same commit to publish."""
     statuses = iter(['[{"status": "in_progress"}]', '[{"status": "completed"}]'])
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
     sleeps: list[float] = []
 
-    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(argv)
+    def fake_run_gh(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout=next(statuses))
 
     monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
@@ -3664,14 +3668,76 @@ def test_await_upstream_exports_waits_until_each_run_completes(
     _await_upstream_exports(
         workflows=("loop-to-typings.yml",),
         source_repo="example/source",
+        source_sha="8b466d40b6aa1234",
+        cwd=Path("/src"),
+    )
+
+    argv, kwargs = calls[0]
+    assert argv == [
+        "gh",
+        "run",
+        "list",
+        "--repo",
+        "example/source",
+        "--workflow",
+        "loop-to-typings.yml",
+        "--commit",
+        "8b466d40b6aa1234",
+        "--json",
+        "status",
+    ]
+    assert {key: kwargs[key] for key in ("cwd", "capture", "check")} == {
+        "cwd": Path("/src"),
+        "capture": True,
+        "check": False,
+    }
+    assert len(calls) == 2
+    assert sleeps == [sync_export_pr.UPSTREAM_EXPORT_POLL_SEC]
+    assert capsys.readouterr().out == (
+        "Waiting for loop-to-typings.yml on 8b466d40b6aa to publish.\n"
+    )
+
+
+def test_await_upstream_exports_checks_every_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finished first workflow moves on to the next, not out of the wait."""
+    workflows: list[str] = []
+
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        workflows.append(argv[argv.index("--workflow") + 1])
+        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "completed"}]')
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    _await_upstream_exports(
+        workflows=("loop-to-treekle.yml", "loop-to-typings.yml"),
+        source_repo="example/source",
         source_sha="8b466d40b6",
         cwd=Path("/src"),
     )
 
-    assert len(calls) == 2
-    assert calls[0][:3] == ["gh", "run", "list"]
-    assert {"loop-to-typings.yml", "8b466d40b6", "example/source"} <= set(calls[0])
-    assert len(sleeps) == 1
+    assert workflows == ["loop-to-treekle.yml", "loop-to-typings.yml"]
+
+
+def test_await_upstream_exports_names_the_workflow_whose_runs_are_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout="not json")
+
+    monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^loop-to-typings\.yml runs was not valid JSON\.$",
+    ):
+        _await_upstream_exports(
+            workflows=("loop-to-typings.yml",),
+            source_repo="example/source",
+            source_sha="8b466d40b6",
+            cwd=Path("/src"),
+        )
 
 
 def test_await_upstream_exports_lists_runs_with_the_workflow_token(
@@ -3719,7 +3785,11 @@ def test_await_upstream_exports_locks_anyway_when_runs_are_unreadable(
 
     assert len(calls) == 1
     # The reason is logged: a silent skip hid the token gap for a whole push.
-    assert "HTTP 403" in capsys.readouterr().err
+    logged = capsys.readouterr()
+    assert "HTTP 403" in logged.err
+    assert logged.out == (
+        "Cannot list loop-to-treekle.yml runs; locking without waiting.\n"
+    )
 
 
 def test_await_upstream_exports_skips_a_manual_run(
@@ -3749,15 +3819,19 @@ def test_await_upstream_exports_gives_up_after_its_deadline(
 
     monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
     monkeypatch.setattr(time, "sleep", sleeps.append)
+    # One-second polls make the deadline's edge observable: three polls, not four.
+    monkeypatch.setattr(sync_export_pr, "UPSTREAM_EXPORT_POLL_SEC", 1.0)
+    monkeypatch.setattr(sync_export_pr, "UPSTREAM_EXPORT_WAIT_SEC", 3.0)
 
     _await_upstream_exports(
-        workflows=("loop-to-typings.yml",),
+        workflows=("loop-to-treekle.yml", "loop-to-typings.yml"),
         source_repo="example/source",
         source_sha="8b466d40b6",
         cwd=Path("/src"),
     )
 
-    assert sum(sleeps) >= sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC
+    # The deadline is shared: the second workflow finds it spent.
+    assert sleeps == [1.0, 1.0, 1.0]
 
 
 def test_run_export_sync_refreshes_public_lockfile_before_validation(

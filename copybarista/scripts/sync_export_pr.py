@@ -1247,7 +1247,9 @@ def _await_upstream_exports(
             if all(run.get("status") == "completed" for run in runs):
                 break
             _log(f"Waiting for {workflow} on {source_sha[:12]} to publish.")
-            time.sleep(UPSTREAM_EXPORT_POLL_SEC)
+            time.sleep(
+                UPSTREAM_EXPORT_POLL_SEC,
+            )  # house-ignore[sleep] -- GitHub pushes nothing.
             waited += UPSTREAM_EXPORT_POLL_SEC
 
 
@@ -2071,7 +2073,7 @@ def _wait_public_ci(waited: float, *, repo: str) -> float:
         _fail_public_ci(
             f"public CI on {repo} did not finish in {PUBLIC_CI_WAIT_SEC / 60:g} minutes",
         )
-    time.sleep(PUBLIC_CI_POLL_SEC)
+    time.sleep(PUBLIC_CI_POLL_SEC)  # house-ignore[sleep] -- GitHub pushes nothing.
     return waited + PUBLIC_CI_POLL_SEC
 
 
