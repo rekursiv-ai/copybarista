@@ -106,21 +106,34 @@ def test_literal_import_boundary_leaves_dotted_import_alone() -> None:
 
 
 def test_rejects_undefined_group() -> None:
-    with pytest.raises(ConfigError, match="undefined regex_groups"):
-        compile_replace(before="a${missing}b", after="ab", regex_groups=())
+    with pytest.raises(
+        ConfigError,
+        match=r"^replace references undefined regex_groups: missing, other$",
+    ):
+        compile_replace(before="a${missing}b${other}", after="ab", regex_groups=())
 
 
 def test_rejects_group_unused_by_before() -> None:
-    with pytest.raises(ConfigError, match="never matched by before"):
-        compile_replace(before="ab", after="ab", regex_groups=(("x", "[0-9]"),))
+    with pytest.raises(
+        ConfigError,
+        match=r"^replace regex_groups never matched by before: x, y$",
+    ):
+        compile_replace(
+            before="ab",
+            after="ab",
+            regex_groups=(("y", "[0-9]"), ("x", "[0-9]")),
+        )
 
 
 def test_rejects_after_group_absent_from_before() -> None:
-    with pytest.raises(ConfigError, match="absent from before"):
+    with pytest.raises(
+        ConfigError,
+        match=r"^replace after interpolates groups absent from before: y, z$",
+    ):
         compile_replace(
             before="a${x}",
-            after="${y}",
-            regex_groups=(("x", "[0-9]"), ("y", "[0-9]")),
+            after="${z}${y}",
+            regex_groups=(("x", "[0-9]"), ("y", "[0-9]"), ("z", "[0-9]")),
         )
 
 
@@ -265,14 +278,29 @@ def test_module_replace_across_a_leaf_rename() -> None:
 
 
 def test_module_replace_rejects_a_non_dotted_path() -> None:
-    with pytest.raises(ConfigError, match="dotted module path"):
+    with pytest.raises(
+        ConfigError,
+        match=r"^module replace after must be a dotted module path: 'widget'$",
+    ):
         compile_module_replace(before="acme.internal.lib.userdirs", after="widget")
-    with pytest.raises(ConfigError, match="dotted module path"):
-        compile_module_replace(before="acme.internal.lib.user-dirs", after="w.x")
+    with pytest.raises(
+        ConfigError,
+        match=r"^module replace before must be a dotted module path: 'a\.user-dirs'$",
+    ):
+        compile_module_replace(before="a.user-dirs", after="w.x")
+
+
+def test_module_replace_skips_text_without_its_parent() -> None:
+    template = compile_module_replace(before="acme.lib.userdirs", after="w.userdirs")
+
+    assert template.required == "acme.lib"
 
 
 def test_rejects_a_group_name_bound_twice() -> None:
-    with pytest.raises(ConfigError, match="names must be unique"):
+    with pytest.raises(
+        ConfigError,
+        match=r"^replace regex_groups names must be unique$",
+    ):
         compile_replace(
             before="a${s}",
             after="b${s}",
@@ -315,6 +343,35 @@ def test_replace_template_leaves_a_literal_to_str_replace() -> None:
 def test_literal_segments_joins_the_text_between_groups() -> None:
     assert literal_segments("start${a}mid${b}end", separator="|") == "start|mid|end"
     assert literal_segments("no groups", separator="|") == "no groups"
+
+
+def test_a_template_splits_into_its_literals_and_groups_alone() -> None:
+    template = compile_replace(
+        before="${a}${b}",
+        after="x${b}${a}",
+        regex_groups=(("a", "[0-9]"), ("b", "[a-z]")),
+    )
+    tail = compile_replace(before="${a}", after="${a}z", regex_groups=(("a", "[0-9]"),))
+
+    assert [(token.value, token.is_group) for token in template.after_tokens] == [
+        ("x", False),
+        ("b", True),
+        ("a", True),
+    ]
+    assert [(token.value, token.is_group) for token in tail.after_tokens] == [
+        ("a", True),
+        ("z", False),
+    ]
+
+
+def test_a_template_skips_text_without_its_longest_literal() -> None:
+    template = compile_replace(
+        before="zz${a}aaaa",
+        after="${a}",
+        regex_groups=(("a", "[0-9]"),),
+    )
+
+    assert template.required == "aaaa"
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from copybarista.cli import main
 from copybarista.config import (
     FileMove,
     Transform,
+    WorkflowConfig,
     load_config,
     parse_config,
     reverse_file_moves,
@@ -29,13 +30,19 @@ from copybarista.config import (
 from copybarista.errors import ConfigError, ImportRequestError
 from copybarista.export import export_folder
 from copybarista.import_request import (
+    ChangeAction,
     ChangeRequestImporter,
     ImportChange,
+    ImportPlan,
     ImportRequest,
+    ImportResult,
     PathMapper,
+    TreeEntry,
     TreeSnapshot,
     _anchor_source_only_regions,
     _capture_originals,
+    _carries_pyproject_change,
+    _contains_public_change,
     _recomment_block,
     _removed_regions,
     _reverse_else_blocks,
@@ -370,6 +377,510 @@ def test_import_root_copy_yields_to_back_move(tmp_path: Path):
     )
     # Nested back-moves also stay with the main source-root sweep.
     assert mapper.source_path("docs/guide.md") == "internal/demo/docs/guide.md"
+
+
+_BASE = b"a\nb\nc\nd\ne\n"
+_HEAD = b"a\nB\nc\nd\ne\n"
+
+
+def _file(data: bytes, *, executable: bool = False) -> TreeEntry:
+    """Return a regular-file entry holding ``data``."""
+    return TreeEntry(kind="file", data=data, executable=executable)
+
+
+@pytest.mark.parametrize(
+    ("base", "ours", "head", "contained"),
+    [
+        pytest.param(None, _file(_HEAD), _file(_HEAD), True, id="public-adds-kept"),
+        pytest.param(None, None, _file(_HEAD), False, id="public-adds-dropped"),
+        pytest.param(None, _file(_BASE), _file(_HEAD), False, id="public-adds-differs"),
+        pytest.param(_file(_BASE), None, None, True, id="public-deletes-kept"),
+        pytest.param(
+            _file(_BASE),
+            _file(_BASE),
+            None,
+            False,
+            id="public-deletes-undone",
+        ),
+        pytest.param(_file(_BASE), None, _file(_HEAD), False, id="loop-deleted-it"),
+        pytest.param(
+            _file(_BASE),
+            _file(b"a\nB\nc\nD\ne\n"),
+            _file(_HEAD),
+            True,
+            id="loop-edit-one-line-away",
+        ),
+        pytest.param(
+            _file(_BASE),
+            _file(b"a\nb\nc\nD\ne\n"),
+            _file(_HEAD),
+            False,
+            id="public-hunk-dropped",
+        ),
+        pytest.param(
+            _file(_BASE),
+            _file(b"a\nX\nc\nd\ne\n"),
+            _file(_HEAD),
+            False,
+            id="conflict",
+        ),
+        pytest.param(
+            _file(_BASE),
+            _file(_HEAD),
+            _file(_HEAD, executable=True),
+            False,
+            id="mode-change-dropped",
+        ),
+        pytest.param(
+            _file(_BASE, executable=True),
+            _file(_HEAD, executable=True),
+            _file(_HEAD, executable=True),
+            True,
+            id="mode-kept",
+        ),
+        pytest.param(
+            _file(_BASE),
+            _file(b"a\nB\nc\nD\ne\n", executable=True),
+            _file(_HEAD, executable=True),
+            True,
+            id="mode-change-kept-beside-drift",
+        ),
+        pytest.param(
+            _file(_BASE),
+            _file(b"a\nB\nc\nD\ne\n", executable=True),
+            _file(_HEAD),
+            True,
+            id="loop-mode-drift",
+        ),
+        pytest.param(
+            _file(_BASE),
+            TreeEntry(kind="symlink", data=b"elsewhere"),
+            TreeEntry(kind="symlink", data=b"target"),
+            False,
+            id="symlink-differs",
+        ),
+        pytest.param(
+            _file(b"x\n"),
+            TreeEntry(kind="symlink", data=b"y\n"),
+            _file(b"y\n"),
+            False,
+            id="loop-link-for-public-file",
+        ),
+        pytest.param(
+            _file(b"x\n"),
+            _file(b"y\n"),
+            TreeEntry(kind="symlink", data=b"y\n"),
+            False,
+            id="loop-file-for-public-link",
+        ),
+        pytest.param(
+            TreeEntry(kind="symlink", data=b"x\n"),
+            _file(b"y\n", executable=True),
+            _file(b"y\n"),
+            False,
+            id="public-type-change-differs",
+        ),
+        pytest.param(
+            _file(b"\x00binary\n"),
+            _file(b"\x00ours\n"),
+            _file(b"\x00head\n"),
+            False,
+            id="binary-differs",
+        ),
+    ],
+)
+def test_a_public_change_is_contained_only_where_the_render_carries_it(
+    base: TreeEntry | None,
+    ours: TreeEntry | None,
+    head: TreeEntry | None,
+    *,
+    contained: bool,
+) -> None:
+    assert _contains_public_change(base=base, ours=ours, head=head) is contained
+
+
+@pytest.mark.parametrize(
+    ("base", "ours", "head", "carried"),
+    [
+        pytest.param(
+            b"b = 1\n",
+            b"n = 0\nb = 3\n",
+            b"b = 3\n",
+            True,
+            id="value-set-beside-drift",
+        ),
+        pytest.param(b"b = 1\n", b"b = 1\n", b"b = 3\n", False, id="value-dropped"),
+        pytest.param(
+            b"b = 1\n",
+            b"b = 1\n",
+            b"b = 1\nn = 2\n",
+            False,
+            id="key-add-dropped",
+        ),
+        pytest.param(
+            b"[t]\nb = 1\nc = 1\n",
+            b"[t]\nb = 1\n",
+            b"[t]\nb = 1\n",
+            True,
+            id="nested-removal-kept",
+        ),
+        pytest.param(
+            b"[t]\nb = 1\nc = 1\n",
+            b"[t]\nb = 1\nc = 1\n",
+            b"[t]\nb = 1\n",
+            False,
+            id="nested-removal-undone",
+        ),
+        pytest.param(None, None, b"b = 3\n", False, id="public-adds-dropped"),
+        pytest.param(None, b"b = 3\n", b"b = 3\n", True, id="public-adds-kept"),
+        pytest.param(b"b = 1\n", None, None, True, id="public-deletes-kept"),
+    ],
+)
+def test_a_pyproject_change_is_carried_by_key(
+    base: bytes | None,
+    ours: bytes | None,
+    head: bytes | None,
+    *,
+    carried: bool,
+) -> None:
+    """The delta folds by key, so loop's own keys and comments beside it are fine."""
+
+    def entry(data: bytes | None) -> TreeEntry | None:
+        return None if data is None else _file(data)
+
+    assert (
+        _carries_pyproject_change(base=entry(base), ours=entry(ours), head=entry(head))
+        is carried
+    )
+
+
+def test_merge_import_accepts_a_public_change_the_export_reformats(
+    tmp_path: Path,
+) -> None:
+    """Formatting alone, ruff's on the render and none on public, is not a loss."""
+    source_base = tmp_path / "source-base"
+    (source_base / "pkg").mkdir(parents=True)
+    (source_base / "pkg/module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = ""
+
+        [files]
+        include = ["**"]
+
+        [[transform]]
+        type = "ruff_format"
+        path = "."
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "VALUE = 1\nCALL = max(\n    1,\n    2\n)\n",
+        encoding="utf-8",
+    )
+    # Source drift away from the edit, so the change merges rather than applies.
+    (source_base / "pkg/module.py").write_text(
+        "LOCAL = 0\nVALUE = 1\n",
+        encoding="utf-8",
+    )
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    result = import_change_request(
+        ImportRequest(
+            config=config,
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    assert (destination / "pkg/module.py").read_text(encoding="utf-8") == (
+        "LOCAL = 0\nVALUE = 1\nCALL = max(1, 2)\n"
+    )
+
+
+def _flat_config(tmp_path: Path) -> WorkflowConfig:
+    """Return a config that ships the source tree as is."""
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = ""
+
+        [files]
+        include = ["**"]
+        """,
+        encoding="utf-8",
+    )
+    return load_config(config_path)
+
+
+def _merge_import(
+    tmp_path: Path,
+    *,
+    source_base: Path,
+    public_base: Path,
+    public_head: Path,
+) -> tuple[ImportResult, Path]:
+    """Merge-import ``public_base`` to ``public_head``; return the result and tree."""
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+    result = import_change_request(
+        ImportRequest(
+            config=_flat_config(tmp_path),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+    return result, destination
+
+
+def test_merge_import_raises_on_a_public_change_its_plan_dropped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The check reads public's own diff, so a change the plan never held still counts."""
+    source_base = tmp_path / "source-base"
+    source_base.mkdir()
+    for name in ("kept.py", "dropped.py"):
+        (source_base / name).write_text("V = 1\n", encoding="utf-8")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    public_head = _copy_tree(source_base, destination=tmp_path / "public-head")
+    for name in ("kept.py", "dropped.py"):
+        (public_head / name).write_text("V = 2\n", encoding="utf-8")
+    planned = ChangeRequestImporter.plan
+
+    def drop(self: ChangeRequestImporter) -> ImportPlan:
+        plan = planned(self)
+        return ImportPlan(
+            changes=tuple(c for c in plan.changes if c.public != "dropped.py"),
+        )
+
+    monkeypatch.setattr(ChangeRequestImporter, "plan", drop)
+
+    with pytest.raises(
+        ImportRequestError,
+        match=r"^Imported source tree does not reproduce the public change to: dropped\.py$",
+    ):
+        _ = _merge_import(
+            tmp_path,
+            source_base=source_base,
+            public_base=public_base,
+            public_head=public_head,
+        )
+
+
+def test_merge_import_writes_a_file_the_source_no_longer_holds(tmp_path: Path):
+    """Its directories are made too, however many the source dropped."""
+    source_base = tmp_path / "source-base"
+    (source_base / "top.py").parent.mkdir(parents=True)
+    (source_base / "top.py").write_text("TOP = 1\n", encoding="utf-8")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    (public_base / "a/b").mkdir(parents=True)
+    (public_base / "a/b/new.py").write_text("", encoding="utf-8")
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "a/b/new.py").write_text("NEW = 1\n", encoding="utf-8")
+
+    result, destination = _merge_import(
+        tmp_path,
+        source_base=source_base,
+        public_base=public_base,
+        public_head=public_head,
+    )
+
+    assert [change.outcome for change in result.changes] == ["merged"]
+    assert (destination / "a/b/new.py").read_text(encoding="utf-8") == "NEW = 1\n"
+
+
+def test_merge_import_makes_every_directory_a_dropped_source_lacks(tmp_path: Path):
+    """Public's new files and a file it turned into a directory land under any depth."""
+    source_base = tmp_path / "source-base"
+    source_base.mkdir()
+    (source_base / "top.py").write_text("TOP = 1\n", encoding="utf-8")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    (public_base / "a").mkdir()
+    (public_base / "a/b").write_text("B = 1\n", encoding="utf-8")
+    public_head = _copy_tree(source_base, destination=tmp_path / "public-head")
+    (public_head / "a/b").mkdir(parents=True)
+    (public_head / "a/b/c.py").write_text("C = 1\n", encoding="utf-8")
+    (public_head / "x/y").mkdir(parents=True)
+    (public_head / "x/y/z.py").write_text("Z = 1\n", encoding="utf-8")
+
+    _, destination = _merge_import(
+        tmp_path,
+        source_base=source_base,
+        public_base=public_base,
+        public_head=public_head,
+    )
+
+    assert (destination / "a/b/c.py").read_text(encoding="utf-8") == "C = 1\n"
+    assert (destination / "x/y/z.py").read_text(encoding="utf-8") == "Z = 1\n"
+
+
+def test_merge_import_conflicts_on_a_file_both_sides_added(tmp_path: Path):
+    source_base = tmp_path / "source-base"
+    source_base.mkdir()
+    (source_base / "new.py").write_text("LOCAL = 1\n", encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    public_base.mkdir()
+    public_head = tmp_path / "public-head"
+    public_head.mkdir()
+    (public_head / "new.py").write_text("PUBLIC = 1\n", encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match=r"conflicts in: new\.py"):
+        _ = _merge_import(
+            tmp_path,
+            source_base=source_base,
+            public_base=public_base,
+            public_head=public_head,
+        )
+
+
+def test_merge_import_replaces_a_drifted_file_public_turned_from_a_link(
+    tmp_path: Path,
+):
+    """A type change force-propagates; it is never merged against the link's text."""
+    source_base = tmp_path / "source-base"
+    source_base.mkdir()
+    (source_base / "link").write_text("local\n", encoding="utf-8")
+    public_base = tmp_path / "public-base"
+    public_base.mkdir()
+    (public_base / "link").symlink_to("target.txt")
+    public_head = tmp_path / "public-head"
+    public_head.mkdir()
+    (public_head / "link").write_text("public\n", encoding="utf-8")
+
+    result, destination = _merge_import(
+        tmp_path,
+        source_base=source_base,
+        public_base=public_base,
+        public_head=public_head,
+    )
+
+    assert [change.action for change in result.changes] == ["type_changed"]
+    assert (destination / "link").read_text(encoding="utf-8") == "public\n"
+
+
+def test_merge_import_retargets_a_link_whose_new_target_is_missing(tmp_path: Path):
+    """A link head is propagated as a link, never read through."""
+    source_base = tmp_path / "source-base"
+    source_base.mkdir()
+    (source_base / "link").symlink_to("a")
+    public_base = _copy_tree(source_base, destination=tmp_path / "public-base")
+    public_head = tmp_path / "public-head"
+    public_head.mkdir()
+    (public_head / "link").symlink_to("nowhere")
+
+    _, destination = _merge_import(
+        tmp_path,
+        source_base=source_base,
+        public_base=public_base,
+        public_head=public_head,
+    )
+
+    assert (destination / "link").readlink() == Path("nowhere")
+
+
+def test_merge_import_raises_when_its_writes_do_not_reexport_the_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change written to the wrong source path is caught, not recorded."""
+    source_base = tmp_path / "source-base"
+    (source_base / "internal/demo/pkg").mkdir(parents=True)
+    (source_base / "internal/demo/pkg/__init__.py").write_text(
+        "VALUE = 'source'\n",
+        encoding="utf-8",
+    )
+    (source_base / "shared").mkdir()
+    (source_base / "shared/util.py").write_text("X = 1\n", encoding="utf-8")
+    (source_base / "shared/zed.py").write_text("Z = 1\n", encoding="utf-8")
+    config_path = tmp_path / "copy.barista.toml"
+    config_path.write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "internal/demo"
+        globstar = "zero_or_more"
+
+        [files]
+        include = ["**"]
+
+        [[files.moves]]
+        path = ""
+        destination = "demo"
+
+        [[files.copy]]
+        source = "shared"
+        destination = "demo/shared"
+        """,
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    public_base = tmp_path / "public-base"
+    export_folder(
+        config=config,
+        source_ref=source_base,
+        destination=public_base,
+        force=True,
+    )
+    public_head = _copy_tree(public_base, destination=tmp_path / "public-head")
+    (public_head / "demo/shared/util.py").write_text("X = 2\n", encoding="utf-8")
+    (public_head / "demo/shared/zed.py").write_text("Z = 2\n", encoding="utf-8")
+    destination = _copy_tree(source_base, destination=tmp_path / "destination")
+
+    def misplaced(
+        self: PathMapper,
+        public_path: str,
+        *,
+        action: ChangeAction = "modified",
+        exported_source: str = "",
+    ) -> str:
+        del self, action, exported_source
+        return f"stray/{public_path}"
+
+    monkeypatch.setattr(PathMapper, "source_path", misplaced)
+
+    with pytest.raises(
+        ImportRequestError,
+        match=(
+            r"^Imported source tree does not reproduce the public change to: "
+            r"demo/shared/util\.py, demo/shared/zed\.py$"
+        ),
+    ):
+        _ = import_change_request(
+            ImportRequest(
+                config=config,
+                public_base=public_base,
+                public_head=public_head,
+                source_base=source_base,
+                destination=destination,
+                merge_import=True,
+            ),
+        )
+    assert (destination / "shared/util.py").read_text(encoding="utf-8") == "X = 1\n"
+    assert not (destination / "stray/demo/shared/util.py").exists()
 
 
 def test_merge_import_nested_root_copy_survives_reexport(tmp_path: Path):
@@ -1496,6 +2007,31 @@ def _pyproject_drift_fixture(tmp_path: Path, *, drift: str) -> tuple[Path, Path,
     )
     (source_base / "pyproject.toml").write_text(drift, encoding="utf-8")
     return source_base, config, public_base
+
+
+def test_merge_import_checks_code_beside_a_rendered_pyproject_as_text(
+    tmp_path: Path,
+):
+    """Only the rendered ``pyproject.toml`` is compared by key; code is not TOML."""
+    source_base, config, public_base = _pyproject_import_fixture(tmp_path)
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text("V = [\n", encoding="utf-8")
+    destination = _copy_tree(source_base, tmp_path / "destination")
+
+    _ = import_change_request(
+        ImportRequest(
+            config=load_config(config),
+            public_base=public_base,
+            public_head=public_head,
+            source_base=source_base,
+            destination=destination,
+            merge_import=True,
+        ),
+    )
+
+    assert (destination / "internal/demo/pkg/module.py").read_text(
+        encoding="utf-8",
+    ) == "V = [\n"
 
 
 def test_merge_import_rejects_a_comment_only_public_edit(tmp_path: Path):
@@ -5291,7 +5827,9 @@ def test_merge_import_does_not_write_or_reformat_conflict_markers(
 
 def test_merge_import_propagates_delete_despite_source_drift(tmp_path: Path):
     """A public-head deletion is force-propagated even when the source drifted."""
-    paths = _fixture(tmp_path)
+    # No transform: the deleted module is the only file a required one would match,
+    # so the imported tree could not export at all.
+    paths = _fixture(tmp_path, with_transform=False)
     (paths.source_base / "internal/demo/pkg/module.py").write_text(
         "from internal.demo import api\nVALUE = 'local'\n",
         encoding="utf-8",
@@ -6139,13 +6677,50 @@ def test_reformat_reruns_ruff_on_the_reversed_file(
     ]
 
 
+def test_an_applied_change_reformats_the_file_it_wrote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class _Runner:
+        def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
+            del check, cwd
+            calls.append(argv[-1])
+
+    monkeypatch.setattr(import_request, "CommandRunner", _Runner)
+    importer = _importer(
+        tmp_path,
+        transforms=(Transform(id="rf", type="ruff_format", path="."),),
+    )
+    (importer.public_head / "m.py").write_text("V = 1\n", encoding="utf-8")
+
+    _ = importer._apply_change(
+        ImportChange(public="m.py", source="src/m.py", action="created"),
+    )
+
+    assert (importer.destination / "src/m.py").read_text(encoding="utf-8") == "V = 1\n"
+    assert calls == ["src/m.py", "src/m.py"]
+
+
+def test_a_public_base_link_is_read_as_a_link(tmp_path: Path):
+    importer = _importer(tmp_path, merge_import=True)
+    (importer.public_base / "link").symlink_to("target")
+
+    entry = importer._public_base_entry("link")
+
+    assert entry == import_request.TreeEntry(kind="symlink", data=b"target")
+
+
 def test_merge_reads_an_identity_symlink_from_the_source(tmp_path: Path):
     """A path the export never ships is the local side as the source holds it."""
     importer = _importer(tmp_path, merge_import=True)
     (importer.source_base / "link").symlink_to("target")
 
     entry = importer._ours_public_entry(
-        change=ImportChange(public="link", source="link", action="modified"),
+        public="link",
+        source="link",
+        source_root=importer.source_base,
         source_export=tmp_path / "public-base",
     )
 
