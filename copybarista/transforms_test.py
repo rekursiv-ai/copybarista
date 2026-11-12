@@ -150,7 +150,13 @@ def test_replace_reports_total_occurrences_and_source_mapping(tmp_path: Path):
 def test_required_replace_fails_on_no_op(tmp_path: Path):
     (tmp_path / "module_test.py").write_text("from new import A\n", encoding="utf-8")
 
-    with pytest.raises(TransformError, match="no changes"):
+    with pytest.raises(
+        TransformError,
+        match=(
+            r"^Transformation 'replace-import' made no changes: "
+            r"found files, but no replacement text$"
+        ),
+    ):
         apply_transforms(
             tmp_path,
             (
@@ -220,6 +226,78 @@ def test_module_replace_rewrites_every_spelling_in_one_pass(tmp_path: Path):
         "from internal.lib import userdirs_fixture\n"
     )
     assert result.count == 3
+
+
+def _replace_rule(rule_id: str, before: str, after: str) -> Transform:
+    return Transform(
+        id=rule_id,
+        type="replace",
+        path="*.py",
+        before=before,
+        after=after,
+    )
+
+
+def test_adjacent_replaces_each_see_what_the_earlier_ones_wrote(tmp_path: Path):
+    """A run of replaces is applied file by file, yet each rule reads its
+    predecessors' output and reports only its own edits.
+    """
+    first = tmp_path / "a.py"
+    first.write_text("x x\n", encoding="utf-8")
+    second = tmp_path / "b.py"
+    second.write_text("y\n", encoding="utf-8")
+
+    reports = apply_transforms(
+        tmp_path,
+        (
+            _replace_rule("x-to-y", "x", "y"),
+            _replace_rule("y-to-z", "y", "z"),
+        ),
+    )
+
+    assert first.read_text(encoding="utf-8") == "z z\n"
+    assert second.read_text(encoding="utf-8") == "z\n"
+    assert [(r.id, r.changed, r.count) for r in reports] == [
+        ("x-to-y", 1, 2),
+        ("y-to-z", 2, 3),
+    ]
+    assert [file.destination for file in reports[1].files] == ["a.py", "b.py"]
+
+
+def test_a_run_that_restores_a_file_leaves_it_unwritten(tmp_path: Path):
+    """The file is written once at the end of the run, and not at all if the
+    run's edits cancel out.
+    """
+    path = tmp_path / "a.py"
+    path.write_text("x\n", encoding="utf-8")
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+    reports = apply_transforms(
+        tmp_path,
+        (_replace_rule("there", "x", "y"), _replace_rule("back", "y", "x")),
+    )
+
+    assert path.read_text(encoding="utf-8") == "x\n"
+    assert path.stat().st_mtime_ns == 1_000_000_000
+    assert [r.changed for r in reports] == [1, 1]
+
+
+def test_a_run_raises_the_failure_applying_rules_one_by_one_would_raise_first(
+    tmp_path: Path,
+):
+    """An earlier rule's no-op is reported before a later rule's bad config."""
+    (tmp_path / "a.py").write_text("x\n", encoding="utf-8")
+
+    with pytest.raises(TransformError, match=r"^Transformation 'idle' made no changes"):
+        apply_transforms(
+            tmp_path,
+            (_replace_rule("idle", "absent", "y"), _replace_rule("empty", "", "y")),
+        )
+    with pytest.raises(TransformError, match=r"^Transformation 'empty' before must"):
+        apply_transforms(
+            tmp_path,
+            (_replace_rule("fine", "x", "y"), _replace_rule("empty", "", "y")),
+        )
 
 
 def test_replace_rejects_empty_before(tmp_path: Path):
@@ -563,7 +641,10 @@ def test_replace_required_reports_symlink_only_match(tmp_path: Path):
     target.write_text("old\n", encoding="utf-8")
     (tmp_path / "link.txt").symlink_to(target)
 
-    with pytest.raises(TransformError, match="only matched symlinks"):
+    with pytest.raises(
+        TransformError,
+        match=r"^Transformation 'replace-link' made no changes: only matched symlinks$",
+    ):
         apply_transforms(
             tmp_path,
             (
@@ -1537,7 +1618,10 @@ def test_a_required_transform_names_a_path_matching_no_files(
 ):
     (tmp_path / "module.py").write_text("x = 1\n", encoding="utf-8")
 
-    with pytest.raises(TransformError, match="matched no files"):
+    with pytest.raises(
+        TransformError,
+        match=r"^Transformation 't' .*matched no files$",
+    ):
         apply_transforms(tmp_path, (transform,))
 
 
@@ -1712,6 +1796,30 @@ def test_transform_batch_applies_its_globstar_to_root_and_nested_files(
         assert root_file.read_text(encoding="utf-8") == "old\n"
         assert (report.changed, report.count) == (1, 1)
         assert [file.destination for file in report.files] == ["pkg/m.py"]
+
+
+def test_a_transform_after_a_replace_run_gets_the_batch_globstar(tmp_path: Path):
+    """The transforms after a run of replaces still run, under the same ``**``."""
+    root_file = tmp_path / "m.py"
+    root_file.write_text("old\ndrop  # INT\n", encoding="utf-8")
+
+    replaced, stripped = apply_transforms(
+        tmp_path,
+        (
+            Transform(
+                id="r",
+                type="replace",
+                path="**/m.py",
+                before="old",
+                after="new",
+            ),
+            Transform(id="i", type="internal_lines", path="**/m.py", start="# INT"),
+        ),
+        globstar="zero_or_more",
+    )
+
+    assert root_file.read_text(encoding="utf-8") == "new\n"
+    assert (replaced.count, stripped.count) == (1, 1)
 
 
 def test_transform_after_move_matches_the_new_destination(tmp_path: Path):
