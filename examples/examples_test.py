@@ -17,7 +17,7 @@ from copybarista.cli import main
 
 pytestmark = pytest.mark.cli_git
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 PACKAGE_TESTS = Path("packages/widget/tests")
 
 

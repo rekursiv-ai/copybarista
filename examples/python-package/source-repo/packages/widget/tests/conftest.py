@@ -8,7 +8,7 @@ from typing import Final
 import sys
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 sys.path.insert(0, str(_CWD.parents[2]))

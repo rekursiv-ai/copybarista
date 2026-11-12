@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 def _metadata_log(

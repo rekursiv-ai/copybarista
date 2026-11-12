@@ -15,7 +15,7 @@ import pytest
 from copybarista.scripts import bench
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 def test_build_report_times_copybarista_export(tmp_path: Path):

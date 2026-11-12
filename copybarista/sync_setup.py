@@ -263,8 +263,14 @@ def load_sync_settings(path: Path) -> SyncSettings:
         )
     except tomllib.TOMLDecodeError as err:
         raise ConfigError(f"Cannot read sync config {path}: {err}") from err
-    sync = _ReadKeys(from_plain(raw.get("sync"), dict[str, object], default={}))
-    pull_request = from_plain(raw.get("pull_request"), dict[str, object], default={})
+    sync = _ReadKeys(
+        from_plain(raw.get("sync"), dict[str, object], default=dict[str, object]()),
+    )
+    pull_request = from_plain(
+        raw.get("pull_request"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     settings = SyncSettings(
         package_name=_required_str(sync, "package_name"),
         sync_label=_required_str(sync, "sync_label"),
