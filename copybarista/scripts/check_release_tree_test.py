@@ -16,7 +16,7 @@ from copybarista.scripts import check_release_tree
 from copybarista.scripts.check_release_tree import check_tree
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 def _write_required_tree(root: Path) -> None:

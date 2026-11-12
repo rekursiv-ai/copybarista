@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The nearest checkout root: the monorepo's, or the export's one level up.
-_ROOT: Final = next(p for p in _CWD.parents if (p / "pyproject.toml").is_file())
+_ROOT: Final[Path] = next(p for p in _CWD.parents if (p / "pyproject.toml").is_file())
 
 
 @pytest.fixture(autouse=True)

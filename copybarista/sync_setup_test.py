@@ -36,7 +36,7 @@ from copybarista.sync_setup import (
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -2254,7 +2254,11 @@ def _checkout_path(step: dict[str, object]) -> str:
     """Return the `path` a checkout step writes to, or empty for other steps."""
     if step.get("uses") != action_ref("actions/checkout"):
         return ""
-    with_config = from_plain(step.get("with"), dict[str, object], default={})
+    with_config = from_plain(
+        step.get("with"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     return str(with_config.get("path", ""))
 
 

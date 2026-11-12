@@ -121,7 +121,7 @@ class PyprojectSource:
         delta = _read(delta_path)
         settings = _settings(delta, source=str(delta_path))
         document = _read(source_ref / from_plain(settings.get("base"), str))
-        for name in from_plain(settings.get("extends"), list[str], default=[]):
+        for name in from_plain(settings.get("extends"), list[str], default=list[str]()):
             layer = _read(source_ref / name)
             document = render(_renamed(document, layer=layer, source=name), layer)
         shared = _renamed(document, layer=delta, source=str(delta_path))
@@ -253,7 +253,7 @@ def pyproject_inputs(config_path: Path, *, source_ref: Path) -> tuple[str, ...]:
     if not delta:
         return ()
     settings = _settings(_read(source_ref / delta), source=delta)
-    extends = from_plain(settings.get("extends"), list[str], default=[])
+    extends = from_plain(settings.get("extends"), list[str], default=list[str]())
     return (delta, from_plain(settings.get("base"), str), *extends)
 
 
@@ -271,7 +271,11 @@ def _settings(delta: str, *, source: str) -> dict[str, object]:
         plain = tomllib.loads(delta)
     except tomllib.TOMLDecodeError as err:
         raise DeltaError(f"Cannot parse {source}: {err}") from err
-    return from_plain(plain.get(SETTINGS), dict[str, object], default={})
+    return from_plain(
+        plain.get(SETTINGS),
+        dict[str, object],
+        default=dict[str, object](),
+    )
 
 
 def _renamed(document: str, *, layer: str, source: str) -> str:
@@ -279,7 +283,7 @@ def _renamed(document: str, *, layer: str, source: str) -> str:
     rename = from_plain(
         _settings(layer, source=source).get("rename"),
         dict[str, str],
-        default={},
+        default=dict[str, str](),
     )
     for old, new in rename.items():
         document = document.replace(old, new)
