@@ -8,29 +8,29 @@ describe the export without inspecting destination state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import itertools
 import os
 import shutil
 import stat
 import sys
 
 from copybarista.commands import CommandRunner
-from copybarista.errors import ExportError, TransformError
+from copybarista.config import Transform
+from copybarista.errors import CopybaristaError, ExportError, TransformError
 from copybarista.globs import GlobSet, Globstar
 from copybarista.manifest import (
     TransformFileReport,
     TransformReport,
 )
-from copybarista.template import replace_template
+from copybarista.template import ReplaceTemplate, replace_template
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from copybarista.config import Transform
 
 
 class _FileMapping(Protocol):
@@ -71,18 +71,33 @@ def apply_transforms(
     # One walk of the staged tree serves every text transform; only a ``move``
     # changes which paths exist, so the listing is refreshed after one.
     listing = _list_staged_files(root)
-    for transform in transforms:
-        reports.append(
-            apply_transform(
+    # A run of adjacent ``replace`` transforms reads and writes each file once
+    # rather than once per transform: each rewrites one file's text alone, so
+    # applying the run file by file is applying it transform by transform.
+    for replaces, run in itertools.groupby(transforms, key=_is_replace):
+        if replaces:
+            batch = tuple(run)
+            results = _replace_all(
                 root=root,
-                transform=transform,
+                transforms=batch,
                 sources_by_destination=sources_by_destination,
                 globstar=globstar,
                 listing=listing,
-            ),
-        )
-        if transform.type == "move":
-            listing = _list_staged_files(root)
+            )
+            reports.extend(map(_report, batch, results))
+            continue
+        for transform in run:
+            reports.append(
+                apply_transform(
+                    root=root,
+                    transform=transform,
+                    sources_by_destination=sources_by_destination,
+                    globstar=globstar,
+                    listing=listing,  # pragma: no mutate -- an empty listing is walked again.
+                ),
+            )
+            if transform.type == "move":
+                listing = _list_staged_files(root)
     return tuple(reports)
 
 
@@ -111,9 +126,9 @@ def apply_transform(
     if not listing:
         listing = _list_staged_files(root)
     if transform.type == "replace":
-        result = _replace(
+        (result,) = _replace_all(
             root=root,
-            transform=transform,
+            transforms=(transform,),
             sources_by_destination=sources_by_destination,
             globstar=globstar,
             listing=listing,
@@ -154,14 +169,7 @@ def apply_transform(
             transform=transform,
             sources_by_destination=sources_by_destination,
         )
-    return TransformReport(
-        id=transform.id,
-        type=transform.type,
-        path=transform.path,
-        changed=result.changed,
-        count=result.count,
-        files=result.files,
-    )
+    return _report(transform, result)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -341,7 +349,7 @@ def _strip_blocks_regions(
             f"Transformation '{transform.id}' markers must be non-empty",
         )
     updated = text
-    search_from = 0
+    search_from = 0  # pragma: no mutate -- str.find reads a None start as 0.
     regions: list[tuple[int, str]] = []
     while True:
         start_idx = updated.find(transform.start, search_from)
@@ -353,12 +361,12 @@ def _strip_blocks_regions(
                 f"Transformation '{transform.id}' found end marker before start marker",
             )
         end_idx = updated.find(transform.end, start_idx + len(transform.start))
-        if end_idx < 0:
+        if end_idx == -1:
             raise TransformError(
                 f"Transformation '{transform.id}' did not find end marker",
             )
         next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
-        if 0 <= next_start_idx < end_idx:
+        if next_start_idx != -1 and next_start_idx < end_idx:
             raise TransformError(
                 f"Transformation '{transform.id}' found nested start marker",
             )
@@ -366,7 +374,9 @@ def _strip_blocks_regions(
             end_idx += len(transform.end)
             # Mirror ``_strip_blocks``: the cut starts at the marker's own line
             # start so an indented block leaves no whitespace stub.
+            # pragma: no mutate start -- str.rfind reads a None start as 0.
             line_start = updated.rfind("\n", 0, start_idx) + 1
+            # pragma: no mutate end
             if not updated[line_start:start_idx].strip():
                 start_idx = line_start
             removed = updated[start_idx:end_idx]
@@ -395,70 +405,133 @@ def _collapse_removed_block_gap(before: str, after: str) -> str:
     return before + after
 
 
-def _replace(
-    root: Path,
-    transform: Transform,
-    sources_by_destination: dict[str, str],
-    globstar: Globstar,
-    listing: tuple[str, ...],
-) -> _TransformResult:
-    """Apply a literal or regex-group replacement and return its change report."""
+@dataclass(slots=True, kw_only=True)
+class _Replacement:
+    """One ``replace`` transform and its tally over a shared pass of the files."""
+
+    transform: Transform
+    template: ReplaceTemplate | None
+    matcher: GlobSet
+    matched: bool = False
+    skipped_symlink: bool = False
+    count: int = 0
+    files: list[TransformFileReport] = field(default_factory=list)
+
+    def substitute(self, text: str) -> tuple[str, int]:
+        """Rewrite ``text`` by this transform.
+
+        Args:
+          text: The file's text as the earlier transforms left it.
+
+        Returns:
+          updated: The rewritten text.
+          replacements: How many occurrences were replaced.
+
+        """
+        if self.template is not None:
+            return self.template.apply_counted(text)
+        before, after = self.transform.before, self.transform.after
+        return text.replace(before, after), text.count(before)
+
+    def result(self) -> _TransformResult:
+        """Return the tally as a report.
+
+        Returns:
+          result: What this transform changed.
+
+        Raises:
+          TransformError: The transform is required and changed nothing.
+
+        """
+        if not self.files and self.transform.required:
+            if self.skipped_symlink and not self.matched:
+                reason = "only matched symlinks"
+            elif self.skipped_symlink or self.matched:
+                reason = "found files, but no replacement text"
+            else:
+                reason = "matched no files"
+            raise TransformError(
+                f"Transformation '{self.transform.id}' made no changes: {reason}",
+            )
+        return _TransformResult(
+            changed=len(self.files),
+            count=self.count,
+            files=tuple(self.files),
+        )
+
+
+def _replacement(transform: Transform, globstar: Globstar) -> _Replacement:
+    """Compile one ``replace`` transform's rule and path glob."""
     if not transform.before:
         raise TransformError(
             f"Transformation '{transform.id}' before must be non-empty",
         )
-    template = replace_template(
-        before=transform.before,
-        after=transform.after,
-        regex_groups=transform.regex_groups,
-        module=transform.module,
+    return _Replacement(
+        transform=transform,
+        template=replace_template(
+            before=transform.before,
+            after=transform.after,
+            regex_groups=transform.regex_groups,
+            module=transform.module,
+        ),
+        matcher=GlobSet(include=(transform.path,), globstar=globstar),
     )
-    paths = _matching_files(
-        root=root,
-        listing=listing,
-        pattern=transform.path,
-        globstar=globstar,
-    )
-    matched_files = 0
-    skipped_symlinks = 0
-    changed = 0
-    count = 0
-    files: list[TransformFileReport] = []
-    for path in paths:
+
+
+# Each file's text passes through every transform whose glob matches it, in config
+# order, so each transform sees what the earlier ones made of it. A failure is the one
+# applying them one at a time would raise first: a rule that cannot compile stops the
+# run there, after the rules before it have been applied and checked.
+def _replace_all(
+    root: Path,
+    *,
+    transforms: tuple[Transform, ...],
+    sources_by_destination: dict[str, str],
+    globstar: Globstar,
+    listing: tuple[str, ...],
+) -> list[_TransformResult]:
+    """Apply adjacent ``replace`` transforms in order, one read and write per file."""
+    rules: list[_Replacement] = []
+    failure: CopybaristaError | None = None
+    for transform in transforms:
+        try:
+            rules.append(_replacement(transform, globstar))
+        except CopybaristaError as error:
+            failure = error
+            break
+    for rel in listing:
+        matching = [rule for rule in rules if rule.matcher.matches(rel)]
+        if not matching:
+            continue
+        path = root / rel
         if path.is_symlink():
-            skipped_symlinks += 1
+            for rule in matching:
+                rule.skipped_symlink = True
             continue
-        matched_files += 1
-        original = _read_text(path)
-        if template is not None:
-            updated, replacements = template.apply_counted(original)
-        else:
-            replacements = original.count(transform.before)
-            updated = original.replace(transform.before, transform.after)
-        if replacements == 0 or updated == original:
-            continue
-        path.write_text(updated, encoding="utf-8")
-        changed += 1
-        count += replacements
-        files.append(
-            _file_report(
-                root=root,
-                path=path,
-                count=replacements,
-                sources_by_destination=sources_by_destination,
-            ),
-        )
-    if changed == 0 and transform.required:
-        if skipped_symlinks and matched_files == 0:
-            reason = "only matched symlinks"
-        elif paths:
-            reason = "found files, but no replacement text"
-        else:
-            reason = "matched no files"
-        raise TransformError(
-            f"Transformation '{transform.id}' made no changes: {reason}",
-        )
-    return _TransformResult(changed=changed, count=count, files=tuple(files))
+        original = text = _read_text(path)
+        for rule in matching:
+            rule.matched = True
+            updated, replacements = rule.substitute(text)
+            if replacements == 0 or updated == text:
+                continue
+            text = updated
+            rule.count += replacements
+            rule.files.append(
+                _file_report(
+                    root=root,
+                    path=path,
+                    count=replacements,
+                    sources_by_destination=sources_by_destination,
+                ),
+            )
+        if text != original:
+            # pragma: no mutate start -- this host's locale is UTF-8 too.
+            path.write_text(text, encoding="utf-8")
+            # pragma: no mutate end
+    results = [rule.result() for rule in rules]
+    if failure is not None:
+        raise failure
+    return results
 
 
 def _strip_block(
@@ -483,9 +556,11 @@ def _strip_block(
             continue
         original = _read_text(path)
         updated, count = _strip_blocks(original, transform)
-        if count == 0 or updated == original:
+        if updated == original:
             continue
+        # pragma: no mutate start -- this host's locale is UTF-8 too.
         path.write_text(updated, encoding="utf-8")
+        # pragma: no mutate end
         changed += 1
         total_count += count
         files.append(
@@ -533,7 +608,9 @@ def _internal_lines(
         count = len(lines) - len(kept)
         if count == 0:
             continue
+        # pragma: no mutate start -- this host's locale is UTF-8 too.
         path.write_text("".join(kept), encoding="utf-8")
+        # pragma: no mutate end
         changed += 1
         total_count += count
         files.append(
@@ -573,9 +650,11 @@ def _uncomment(
             continue
         original = _read_text(path)
         updated, count = uncomment_source_text(original, transform)
-        if count == 0 or updated == original:
+        if updated == original:
             continue
+        # pragma: no mutate start -- this host's locale is UTF-8 too.
         path.write_text(updated, encoding="utf-8")
+        # pragma: no mutate end
         changed += 1
         total_count += count
         files.append(
@@ -713,7 +792,7 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
     if transform.else_marker:
         return _strip_blocks_with_else(text, transform)
     updated = text
-    search_from = 0
+    search_from = 0  # pragma: no mutate -- str.find reads a None start as 0.
     count = 0
     while True:
         start_idx = updated.find(transform.start, search_from)
@@ -725,12 +804,12 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
                 f"Transformation '{transform.id}' found end marker before start marker",
             )
         end_idx = updated.find(transform.end, start_idx + len(transform.start))
-        if end_idx < 0:
+        if end_idx == -1:
             raise TransformError(
                 f"Transformation '{transform.id}' did not find end marker",
             )
         next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
-        if 0 <= next_start_idx < end_idx:
+        if next_start_idx != -1 and next_start_idx < end_idx:
             raise TransformError(
                 f"Transformation '{transform.id}' found nested start marker",
             )
@@ -740,7 +819,9 @@ def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
             # offset, so an indented block left its leading whitespace behind as
             # a stub line. ``ruff_format`` then deletes that stub, and reversal
             # could never reproduce the public text from the stubbed form.
+            # pragma: no mutate start -- str.rfind reads a None start as 0.
             line_start = updated.rfind("\n", 0, start_idx) + 1
+            # pragma: no mutate end
             if not updated[line_start:start_idx].strip():
                 start_idx = line_start
             updated = _collapse_removed_block_gap(
@@ -858,7 +939,9 @@ def _matching_files(
 def _read_text(path: Path) -> str:
     """Read UTF-8 text and turn decode failures into transform errors."""
     try:
+        # pragma: no mutate start -- this host's locale is UTF-8 too.
         return path.read_text(encoding="utf-8")
+        # pragma: no mutate end
     except UnicodeDecodeError as err:
         raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
 
@@ -905,3 +988,19 @@ def _newest_tick_contents(
         for path, (_, mtime_ns) in snapshot.items()
         if mtime_ns == newest
     }
+
+
+def _is_replace(transform: Transform) -> bool:
+    return transform.type == "replace"
+
+
+def _report(transform: Transform, result: _TransformResult) -> TransformReport:
+    """Return ``result`` under ``transform``'s configured identity."""
+    return TransformReport(
+        id=transform.id,
+        type=transform.type,
+        path=transform.path,
+        changed=result.changed,
+        count=result.count,
+        files=result.files,
+    )
