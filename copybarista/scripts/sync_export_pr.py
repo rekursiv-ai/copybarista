@@ -60,8 +60,12 @@ PR_MARKER_PREFIX: Final = "<!-- copybarista:pr-state "
 PR_ENTRY_PREFIX: Final = "<!-- copybarista:pr-entry "
 GITHUB_RETRY_ATTEMPTS: Final = 3
 GITHUB_RETRY_DELAY_SEC: Final = 2
-UPSTREAM_EXPORT_POLL_SEC: Final = 20.0
-UPSTREAM_EXPORT_WAIT_SEC: Final = 900.0
+# Fifteen minutes gave up 4 s before codedoctor merged, 23 minutes after the push,
+# and seven exports locked its old lint fixer (2026-11-11). The 75-minute export job
+# holds this, the public CI wait, and two minutes of export. Ten exports polling share
+# the workflow token's 1,000 requests an hour, so a poll a minute.
+UPSTREAM_EXPORT_POLL_SEC: Final = 60.0
+UPSTREAM_EXPORT_WAIT_SEC: Final = 1680.0
 # Public CI's own job cap is 45 minutes; the export job allows for this plus export.
 PUBLIC_CI_WAIT_SEC: Final = 2700.0
 # The workflow token allows 1,000 requests an hour, shared by all 11 exports; at a
@@ -1260,6 +1264,10 @@ def _await_upstream_exports(
                 UPSTREAM_EXPORT_POLL_SEC,
             )  # house-ignore[sleep] -- GitHub pushes nothing.
             waited += UPSTREAM_EXPORT_POLL_SEC
+        else:
+            # Silent, the stale lock surfaced only as the public CI failures it caused.
+            _log(f"Gave up waiting for {workflow}; locking its previous publish.")
+            return
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
