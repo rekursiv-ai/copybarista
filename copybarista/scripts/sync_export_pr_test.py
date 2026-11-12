@@ -3874,6 +3874,7 @@ def test_await_upstream_exports_skips_a_manual_run(
 
 def test_await_upstream_exports_gives_up_after_its_deadline(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A stuck sibling delays the lock, never blocks it past the deadline."""
     sleeps: list[float] = []
@@ -3896,6 +3897,23 @@ def test_await_upstream_exports_gives_up_after_its_deadline(
 
     # The deadline is shared: the second workflow finds it spent.
     assert sleeps == [1.0, 1.0, 1.0]
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Gave up waiting for loop-to-treekle.yml; locking its previous publish."
+    )
+
+
+def test_the_upstream_wait_fits_the_export_job_beside_public_ci() -> None:
+    """Both waits and two minutes of export fit the job the template caps."""
+    template = (_CWD.parent / "templates" / "internal-to-external.yml.tmpl").read_text(
+        encoding="utf-8",
+    )
+    job_sec = 60 * int(template.split("timeout-minutes: ", 1)[1].split()[0])
+    waits_sec = (
+        sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC + sync_export_pr.PUBLIC_CI_WAIT_SEC
+    )
+    assert waits_sec + 120 <= job_sec
+    # The slowest upstream export seen (codedoctor) published 23 minutes in.
+    assert sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC >= 23 * 60
 
 
 def test_run_export_sync_refreshes_public_lockfile_before_validation(
