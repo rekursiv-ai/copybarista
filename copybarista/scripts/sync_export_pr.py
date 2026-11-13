@@ -68,8 +68,7 @@ UPSTREAM_EXPORT_POLL_SEC: Final = 60.0
 UPSTREAM_EXPORT_WAIT_SEC: Final = 1680.0
 # Public CI's own job cap is 45 minutes; the export job allows for this plus export.
 PUBLIC_CI_WAIT_SEC: Final = 2700.0
-# The workflow token allows 1,000 requests an hour, shared by all 11 exports; at a
-# minute a poll, the slowest public CI (13 minutes) costs 13 of them.
+# At a minute a poll, the slowest public CI (13 minutes) costs 13 requests.
 PUBLIC_CI_POLL_SEC: Final = 60.0
 PR_TEMPLATE_PATHS = (
     Path(".github/PULL_REQUEST_TEMPLATE.md"),
@@ -2019,8 +2018,7 @@ def _merged_sha(*, request: ExportRequest) -> str:
         waited = _wait_public_ci(waited, repo=request.target_repo)
 
 
-# Read with the workflow's token: the sync App holds no Actions permission, and the
-# public repositories' runs are readable by any token.
+# Read with the sync token: the workflow's own cannot see a private repository.
 def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
     """Wait for ``repo``'s package validation on ``sha``; fail unless it passed."""
     # Any start below one poll makes the same 45 polls, so no test tells 0 from 1.
@@ -2043,7 +2041,6 @@ def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
             cwd=cwd,
             capture=True,
             check=False,  # pragma: no mutate -- None reads as False.
-            env=_source_gh_env(),
         )
         # GitHub lists a workflow's runs only once it has read the workflow from the
         # new main, so a merge that adds it is answered 404 for a moment: no run yet.

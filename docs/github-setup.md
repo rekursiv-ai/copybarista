@@ -77,7 +77,9 @@ may be organization credentials restricted to selected repositories.
 The generated workflows mint a token scoped to the destination repository and
 verify the expected App slug against the pinned token action's output. They do
 not call `GET /user`, which installation tokens cannot use. Grant the App
-Contents, Pull requests, and Workflows read/write; install it on both sides.
+Contents, Pull requests, and Workflows read/write, and Actions read; install it
+on both sides. The export reads public CI on the commit it merges with the App's
+token, so that repository may be private or internal.
 Source-repository reads during export use the source's read-only Actions token.
 
 Generated workflows use shared `COPYBARISTA_` names internally and fill them
