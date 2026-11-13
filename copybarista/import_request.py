@@ -58,7 +58,7 @@ EntryKind = Literal["file", "symlink"]
 VCS_DIRS = frozenset((".git", ".hg", ".svn"))
 
 # What each formatter's directory walk formats: an explicit path bypasses that walk,
-# so the post-import reformat names only these. Biome's are the biome-format hook's.
+# so the post-import reformat names only these. Biome's are the biome-check hook's.
 _FORMATTED_SUFFIXES: Final = {
     "ruff_format": (".py", ".pyi", ".ipynb"),
     "biome_format": (
