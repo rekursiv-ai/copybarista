@@ -351,7 +351,7 @@ path = "."
 Copybarista runs `npx --yes @biomejs/biome@<version> format --write <path>` in
 the staged root, where `<version>` comes from the `$schema` URL of the staged
 `biome.json`; ship that file with a `[[files.copy]]`. Use it when rewrites change
-line lengths in web sources that a public `biome-format` hook checks. Like
+line lengths in web sources that a public `biome-check` hook checks. Like
 `ruff_format`, it is not reversed on import; an imported file under its path is
 re-formatted with the source tree's own `biome.json`.
 
