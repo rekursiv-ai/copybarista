@@ -3666,10 +3666,15 @@ def test_public_ci_fails_on_any_other_listing_error(
     assert len(calls) == 1
 
 
-def test_public_ci_is_read_with_the_workflow_token(
+def test_public_ci_is_read_with_the_sync_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sync App holds no Actions permission; the workflow's token reads runs."""
+    """The token that merged into the repository reads its runs.
+
+    The source workflow's token sees only public repositories. One that is not
+    public answered it 404, which read as a workflow with no run yet, so every
+    export into it polled for the whole wait and then failed.
+    """
     tokens: list[str] = []
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -3680,13 +3685,13 @@ def test_public_ci_is_read_with_the_workflow_token(
             stdout='[{"status": "completed", "conclusion": "success"}]',
         )
 
-    monkeypatch.setattr(sync_export_pr, "_run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setenv("GH_TOKEN", "sync-token")
     monkeypatch.setenv("COPYBARISTA_ACTIONS_TOKEN", "actions-token")
 
     sync_export_pr._await_ci(repo="example/public", sha="c0ffee", cwd=Path("/public"))
 
-    assert tokens == ["actions-token"]
+    assert tokens == ["sync-token"]
 
 
 @pytest.mark.parametrize(
@@ -3712,7 +3717,7 @@ def test_the_export_fails_when_public_ci_does_not_finish_in_time(
         "public CI on example/public did not finish in 45 minutes"
         in capsys.readouterr().out
     )
-    # One poll a minute keeps 11 exports inside the workflow token's hourly limit.
+    # One poll a minute: the slowest public CI then costs 13 requests.
     assert set(sleeps) == {sync_export_pr.PUBLIC_CI_POLL_SEC}
     assert len(sleeps) == sync_export_pr.PUBLIC_CI_WAIT_SEC / 60
 

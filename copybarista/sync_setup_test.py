@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Unpack
 from typing_extensions import TypedDict
@@ -1651,21 +1652,61 @@ def test_app_authentication_round_trips(tmp_path: Path):
     assert "sync_token_login" not in sync_toml(settings)
 
 
-def test_auth_fragment_omits_the_file_banner():
-    fragment = _render_template(
-        "sync-personal-auth.yml.tmpl",
-        {},
-        include_banner=False,
-    )
+@pytest.mark.parametrize("render", [_export_workflow, import_workflow])
+@pytest.mark.parametrize("app", [False, True], ids=["personal", "app"])
+def test_auth_fragment_omits_the_file_banner(
+    tmp_path: Path,
+    render: Callable[[SyncSettings], str],
+    app: bool,
+):
+    """The auth steps render inside a workflow, whose own banner is its only one."""
+    text = render(_app_settings(tmp_path) if app else _settings())
 
-    assert fragment.startswith("      - name: Verify sync token identity\n")
+    assert text.count("DO NOT EDIT") == 1
+
+
+class _TemplateRecorder:
+    """``_render_template``, recording each template name it is asked for."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def __call__(self, name: str, values: dict[str, str], **options: bool) -> str:
+        self.names.add(name)
+        return _render_template(name, values, **options)
 
 
 @pytest.mark.parametrize(
-    ("render", "job", "destination"),
+    ("app", "auth_template"),
+    [(False, "sync-personal-auth.yml.tmpl"), (True, "sync-app-auth.yml.tmpl")],
+    ids=["personal", "app"],
+)
+def test_sync_workflows_name_each_template_as_shipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    app: bool,
+    auth_template: str,
+):
+    """A name differing from its file only in case renders on macOS, not on Linux."""
+    recorder = _TemplateRecorder()
+    monkeypatch.setattr(sync_setup, "_render_template", recorder)
+    settings = _app_settings(tmp_path) if app else _settings()
+    _export_workflow(settings)
+    import_workflow(settings)
+    shipped = {
+        entry.name for entry in resources.files("copybarista.templates").iterdir()
+    }
+
+    assert auth_template in recorder.names
+    assert recorder.names <= shipped
+
+
+@pytest.mark.parametrize(
+    ("render", "job", "destination", "actions"),
     [
-        (_export_workflow, "export-pr", "example/configgle"),
-        (import_workflow, "import-change", "${{ env.TARGET_REPO }}"),
+        # The export reads public CI on the commit it merged; the import reads none.
+        (_export_workflow, "export-pr", "example/configgle", "read"),
+        (import_workflow, "import-change", "${{ env.TARGET_REPO }}", None),
     ],
 )
 def test_app_workflows_mint_scoped_tokens(
@@ -1673,6 +1714,7 @@ def test_app_workflows_mint_scoped_tokens(
     render: Callable[[SyncSettings], str],
     job: str,
     destination: str,
+    actions: str | None,
 ):
     text = render(_app_settings(tmp_path))
     steps = _job_steps(text, job=job)
@@ -1686,6 +1728,7 @@ def test_app_workflows_mint_scoped_tokens(
     assert inputs["permission-contents"] == "write"
     assert inputs["permission-pull-requests"] == "write"
     assert inputs["permission-workflows"] == "write"
+    assert inputs.get("permission-actions") == actions
     assert "COPYBARISTA_SYNC_TOKEN" not in text
     assert "COPYBARISTA_IMPORT_TOKEN" not in text
     assert "gh api user" not in text
@@ -1713,6 +1756,112 @@ def test_app_import_keeps_write_credentials_off_validation(tmp_path: Path):
         for step in steps
         if "${{ steps.sync-app-token.outputs.token }}" in str(step)
     ] == [action_ref("actions/checkout"), "Open or update target import PR"]
+
+
+@pytest.mark.parametrize(
+    ("render", "job", "owner", "guard"),
+    [
+        (_export_workflow, "export-pr", "public-org", None),
+        # The import mints only once its settings check finds a configured App.
+        (
+            import_workflow,
+            "import-change",
+            "source-org",
+            "steps.settings.outputs.enabled == 'true'",
+        ),
+    ],
+)
+def test_app_token_is_minted_for_the_written_repository_owner(
+    tmp_path: Path,
+    render: Callable[[SyncSettings], str],
+    job: str,
+    owner: str,
+    guard: str | None,
+):
+    """Each direction mints for the owner of the repository it writes.
+
+    The owner is the text before the FIRST ``/``; the source repository here
+    holds a second one so a split from the right would name another owner.
+    """
+    settings = dataclasses.replace(
+        _app_settings(tmp_path),
+        public_repo="public-org/configgle",
+        source_repo="source-org/loop/mirror",
+    )
+    steps = _job_steps(render(settings), job=job)
+    mint = steps[_step_index(steps, lambda step: step.get("id") == "sync-app-token")]
+
+    assert mint.get("if") == guard
+    assert from_plain(mint["with"], dict[str, object])["owner"] == owner
+
+
+@pytest.mark.parametrize(
+    ("app", "job_token", "step_token"),
+    [
+        (False, "${{ secrets.COPYBARISTA_SYNC_TOKEN }}", None),
+        (True, None, "${{ steps.sync-app-token.outputs.token }}"),
+    ],
+    ids=["personal", "app"],
+)
+def test_export_gives_gh_the_sync_credential(
+    tmp_path: Path,
+    app: bool,
+    job_token: str | None,
+    step_token: str | None,
+):
+    """A personal token serves the whole job; an App token exists once minted."""
+    workflow = _export_workflow(_app_settings(tmp_path) if app else _settings())
+    parsed = from_plain(yaml.safe_load(workflow), dict[object, object])
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+    steps = _job_steps(workflow, job="export-pr")
+    public = steps[_step_index(steps, lambda step: _checkout_path(step) == "public")]
+    export = steps[
+        _step_index(steps, lambda step: step.get("name") == "Open export PR")
+    ]
+
+    assert from_plain(jobs["export-pr"]["env"], dict[str, str]).get("GH_TOKEN") == (
+        job_token
+    )
+    assert from_plain(export["env"], dict[str, str]).get("GH_TOKEN") == step_token
+    assert from_plain(public["with"], dict[str, object])["token"] == (
+        job_token or step_token
+    )
+
+
+@pytest.mark.parametrize(
+    ("app", "probe", "error"),
+    [
+        (
+            False,
+            "${{ secrets.COPYBARISTA_IMPORT_TOKEN }}",
+            "Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes.",
+        ),
+        (
+            True,
+            (
+                "${{ vars.SYNC_APP_ID != '' && secrets.SYNC_APP_PRIVATE_KEY != '' "
+                "&& 'configured' || '' }}"
+            ),
+            "Set SYNC_APP_ID and SYNC_APP_PRIVATE_KEY.",
+        ),
+    ],
+    ids=["personal", "app"],
+)
+def test_import_settings_check_names_the_missing_credential(
+    tmp_path: Path,
+    app: bool,
+    probe: str,
+    error: str,
+):
+    steps = _import_steps(
+        import_workflow(_app_settings(tmp_path) if app else _settings()),
+    )
+    check = steps[_step_index(steps, lambda step: step.get("id") == "settings")]
+
+    assert from_plain(check["env"], dict[str, str]) == {"IMPORT_TOKEN": probe}
+    assert f'echo "::error::{error}"' in str(check["run"])
+    # The import has no token login to verify a personal token against.
+    assert all(step.get("name") != "Verify sync token identity" for step in steps)
 
 
 @pytest.mark.parametrize("slug", ["wrong app", "Example-App", "../app"])

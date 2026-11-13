@@ -1654,7 +1654,7 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
                 "APP_OWNER": _yaml_str(
                     (settings.source_repo if importing else settings.public_repo).split(
                         "/",
-                        1,
+                        1,  # pragma: no mutate -- [0] is alike for any split limit.
                     )[0],
                 ),
                 "APP_REPOSITORY": (
@@ -1662,9 +1662,13 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
                     if importing
                     else _yaml_str(settings.public_repo)
                 ),
+                # The export reads public CI on what it merges; the import reads none.
+                "APP_ACTIONS_PERMISSION": (
+                    "" if importing else "          permission-actions: read\n"
+                ),
                 "SYNC_APP_SLUG": _yaml_str(settings.sync_app_slug),
             },
-            include_banner=False,
+            include_banner=False,  # pragma: no mutate -- None reads as False.
         )
     else:
         credential_expression = (
@@ -1678,7 +1682,7 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
             else _render_template(
                 "sync-personal-auth.yml.tmpl",
                 {},
-                include_banner=False,
+                include_banner=False,  # pragma: no mutate -- None reads as False.
             )
         )
     return {

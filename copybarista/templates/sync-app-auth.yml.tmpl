@@ -9,7 +9,7 @@
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
-      - name: Verify sync App identity
+@@APP_ACTIONS_PERMISSION@@      - name: Verify sync App identity
 @@AUTH_GUARD@@        env:
           EXPECTED_SYNC_APP_SLUG: @@SYNC_APP_SLUG@@
           ACTUAL_SYNC_APP_SLUG: ${{ steps.sync-app-token.outputs.app-slug }}

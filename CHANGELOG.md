@@ -38,6 +38,10 @@ All notable copybarista changes are documented here. This project follows
 - After merging its PR, the export waits for the public repository's package
   validation on the merged commit and fails unless it passes. It exited green on
   merging alone, so a public `main` that failed CI showed green in every export.
+- In App mode the export workflow mints its token with Actions read, and the
+  export reads public CI with that token. Grant the App Actions read before
+  regenerating the export workflow: a token cannot be minted with a permission
+  the App lacks.
 
 ### Removed
 
@@ -61,6 +65,9 @@ All notable copybarista changes are documented here. This project follows
 - `sync_export_pr.py PROJECT_DIR`, which reads the sync config, passes
   `--skip-source-validation` when the config sets `skip_source_validation`, as
   the generated workflow does. It ran the source checks the CI export skips.
+- An export into a private or internal repository no longer waits 45 minutes for
+  public CI and then fails. The source workflow's token read that CI, and it
+  sees only public repositories.
 
 ## 0.1.8 - 2026-10-26
 
