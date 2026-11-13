@@ -95,7 +95,7 @@ def derive_values(base: str, target: str) -> str:
     old = _with_base_comments(commented, parse(uncommented(base)))
     new = _with_base_comments(commented, parse(uncommented(target)))
     restated = _restated_arrays(old.blocks, new.blocks)
-    # pragma: no mutate start -- exact=None is falsy too.
+    # pragma: no mutate[truthiness] start
     return _derived(old, new, restated=restated, listed=set(), exact=False)
     # pragma: no mutate end
 

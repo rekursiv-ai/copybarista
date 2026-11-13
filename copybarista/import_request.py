@@ -2019,7 +2019,7 @@ def _splice_public_edits(
     source_lines: list[str],
 ) -> str:
     """Return source with only the public edit's hunks applied."""
-    # pragma: no mutate start -- autojunk=None is falsy too.
+    # pragma: no mutate[truthiness] start
     edit = difflib.SequenceMatcher(
         a=reversed_ours_lines,
         b=reversed_lines,

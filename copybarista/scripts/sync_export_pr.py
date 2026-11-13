@@ -916,7 +916,7 @@ def _parser() -> argparse.ArgumentParser:
         "--auto-merge",
         nargs="?",
         # ``_string_bool`` casefolds, so no test can tell "TRUE" from "true".
-        const="true",  # pragma: no mutate
+        const="true",  # pragma: no mutate[case-insensitive]
         default=_env_bool("COPYBARISTA_AUTO_MERGE"),
         type=_string_bool,
         help="Enable GitHub PR auto-merge for the generated export branch.",
@@ -2040,7 +2040,7 @@ def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
             ],
             cwd=cwd,
             capture=True,
-            check=False,  # pragma: no mutate -- None reads as False.
+            check=False,  # pragma: no mutate[truthiness]
         )
         # GitHub lists a workflow's runs only once it has read the workflow from the
         # new main, so a merge that adds it is answered 404 for a moment: no run yet.
