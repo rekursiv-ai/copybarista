@@ -56,6 +56,7 @@ from copybarista.import_request import (
 )
 from copybarista.pyproject import PyprojectSource
 from copybarista.transforms import strip_source_text, uncomment_source_text
+from copybarista.transforms_test import biome_lock_is_free
 from copybarista.workflow import MoveSequence, _relocate_path
 
 
@@ -6710,7 +6711,7 @@ def test_reformat_reruns_ruff_on_the_reversed_file(
 
     class _Runner:
         def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
-            assert not check
+            assert check is False
             calls.append((argv[1:], cwd))
 
     monkeypatch.setattr(import_request, "CommandRunner", _Runner)
@@ -6870,7 +6871,7 @@ def test_reformat_reruns_biome_on_the_reversed_file(
 
     class _Runner:
         def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
-            assert not check
+            assert check is False
             calls.append((argv, cwd))
 
     monkeypatch.setattr(import_request, "CommandRunner", _Runner)
@@ -6910,6 +6911,36 @@ def test_reformat_reruns_biome_on_the_reversed_file(
             importer.destination,
         ),
     ]
+
+
+def test_reformat_runs_biome_under_the_biome_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    free_while_running: list[bool] = []
+
+    class _Runner:
+        def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
+            del argv, check, cwd
+            free_while_running.append(biome_lock_is_free())
+
+    monkeypatch.setattr(import_request, "CommandRunner", _Runner)
+    importer = _importer(
+        tmp_path,
+        transforms=(Transform(id="bf", type="biome_format", path="."),),
+    )
+    (importer.destination / "biome.json").write_text(
+        '{"$schema": "https://biomejs.dev/schemas/2.6.7/schema.json"}\n',
+        encoding="utf-8",
+    )
+
+    importer._reformat_imported_source(
+        change=ImportChange(public="web/a.ts", source="src/a.ts", action="modified"),
+        target=importer.destination / "src/a.ts",
+    )
+
+    assert free_while_running == [False]
+    assert biome_lock_is_free()
 
 
 def test_reformat_without_biome_settings_fails_the_import(tmp_path: Path):

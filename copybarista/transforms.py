@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import fcntl
 import itertools
 import os
 import re
@@ -25,6 +26,7 @@ from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import CopybaristaError, ExportError, TransformError
 from copybarista.globs import GlobSet, Globstar
+from copybarista.lib.userdirs import cache_dir
 from copybarista.manifest import (
     TransformFileReport,
     TransformReport,
@@ -393,14 +395,20 @@ class _Replacement:
         )
 
 
-def biome_command(root: Path) -> list[str]:
-    """Return the Biome command that formats as ``root/biome.json`` is written for.
+def biome_format(
+    root: Path,
+    *,
+    path: str,
+    runner: CommandRunner,
+    check: bool = True,
+) -> None:
+    """Format ``path`` in ``root`` with the Biome release ``root/biome.json`` names.
 
     Args:
-      root: Tree whose ``biome.json`` holds the formatter settings.
-
-    Returns:
-      argv: ``npx`` running the Biome release named by the settings' ``$schema``.
+      root: Tree whose ``biome.json`` holds the formatter settings; Biome runs here.
+      path: File or directory to format, relative to ``root``.
+      runner: Runs the ``npx`` command.
+      check: Whether a failed Biome run raises.
 
     Raises:
       TransformError: ``root`` has no ``biome.json`` naming a Biome release.
@@ -408,39 +416,53 @@ def biome_command(root: Path) -> list[str]:
     """
     # The schema URL is the version the settings were written for (``biome migrate``
     # rewrites it), so the export formats exactly as a checkout using them does.
-    path = root / "biome.json"
+    settings_path = root / "biome.json"
     try:
-        settings = json_loads(path.read_bytes(), dict[str, object])
+        settings = json_loads(settings_path.read_bytes(), dict[str, object])
     except (OSError, ReadError):
         settings = dict[str, object]()
     schema = settings.get("$schema")
-    version = re.fullmatch(
-        r"https://biomejs\.dev/schemas/([0-9][\w.-]*)/schema\.json",
-        schema if isinstance(schema, str) else "",
+    version = (
+        re.fullmatch(
+            r"https://biomejs\.dev/schemas/([0-9][\w.-]*)/schema\.json",
+            schema,
+        )
+        if isinstance(schema, str)
+        else None
     )
     if version is None:
         raise TransformError(
-            f"biome_format needs {path} whose $schema names its Biome release",
+            f"biome_format needs {settings_path} whose $schema names its Biome release",
         )
-    return [shutil.which("npx") or "npx", "--yes", f"@biomejs/biome@{version[1]}"]
-
-
-def _format_commands(root: Path, transform: Transform) -> list[list[str]]:
-    """Return the formatter runs one ``ruff_format`` or ``biome_format`` makes."""
-    if transform.type == "biome_format":
-        return [
+    npx = shutil.which("npx") or "npx"
+    home = cache_dir() / "rekursiv-ai" / "copybarista"
+    home.mkdir(parents=True, exist_ok=True)
+    # Concurrent ``npx`` installs of one package into one cache break each other on
+    # Ubuntu 24.04's npm 9.2, which CI installs ("biome: not found"). Exporting several
+    # packages at once starts several, so this user's runs take turns.
+    with (home / "biome.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        runner.run(
             [
-                *biome_command(root),
+                npx,
+                "--yes",
+                f"@biomejs/biome@{version[1]}",
                 "format",
                 "--write",
                 "--no-errors-on-unmatched",
-                transform.path,
+                path,
             ],
-        ]
+            check=check,
+            cwd=root,
+        )
+
+
+def _ruff_commands(path: str) -> list[list[str]]:
+    """Return the formatter runs one ``ruff_format`` of ``path`` makes."""
     ruff = [sys.executable, "-m", "ruff"]
     # Formatting exposes compact multiline brackets; COM812 then explodes them.
     return [
-        [*ruff, "format", "--no-cache", transform.path],
+        [*ruff, "format", "--no-cache", path],
         [
             *ruff,
             "check",
@@ -449,9 +471,9 @@ def _format_commands(root: Path, transform: Transform) -> list[list[str]]:
             "COM812",
             "--exit-zero",
             "--no-cache",
-            transform.path,
+            path,
         ],
-        [*ruff, "format", "--no-cache", transform.path],
+        [*ruff, "format", "--no-cache", path],
     ]
 
 
@@ -466,13 +488,15 @@ def _format(
         if transform.required:
             raise TransformError(f"Transformation '{transform.id}' matched no files")
         return _TransformResult(changed=0, count=0, files=())
-    commands = _format_commands(root, transform)
     before = _snapshot_regular_files(root=root, target=target)
     newest_tick = _newest_tick_contents(root=root, snapshot=before)
     runner = CommandRunner()
     try:
-        for argv in commands:
-            runner.run(argv, cwd=root)
+        if transform.type == "biome_format":
+            biome_format(root, path=transform.path, runner=runner)
+        else:
+            for argv in _ruff_commands(transform.path):
+                runner.run(argv, cwd=root)
     except ExportError as err:
         raise TransformError(
             f"Transformation '{transform.id}' {transform.type} failed: {err}",

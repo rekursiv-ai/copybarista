@@ -40,7 +40,7 @@ from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
     apply_transforms,
-    biome_command,
+    biome_format,
     line_has_marker_token,
     strip_source_regions,
     strip_source_text,
@@ -694,14 +694,9 @@ class ChangeRequestImporter:
         runner = CommandRunner()
         if "biome_format" in formatters:
             try:
-                biome = biome_command(self.destination)
+                biome_format(self.destination, path=rel, runner=runner, check=False)
             except TransformError as err:
                 raise ImportRequestError(str(err)) from err
-            runner.run(
-                [*biome, "format", "--write", "--no-errors-on-unmatched", rel],
-                check=False,
-                cwd=self.destination,
-            )
         if "ruff_format" not in formatters:
             return
         runner.run(

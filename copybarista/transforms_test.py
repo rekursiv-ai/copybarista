@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from functools import partial
+from subprocess import CompletedProcess
 from typing import TYPE_CHECKING
 
+import fcntl
 import os
 import shutil
+import subprocess
 import sys
 
 import pytest
 
 from copybarista import transforms
+from copybarista.commands import CommandRunner
 from copybarista.config import Transform
 from copybarista.errors import ExportError, TransformError
+from copybarista.lib.userdirs import cache_dir
 from copybarista.manifest import (
     ManifestEntry,
     TransformFileReport,
@@ -21,6 +26,7 @@ from copybarista.manifest import (
 )
 from copybarista.transforms import (
     apply_transforms,
+    biome_format,
     strip_source_regions,
     strip_source_text,
     uncomment_source_text,
@@ -1680,11 +1686,17 @@ def test_biome_format_runs_the_biome_its_settings_name(
     tmp_path: Path,
     npx: str | None,
 ) -> None:
-    calls: list[tuple[list[str], object]] = []
+    calls: list[tuple[list[str], bool, Path | None]] = []
 
     class FakeRunner:
-        def run(self, argv: list[str], **kwargs: object) -> object:
-            calls.append((argv, kwargs["cwd"]))
+        def run(
+            self,
+            argv: list[str],
+            *,
+            check: bool = True,
+            cwd: Path | None = None,
+        ) -> object:
+            calls.append((argv, check, cwd))
             return object()
 
     monkeypatch.setattr(transforms, "CommandRunner", FakeRunner)
@@ -1709,9 +1721,93 @@ def test_biome_format_runs_the_biome_its_settings_name(
                 "--no-errors-on-unmatched",
                 "web",
             ],
+            True,
             tmp_path,
         ),
     ]
+
+
+def biome_lock_is_free() -> bool:
+    """Return whether a second open of the Biome lock file can take it now."""
+    path = cache_dir() / "rekursiv-ai" / "copybarista" / "biome.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+    return True
+
+
+@pytest.mark.parametrize(
+    ("transform", "held"),
+    [
+        (Transform(id="f", type="biome_format", path="."), True),
+        (Transform(id="f", type="ruff_format", path="."), False),
+    ],
+    ids=["biome_format", "ruff_format"],
+)
+def test_only_biome_format_runs_under_the_biome_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transform: Transform,
+    held: bool,
+) -> None:
+    free_while_running: list[bool] = []
+
+    class LockProbingRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            del argv
+            free_while_running.append(biome_lock_is_free())
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", LockProbingRunner)
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+    assert biome_lock_is_free()
+
+    apply_transforms(tmp_path, (transform,))
+
+    assert set(free_while_running) == {not held}
+    assert biome_lock_is_free()
+
+
+def test_biome_format_keeps_its_lock_in_the_user_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            del argv
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", FakeRunner)
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+
+    apply_transforms(tmp_path, (Transform(id="b", type="biome_format", path="."),))
+
+    # Listed, not probed: a case-insensitive filesystem resolves a miscased path.
+    assert sorted(
+        path.relative_to(cache_dir()).as_posix() for path in cache_dir().rglob("*")
+    ) == [
+        "rekursiv-ai",
+        "rekursiv-ai/copybarista",
+        "rekursiv-ai/copybarista/biome.lock",
+    ]
+
+
+def test_biome_format_raises_on_a_failed_run_only_when_checked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def failed_run(argv: list[str], **_: object) -> CompletedProcess[str]:
+        return CompletedProcess(argv, returncode=1, stdout="", stderr="biome failed")
+
+    monkeypatch.setattr(subprocess, "run", failed_run)
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+
+    biome_format(tmp_path, path=".", runner=CommandRunner(), check=False)
+    with pytest.raises(ExportError, match="biome failed"):
+        biome_format(tmp_path, path=".", runner=CommandRunner())
 
 
 def test_biome_format_reports_the_files_biome_rewrote(
