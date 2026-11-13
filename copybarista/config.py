@@ -19,12 +19,19 @@ from copybarista.template import compile_module_replace, compile_replace
 TransformType = Literal[
     "replace",
     "ruff_format",
+    "biome_format",
     "strip_block",
     "move",
     "internal_lines",
     "uncomment",
 ]
 DEFAULT_GIT_BRANCH: Final = "main"
+
+# Formatters run a tool over the staged tree: no text-level form, so import
+# never reverses them, and replaying earlier transforms skips them.
+FORMAT_TRANSFORMS: Final[frozenset[TransformType]] = frozenset(
+    {"ruff_format", "biome_format"},
+)
 
 # Python build artifacts, caches, and local virtualenvs that must never be swept
 # into an export. A local `uv sync`/`pytest` run in the source tree (or in a
@@ -960,6 +967,7 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
     if ttype not in (
         "replace",
         "ruff_format",
+        "biome_format",
         "strip_block",
         "move",
         "internal_lines",
@@ -1066,17 +1074,17 @@ def _parse_transform(idx: int, raw_transform: object) -> Transform:
             destination=dest,
             required=required,
         )
-    if ttype == "ruff_format":
+    if ttype in ("ruff_format", "biome_format"):
         _check_keys(
             raw_transform,
             {"id", "type", "path", "required"},
             f"transform[{idx}]",
         )
         if _has_glob_syntax(path):
-            raise ConfigError("ruff_format path must be an exact file or directory")
+            raise ConfigError(f"{ttype} path must be an exact file or directory")
         return Transform(
             id=transform_id,
-            type="ruff_format",
+            type="biome_format" if ttype == "biome_format" else "ruff_format",
             path=path,
             required=required,
         )
