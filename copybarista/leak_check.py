@@ -158,7 +158,7 @@ def _list_tree(root: Path) -> _TreeListing:
         with os.scandir(pending.pop()) as scan:
             for entry in scan:
                 rel = entry.path[prefix:].replace(os.sep, "/")
-                # pragma: no mutate start -- follow_symlinks=None is falsy too.
+                # pragma: no mutate[truthiness] start
                 is_file = entry.is_file(follow_symlinks=False)
                 is_dir = entry.is_dir(follow_symlinks=False)
                 # pragma: no mutate end
