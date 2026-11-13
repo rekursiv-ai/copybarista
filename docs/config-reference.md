@@ -250,13 +250,13 @@ Each transform accepts:
 `type`:
 
 Required transform type. Supported values are `replace`, `ruff_format`,
-`strip_block`, `move`, `internal_lines`, and `uncomment`.
+`biome_format`, `strip_block`, `move`, `internal_lines`, and `uncomment`.
 
 `path`:
 
 Required destination-root-relative path. `replace`, `internal_lines`, and
-`uncomment` accept a supported glob pattern. `ruff_format`, `strip_block`,
-and `move` require one exact file or directory path.
+`uncomment` accept a supported glob pattern. `ruff_format`, `biome_format`,
+`strip_block`, and `move` require one exact file or directory path.
 
 `id`:
 
@@ -337,6 +337,23 @@ formatted result to the public head.
 
 For this transform, `required = true` only requires the configured path to
 exist. A no-op formatting pass succeeds.
+
+### `biome_format`
+
+Run Biome formatting on the staged export tree's TypeScript, JavaScript and CSS:
+
+```toml
+[[transform]]
+type = "biome_format"
+path = "."
+```
+
+Copybarista runs `npx --yes @biomejs/biome@<version> format --write <path>` in
+the staged root, where `<version>` comes from the `$schema` URL of the staged
+`biome.json`; ship that file with a `[[files.copy]]`. Use it when rewrites change
+line lengths in web sources that a public `biome-format` hook checks. Like
+`ruff_format`, it is not reversed on import; an imported file under its path is
+re-formatted with the source tree's own `biome.json`.
 
 ### `move`
 

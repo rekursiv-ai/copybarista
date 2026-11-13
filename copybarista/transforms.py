@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING, Protocol
 
 import itertools
 import os
+import re
 import shutil
 import stat
 import sys
+
+from treekle import ReadError, json_loads
 
 from copybarista.commands import CommandRunner
 from copybarista.config import Transform
@@ -164,7 +167,7 @@ def apply_transform(
             listing=listing,
         )
     else:
-        result = _ruff_format(
+        result = _format(
             root=root,
             transform=transform,
             sources_by_destination=sources_by_destination,
@@ -335,6 +338,390 @@ def strip_source_regions(
     )
 
 
+@dataclass(slots=True, kw_only=True)
+class _Replacement:
+    """One ``replace`` transform and its tally over a shared pass of the files."""
+
+    transform: Transform
+    template: ReplaceTemplate | None
+    matcher: GlobSet
+    matched: bool = False
+    skipped_symlink: bool = False
+    count: int = 0
+    files: list[TransformFileReport] = field(default_factory=list)
+
+    def substitute(self, text: str) -> tuple[str, int]:
+        """Rewrite ``text`` by this transform.
+
+        Args:
+          text: The file's text as the earlier transforms left it.
+
+        Returns:
+          updated: The rewritten text.
+          replacements: How many occurrences were replaced.
+
+        """
+        if self.template is not None:
+            return self.template.apply_counted(text)
+        before, after = self.transform.before, self.transform.after
+        return text.replace(before, after), text.count(before)
+
+    def result(self) -> _TransformResult:
+        """Return the tally as a report.
+
+        Returns:
+          result: What this transform changed.
+
+        Raises:
+          TransformError: The transform is required and changed nothing.
+
+        """
+        if not self.files and self.transform.required:
+            if self.skipped_symlink and not self.matched:
+                reason = "only matched symlinks"
+            elif self.skipped_symlink or self.matched:
+                reason = "found files, but no replacement text"
+            else:
+                reason = "matched no files"
+            raise TransformError(
+                f"Transformation '{self.transform.id}' made no changes: {reason}",
+            )
+        return _TransformResult(
+            changed=len(self.files),
+            count=self.count,
+            files=tuple(self.files),
+        )
+
+
+def biome_command(root: Path) -> list[str]:
+    """Return the Biome command that formats as ``root/biome.json`` is written for.
+
+    Args:
+      root: Tree whose ``biome.json`` holds the formatter settings.
+
+    Returns:
+      argv: ``npx`` running the Biome release named by the settings' ``$schema``.
+
+    Raises:
+      TransformError: ``root`` has no ``biome.json`` naming a Biome release.
+
+    """
+    # The schema URL is the version the settings were written for (``biome migrate``
+    # rewrites it), so the export formats exactly as a checkout using them does.
+    path = root / "biome.json"
+    try:
+        settings = json_loads(path.read_bytes(), dict[str, object])
+    except (OSError, ReadError):
+        settings = dict[str, object]()
+    schema = settings.get("$schema")
+    version = re.fullmatch(
+        r"https://biomejs\.dev/schemas/([0-9][\w.-]*)/schema\.json",
+        schema if isinstance(schema, str) else "",
+    )
+    if version is None:
+        raise TransformError(
+            f"biome_format needs {path} whose $schema names its Biome release",
+        )
+    return [shutil.which("npx") or "npx", "--yes", f"@biomejs/biome@{version[1]}"]
+
+
+def _format_commands(root: Path, transform: Transform) -> list[list[str]]:
+    """Return the formatter runs one ``ruff_format`` or ``biome_format`` makes."""
+    if transform.type == "biome_format":
+        return [
+            [
+                *biome_command(root),
+                "format",
+                "--write",
+                "--no-errors-on-unmatched",
+                transform.path,
+            ],
+        ]
+    ruff = [sys.executable, "-m", "ruff"]
+    # Formatting exposes compact multiline brackets; COM812 then explodes them.
+    return [
+        [*ruff, "format", "--no-cache", transform.path],
+        [
+            *ruff,
+            "check",
+            "--fix",
+            "--extend-select",
+            "COM812",
+            "--exit-zero",
+            "--no-cache",
+            transform.path,
+        ],
+        [*ruff, "format", "--no-cache", transform.path],
+    ]
+
+
+def _format(
+    root: Path,
+    transform: Transform,
+    sources_by_destination: dict[str, str],
+) -> _TransformResult:
+    """Run a formatter inside the staged tree and report the files it rewrote."""
+    target = root / transform.path
+    if not target.exists():
+        if transform.required:
+            raise TransformError(f"Transformation '{transform.id}' matched no files")
+        return _TransformResult(changed=0, count=0, files=())
+    commands = _format_commands(root, transform)
+    before = _snapshot_regular_files(root=root, target=target)
+    newest_tick = _newest_tick_contents(root=root, snapshot=before)
+    runner = CommandRunner()
+    try:
+        for argv in commands:
+            runner.run(argv, cwd=root)
+    except ExportError as err:
+        raise TransformError(
+            f"Transformation '{transform.id}' {transform.type} failed: {err}",
+        ) from err
+    after = _snapshot_regular_files(root=root, target=target)
+    changed_paths = tuple(
+        path
+        for path in _sorted_by_segments(after)
+        if before.get(path) != after[path]
+        or (path in newest_tick and (root / path).read_bytes() != newest_tick[path])
+    )
+    deleted_paths = tuple(
+        path for path in _sorted_by_segments(before) if path not in after
+    )
+    files = tuple(
+        _file_report(
+            root=root,
+            path=root / path,
+            count=1,
+            sources_by_destination=sources_by_destination,
+        )
+        for path in (*changed_paths, *deleted_paths)
+    )
+    return _TransformResult(changed=len(files), count=len(files), files=files)
+
+
+def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
+    """Remove every marker-delimited block from text."""
+    if not transform.start or not transform.end:
+        raise TransformError(
+            f"Transformation '{transform.id}' markers must be non-empty",
+        )
+    if transform.else_marker:
+        return _strip_blocks_with_else(text, transform)
+    updated = text
+    search_from = 0  # pragma: no mutate -- str.find reads a None start as 0.
+    count = 0
+    while True:
+        start_idx = updated.find(transform.start, search_from)
+        if start_idx < 0:
+            return updated, count
+        first_end_idx = updated.find(transform.end, search_from)
+        if first_end_idx >= 0 and first_end_idx < start_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found end marker before start marker",
+            )
+        end_idx = updated.find(transform.end, start_idx + len(transform.start))
+        if end_idx == -1:
+            raise TransformError(
+                f"Transformation '{transform.id}' did not find end marker",
+            )
+        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
+        if next_start_idx != -1 and next_start_idx < end_idx:
+            raise TransformError(
+                f"Transformation '{transform.id}' found nested start marker",
+            )
+        if transform.inclusive:
+            end_idx += len(transform.end)
+            # Cut from the marker's OWN line start: ``find`` returns the marker
+            # offset, so an indented block left its leading whitespace behind as
+            # a stub line. ``ruff_format`` then deletes that stub, and reversal
+            # could never reproduce the public text from the stubbed form.
+            # pragma: no mutate start -- str.rfind reads a None start as 0.
+            line_start = updated.rfind("\n", 0, start_idx) + 1
+            # pragma: no mutate end
+            if not updated[line_start:start_idx].strip():
+                start_idx = line_start
+            updated = _collapse_removed_block_gap(
+                updated[:start_idx],
+                updated[end_idx:],
+            )
+            search_from = start_idx
+        else:
+            updated = updated[:start_idx] + updated[end_idx:]
+            search_from = start_idx + len(transform.end)
+        count += 1
+
+
+def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
+    """Replace an internal/public conditional block with its else branch."""
+    # ``split`` leaves a final newline as an empty last line, which no marker
+    # matches, so ``join`` restores the text's ending as it was. Popping that
+    # line and re-adding a newline would turn an empty text into one.
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+    count = 0
+    while i < len(lines):
+        if transform.start in lines[i]:
+            else_idx = None
+            end_idx = None
+            for j in range(i + 1, len(lines)):
+                if transform.else_marker in lines[j]:
+                    else_idx = j
+                elif transform.end in lines[j]:
+                    end_idx = j
+                    break
+            if end_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' did not find end marker",
+                )
+            if else_idx is None:
+                raise TransformError(
+                    f"Transformation '{transform.id}' found block without "
+                    f"else marker '{transform.else_marker}'",
+                )
+            for line in lines[else_idx + 1 : end_idx]:
+                stripped = line.lstrip()
+                indent = line[: len(line) - len(stripped)]
+                if stripped.startswith("# "):
+                    result.append(indent + stripped[2:])
+                elif stripped.startswith("#"):
+                    result.append(indent + stripped[1:])
+                else:
+                    result.append(line)
+            i = end_idx + 1
+            count += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result), count
+
+
+def _file_report(
+    root: Path,
+    path: Path,
+    count: int,
+    sources_by_destination: dict[str, str],
+) -> TransformFileReport:
+    """Build the per-file transform report for a staged path."""
+    destination = path.relative_to(root).as_posix()
+    return TransformFileReport(
+        source=sources_by_destination.get(destination, destination),
+        destination=destination,
+        count=count,
+    )
+
+
+# ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``: the pathlib
+# spelling builds a ``Path`` per entry and then reparses it, and exporting priml called
+# ``relative_to`` 108,615 times across 17 patterns, 2.6s of a 7.5s export. Walked once
+# per ``apply_transforms`` (0.015s over 4,785 files) rather than once per transform
+# (0.32s for the 17 priml text transforms); a ``move`` is the only transform that
+# changes the set, and the caller re-walks after one.
+def _list_staged_files(root: Path) -> tuple[str, ...]:
+    """Return every staged non-directory entry as a root-relative POSIX path."""
+    prefix = len(str(root)) + 1
+    rel_paths: list[str] = []
+    for directory, _, names in os.walk(root):
+        rel_paths.extend(
+            os.path.join(directory, name)[prefix:].replace(os.sep, "/")  # noqa: PTH118 -- str path is the point.
+            for name in names
+        )
+    return tuple(_sorted_by_segments(rel_paths))
+
+
+# ``Path`` compares by path segments, so ``a/b`` sorts before ``a-b``; a plain string
+# sort puts ``-`` before ``/`` and would reorder manifests and reports.
+def _sorted_by_segments(rel_paths: Iterable[str]) -> list[str]:
+    """Sort relative POSIX paths the way ``sorted()`` orders ``Path`` objects."""
+    return sorted(rel_paths, key=_path_segments)
+
+
+def _path_segments(rel_path: str) -> list[str]:
+    return rel_path.split("/")
+
+
+def _matching_files(
+    root: Path,
+    *,
+    listing: tuple[str, ...],
+    pattern: str,
+    globstar: Globstar,
+) -> tuple[Path, ...]:
+    """Return staged files from ``listing`` matched by one supported path glob."""
+    matcher = GlobSet(include=(pattern,), globstar=globstar)
+    return tuple(root / rel for rel in listing if matcher.matches(rel))
+
+
+def _read_text(path: Path) -> str:
+    """Read UTF-8 text and turn decode failures into transform errors."""
+    try:
+        # pragma: no mutate start -- this host's locale is UTF-8 too.
+        return path.read_text(encoding="utf-8")
+        # pragma: no mutate end
+    except UnicodeDecodeError as err:
+        raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
+
+
+# Not the bytes: reading every staged file twice cost 0.36s of a priml export. Size and
+# mtime miss only a same-size rewrite within the snapshot's own timestamp tick: ruff's
+# quote normalization keeps the size, and on a filesystem stamping whole seconds a file
+# the preceding transform wrote milliseconds earlier keeps its mtime through ruff's
+# rewrite. ``_newest_tick_contents`` keeps the bytes of just the files in that tick.
+#
+# ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``: the two
+# snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s as strings.
+def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, int]]:
+    """Return ``(size, mtime_ns)`` per staged regular file, keyed by relative path."""
+    prefix = len(str(root)) + 1
+    if target.is_file():
+        candidates = [str(target)]
+    else:
+        candidates = [
+            os.path.join(directory, name)  # noqa: PTH118 -- str path is the point.
+            for directory, _, names in os.walk(target)
+            for name in names
+        ]
+    snapshot: dict[str, tuple[int, int]] = {}
+    for full in candidates:
+        status = os.lstat(full)
+        if stat.S_ISREG(status.st_mode):
+            rel = full[prefix:].replace(os.sep, "/")
+            snapshot[rel] = (status.st_size, status.st_mtime_ns)
+    return snapshot
+
+
+# Every write after the snapshot lands in its newest tick or a later one, so a file
+# stamped earlier cannot be rewritten without its mtime moving. Measuring the tick from
+# the newest mtime rather than the clock needs no assumption about its length.
+def _newest_tick_contents(
+    root: Path,
+    snapshot: dict[str, tuple[int, int]],
+) -> dict[str, bytes]:
+    """Return the bytes of the snapshot's files that share its newest mtime."""
+    newest = max((mtime_ns for _, mtime_ns in snapshot.values()), default=None)
+    return {
+        path: (root / path).read_bytes()
+        for path, (_, mtime_ns) in snapshot.items()
+        if mtime_ns == newest
+    }
+
+
+def _is_replace(transform: Transform) -> bool:
+    return transform.type == "replace"
+
+
+def _report(transform: Transform, result: _TransformResult) -> TransformReport:
+    """Return ``result`` under ``transform``'s configured identity."""
+    return TransformReport(
+        id=transform.id,
+        type=transform.type,
+        path=transform.path,
+        changed=result.changed,
+        count=result.count,
+        files=result.files,
+    )
+
+
 # Mirrors ``_strip_blocks`` exactly (same marker walk, same inclusive gap collapse) so
 # the removed spans are the ground truth for reverse re-insertion. ``updated`` is edited
 # in place and re-searched from the cut point, so ``start_idx`` is already an offset in
@@ -403,61 +790,6 @@ def _collapse_removed_block_gap(before: str, after: str) -> str:
     if before.endswith("\n") and after.startswith("\n"):
         return before + after.lstrip("\n")
     return before + after
-
-
-@dataclass(slots=True, kw_only=True)
-class _Replacement:
-    """One ``replace`` transform and its tally over a shared pass of the files."""
-
-    transform: Transform
-    template: ReplaceTemplate | None
-    matcher: GlobSet
-    matched: bool = False
-    skipped_symlink: bool = False
-    count: int = 0
-    files: list[TransformFileReport] = field(default_factory=list)
-
-    def substitute(self, text: str) -> tuple[str, int]:
-        """Rewrite ``text`` by this transform.
-
-        Args:
-          text: The file's text as the earlier transforms left it.
-
-        Returns:
-          updated: The rewritten text.
-          replacements: How many occurrences were replaced.
-
-        """
-        if self.template is not None:
-            return self.template.apply_counted(text)
-        before, after = self.transform.before, self.transform.after
-        return text.replace(before, after), text.count(before)
-
-    def result(self) -> _TransformResult:
-        """Return the tally as a report.
-
-        Returns:
-          result: What this transform changed.
-
-        Raises:
-          TransformError: The transform is required and changed nothing.
-
-        """
-        if not self.files and self.transform.required:
-            if self.skipped_symlink and not self.matched:
-                reason = "only matched symlinks"
-            elif self.skipped_symlink or self.matched:
-                reason = "found files, but no replacement text"
-            else:
-                reason = "matched no files"
-            raise TransformError(
-                f"Transformation '{self.transform.id}' made no changes: {reason}",
-            )
-        return _TransformResult(
-            changed=len(self.files),
-            count=self.count,
-            files=tuple(self.files),
-        )
 
 
 def _replacement(transform: Transform, globstar: Globstar) -> _Replacement:
@@ -716,291 +1048,3 @@ def _move(
             ),
         )
     return _TransformResult(changed=count, count=count, files=tuple(files))
-
-
-def _ruff_format(
-    root: Path,
-    transform: Transform,
-    sources_by_destination: dict[str, str],
-) -> _TransformResult:
-    """Run Ruff fixes and formatting inside the staged tree."""
-    target = root / transform.path
-    if not target.exists():
-        if transform.required:
-            raise TransformError(f"Transformation '{transform.id}' matched no files")
-        return _TransformResult(changed=0, count=0, files=())
-    before = _snapshot_regular_files(root=root, target=target)
-    newest_tick = _newest_tick_contents(root=root, snapshot=before)
-    runner = CommandRunner()
-    try:
-        # Formatting exposes compact multiline brackets; COM812 then explodes them.
-        runner.run(
-            [sys.executable, "-m", "ruff", "format", "--no-cache", transform.path],
-            cwd=root,
-        )
-        runner.run(
-            [
-                sys.executable,
-                "-m",
-                "ruff",
-                "check",
-                "--fix",
-                "--extend-select",
-                "COM812",
-                "--exit-zero",
-                "--no-cache",
-                transform.path,
-            ],
-            cwd=root,
-        )
-        runner.run(
-            [sys.executable, "-m", "ruff", "format", "--no-cache", transform.path],
-            cwd=root,
-        )
-    except ExportError as err:
-        raise TransformError(
-            f"Transformation '{transform.id}' ruff_format failed: {err}",
-        ) from err
-    after = _snapshot_regular_files(root=root, target=target)
-    changed_paths = tuple(
-        path
-        for path in _sorted_by_segments(after)
-        if before.get(path) != after[path]
-        or (path in newest_tick and (root / path).read_bytes() != newest_tick[path])
-    )
-    deleted_paths = tuple(
-        path for path in _sorted_by_segments(before) if path not in after
-    )
-    files = tuple(
-        _file_report(
-            root=root,
-            path=root / path,
-            count=1,
-            sources_by_destination=sources_by_destination,
-        )
-        for path in (*changed_paths, *deleted_paths)
-    )
-    return _TransformResult(changed=len(files), count=len(files), files=files)
-
-
-def _strip_blocks(text: str, transform: Transform) -> tuple[str, int]:
-    """Remove every marker-delimited block from text."""
-    if not transform.start or not transform.end:
-        raise TransformError(
-            f"Transformation '{transform.id}' markers must be non-empty",
-        )
-    if transform.else_marker:
-        return _strip_blocks_with_else(text, transform)
-    updated = text
-    search_from = 0  # pragma: no mutate -- str.find reads a None start as 0.
-    count = 0
-    while True:
-        start_idx = updated.find(transform.start, search_from)
-        if start_idx < 0:
-            return updated, count
-        first_end_idx = updated.find(transform.end, search_from)
-        if first_end_idx >= 0 and first_end_idx < start_idx:
-            raise TransformError(
-                f"Transformation '{transform.id}' found end marker before start marker",
-            )
-        end_idx = updated.find(transform.end, start_idx + len(transform.start))
-        if end_idx == -1:
-            raise TransformError(
-                f"Transformation '{transform.id}' did not find end marker",
-            )
-        next_start_idx = updated.find(transform.start, start_idx + len(transform.start))
-        if next_start_idx != -1 and next_start_idx < end_idx:
-            raise TransformError(
-                f"Transformation '{transform.id}' found nested start marker",
-            )
-        if transform.inclusive:
-            end_idx += len(transform.end)
-            # Cut from the marker's OWN line start: ``find`` returns the marker
-            # offset, so an indented block left its leading whitespace behind as
-            # a stub line. ``ruff_format`` then deletes that stub, and reversal
-            # could never reproduce the public text from the stubbed form.
-            # pragma: no mutate start -- str.rfind reads a None start as 0.
-            line_start = updated.rfind("\n", 0, start_idx) + 1
-            # pragma: no mutate end
-            if not updated[line_start:start_idx].strip():
-                start_idx = line_start
-            updated = _collapse_removed_block_gap(
-                updated[:start_idx],
-                updated[end_idx:],
-            )
-            search_from = start_idx
-        else:
-            updated = updated[:start_idx] + updated[end_idx:]
-            search_from = start_idx + len(transform.end)
-        count += 1
-
-
-def _strip_blocks_with_else(text: str, transform: Transform) -> tuple[str, int]:
-    """Replace an internal/public conditional block with its else branch."""
-    # ``split`` leaves a final newline as an empty last line, which no marker
-    # matches, so ``join`` restores the text's ending as it was. Popping that
-    # line and re-adding a newline would turn an empty text into one.
-    lines = text.split("\n")
-    result: list[str] = []
-    i = 0
-    count = 0
-    while i < len(lines):
-        if transform.start in lines[i]:
-            else_idx = None
-            end_idx = None
-            for j in range(i + 1, len(lines)):
-                if transform.else_marker in lines[j]:
-                    else_idx = j
-                elif transform.end in lines[j]:
-                    end_idx = j
-                    break
-            if end_idx is None:
-                raise TransformError(
-                    f"Transformation '{transform.id}' did not find end marker",
-                )
-            if else_idx is None:
-                raise TransformError(
-                    f"Transformation '{transform.id}' found block without "
-                    f"else marker '{transform.else_marker}'",
-                )
-            for line in lines[else_idx + 1 : end_idx]:
-                stripped = line.lstrip()
-                indent = line[: len(line) - len(stripped)]
-                if stripped.startswith("# "):
-                    result.append(indent + stripped[2:])
-                elif stripped.startswith("#"):
-                    result.append(indent + stripped[1:])
-                else:
-                    result.append(line)
-            i = end_idx + 1
-            count += 1
-        else:
-            result.append(lines[i])
-            i += 1
-    return "\n".join(result), count
-
-
-def _file_report(
-    root: Path,
-    path: Path,
-    count: int,
-    sources_by_destination: dict[str, str],
-) -> TransformFileReport:
-    """Build the per-file transform report for a staged path."""
-    destination = path.relative_to(root).as_posix()
-    return TransformFileReport(
-        source=sources_by_destination.get(destination, destination),
-        destination=destination,
-        count=count,
-    )
-
-
-# ``os.walk`` and a string slice, not ``rglob`` + ``Path.relative_to``: the pathlib
-# spelling builds a ``Path`` per entry and then reparses it, and exporting priml called
-# ``relative_to`` 108,615 times across 17 patterns, 2.6s of a 7.5s export. Walked once
-# per ``apply_transforms`` (0.015s over 4,785 files) rather than once per transform
-# (0.32s for the 17 priml text transforms); a ``move`` is the only transform that
-# changes the set, and the caller re-walks after one.
-def _list_staged_files(root: Path) -> tuple[str, ...]:
-    """Return every staged non-directory entry as a root-relative POSIX path."""
-    prefix = len(str(root)) + 1
-    rel_paths: list[str] = []
-    for directory, _, names in os.walk(root):
-        rel_paths.extend(
-            os.path.join(directory, name)[prefix:].replace(os.sep, "/")  # noqa: PTH118 -- str path is the point.
-            for name in names
-        )
-    return tuple(_sorted_by_segments(rel_paths))
-
-
-# ``Path`` compares by path segments, so ``a/b`` sorts before ``a-b``; a plain string
-# sort puts ``-`` before ``/`` and would reorder manifests and reports.
-def _sorted_by_segments(rel_paths: Iterable[str]) -> list[str]:
-    """Sort relative POSIX paths the way ``sorted()`` orders ``Path`` objects."""
-    return sorted(rel_paths, key=_path_segments)
-
-
-def _path_segments(rel_path: str) -> list[str]:
-    return rel_path.split("/")
-
-
-def _matching_files(
-    root: Path,
-    *,
-    listing: tuple[str, ...],
-    pattern: str,
-    globstar: Globstar,
-) -> tuple[Path, ...]:
-    """Return staged files from ``listing`` matched by one supported path glob."""
-    matcher = GlobSet(include=(pattern,), globstar=globstar)
-    return tuple(root / rel for rel in listing if matcher.matches(rel))
-
-
-def _read_text(path: Path) -> str:
-    """Read UTF-8 text and turn decode failures into transform errors."""
-    try:
-        # pragma: no mutate start -- this host's locale is UTF-8 too.
-        return path.read_text(encoding="utf-8")
-        # pragma: no mutate end
-    except UnicodeDecodeError as err:
-        raise TransformError(f"Cannot decode UTF-8 file for transform: {path}") from err
-
-
-# Not the bytes: reading every staged file twice cost 0.36s of a priml export. Size and
-# mtime miss only a same-size rewrite within the snapshot's own timestamp tick: ruff's
-# quote normalization keeps the size, and on a filesystem stamping whole seconds a file
-# the preceding transform wrote milliseconds earlier keeps its mtime through ruff's
-# rewrite. ``_newest_tick_contents`` keeps the bytes of just the files in that tick.
-#
-# ``os.walk`` + ``os.lstat`` on strings rather than ``rglob`` + ``Path.lstat``: the two
-# snapshots around ruff cost 0.25s of a priml export as pathlib, 0.05s as strings.
-def _snapshot_regular_files(root: Path, target: Path) -> dict[str, tuple[int, int]]:
-    """Return ``(size, mtime_ns)`` per staged regular file, keyed by relative path."""
-    prefix = len(str(root)) + 1
-    if target.is_file():
-        candidates = [str(target)]
-    else:
-        candidates = [
-            os.path.join(directory, name)  # noqa: PTH118 -- str path is the point.
-            for directory, _, names in os.walk(target)
-            for name in names
-        ]
-    snapshot: dict[str, tuple[int, int]] = {}
-    for full in candidates:
-        status = os.lstat(full)
-        if stat.S_ISREG(status.st_mode):
-            rel = full[prefix:].replace(os.sep, "/")
-            snapshot[rel] = (status.st_size, status.st_mtime_ns)
-    return snapshot
-
-
-# Every write after the snapshot lands in its newest tick or a later one, so a file
-# stamped earlier cannot be rewritten without its mtime moving. Measuring the tick from
-# the newest mtime rather than the clock needs no assumption about its length.
-def _newest_tick_contents(
-    root: Path,
-    snapshot: dict[str, tuple[int, int]],
-) -> dict[str, bytes]:
-    """Return the bytes of the snapshot's files that share its newest mtime."""
-    newest = max((mtime_ns for _, mtime_ns in snapshot.values()), default=None)
-    return {
-        path: (root / path).read_bytes()
-        for path, (_, mtime_ns) in snapshot.items()
-        if mtime_ns == newest
-    }
-
-
-def _is_replace(transform: Transform) -> bool:
-    return transform.type == "replace"
-
-
-def _report(transform: Transform, result: _TransformResult) -> TransformReport:
-    """Return ``result`` under ``transform``'s configured identity."""
-    return TransformReport(
-        id=transform.id,
-        type=transform.type,
-        path=transform.path,
-        changed=result.changed,
-        count=result.count,
-        files=result.files,
-    )

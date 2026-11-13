@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from os import walk
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import difflib
 import itertools
@@ -26,6 +26,7 @@ from treekle import ReadError
 
 from copybarista.commands import CommandRunner
 from copybarista.config import (
+    FORMAT_TRANSFORMS,
     WorkflowConfig,
     reverse_file_moves,
     reverse_move_transforms,
@@ -39,6 +40,7 @@ from copybarista.template import ReplaceTemplate, replace_template
 from copybarista.transforms import (
     _strip_blocks_with_else,
     apply_transforms,
+    biome_command,
     line_has_marker_token,
     strip_source_regions,
     strip_source_text,
@@ -54,6 +56,23 @@ ChangeAction = Literal["created", "modified", "deleted", "type_changed"]
 ChangeOutcome = Literal["applied", "skipped", "merged"]
 EntryKind = Literal["file", "symlink"]
 VCS_DIRS = frozenset((".git", ".hg", ".svn"))
+
+# What each formatter's directory walk formats: an explicit path bypasses that walk,
+# so the post-import reformat names only these. Biome's are the biome-format hook's.
+_FORMATTED_SUFFIXES: Final = {
+    "ruff_format": (".py", ".pyi", ".ipynb"),
+    "biome_format": (
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".css",
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -649,30 +668,42 @@ class ChangeRequestImporter:
         self._reformat_imported_source(change=change, target=target)
         return change
 
-    # ``ruff_format`` has no content inverse, so ``_reverse_content`` skips it on
-    # import. But a namespace ``replace`` reverses by pure text substitution that
-    # preserves physical line order: a public file whose imports are sorted under the
-    # *public* namespace can land unsorted under the *source* namespace whenever the two
-    # namespaces sort their import groups differently. Re-applying ruff (isort + format)
-    # forward on the written file restores source-namespace order, so importing never
-    # pollutes the source tree with lint violations.
+    # A formatter has no content inverse, so ``_reverse_content`` skips it on import.
+    # But a namespace ``replace`` reverses by pure text substitution that preserves
+    # physical line order: a public file whose imports are sorted under the *public*
+    # namespace can land unsorted under the *source* namespace whenever the two
+    # namespaces sort their import groups differently, and a longer source name can
+    # push a line past the width. Re-applying the formatter forward on the written file
+    # restores source form, so importing never pollutes the source tree.
     #
-    # Runs with ``cwd=self.destination`` so ruff discovers the source tree's own config
-    # (e.g. ``known-first-party``), and only when a ``ruff_format`` transform's glob
-    # matches this change's public path. A whole-tree ``ruff_format`` (``path = "."`` /
-    # ``""``, the shape every shipped config uses) formats the entire staged tree on
-    # export, so it matches every reversed file here -- a literal ``.`` glob would match
-    # nothing and the reformat would silently never run (leaving isort-dirty imports).
+    # Runs with ``cwd=self.destination`` so the formatter discovers the source tree's
+    # own config (e.g. ``known-first-party``, ``biome.json``), and only when a format
+    # transform's glob matches this change's public path. A whole-tree format
+    # (``path = "."`` / ``""``, the shape every shipped config uses) formats the entire
+    # staged tree on export, so it matches every reversed file here -- a literal ``.``
+    # glob would match nothing and the reformat would silently never run.
     def _reformat_imported_source(self, *, change: ImportChange, target: Path) -> None:
-        """Re-run ``ruff_format`` forward on a freshly reversed source file."""
-        if not any(
-            transform.type == "ruff_format"
-            and _ruff_format_matches(transform, change.public)
+        """Re-run each matching formatter forward on a freshly reversed source file."""
+        formatters = {
+            transform.type
             for transform in self.config.transforms
-        ):
-            return
+            if transform.type in FORMAT_TRANSFORMS
+            and _format_matches(transform, change.public)
+        }
         rel = target.relative_to(self.destination).as_posix()
         runner = CommandRunner()
+        if "biome_format" in formatters:
+            try:
+                biome = biome_command(self.destination)
+            except TransformError as err:
+                raise ImportRequestError(str(err)) from err
+            runner.run(
+                [*biome, "format", "--write", "--no-errors-on-unmatched", rel],
+                check=False,
+                cwd=self.destination,
+            )
+        if "ruff_format" not in formatters:
+            return
         runner.run(
             [
                 sys.executable,
@@ -999,7 +1030,7 @@ class ChangeRequestImporter:
         )
         pending: list[Transform] = []
         for transform in reversed(self.config.transforms):
-            if transform.type in ("move", "ruff_format") or not transform.reversible:
+            if _not_reversed(transform):
                 continue
             if not _matches_transform(transform, match_path, self.config.globstar):
                 continue
@@ -1164,7 +1195,7 @@ class ChangeRequestImporter:
             transforms=self.config.transforms,
         )
         for transform in reversed(self.config.transforms):
-            if transform.type in ("move", "ruff_format") or not transform.reversible:
+            if _not_reversed(transform):
                 continue
             if _matches_transform(transform, match_path, self.config.globstar):
                 if transform.type in ("strip_block", "internal_lines"):
@@ -1398,7 +1429,7 @@ class ChangeRequestImporter:
 
     # Keyed on public's own diff, not the plan, so a change the plan misrouted or wrongly
     # skipped still counts; the plan supplies only where a path the export never ships
-    # lives in the source. Public's trees pass through the same ``ruff_format`` the
+    # lives in the source. Public's trees pass through the same formatters the
     # render did, so formatting alone never reads as a lost change.
     def _check_carries_public_changes(self, applied: tuple[ImportChange, ...]) -> None:
         """Verify the imported destination carries every change public made."""
@@ -1450,7 +1481,7 @@ class ChangeRequestImporter:
             )
 
     def _formatted(self, public: Path, *, destination: Path) -> TreeSnapshot:
-        """Return ``public`` as the export's ``ruff_format`` transforms leave it."""
+        """Return ``public`` as the export's format transforms leave it."""
         # pragma: no mutate start -- Skipping a public checkout's history only saves time.
         shutil.copytree(
             public,
@@ -1462,7 +1493,7 @@ class ChangeRequestImporter:
         # pragma: no mutate end
         _ = apply_transforms(
             destination,
-            tuple(t for t in self.config.transforms if t.type == "ruff_format"),
+            tuple(t for t in self.config.transforms if t.type in FORMAT_TRANSFORMS),
         )
         return TreeSnapshot.from_root(destination)
 
@@ -1531,7 +1562,7 @@ def _matches_transform(
 # the source after EVERY earlier rule, reversible or not: a replace changes line
 # lengths, a strip removes lines another strip's marker also matches. Replaying
 # a subset placed a public edit on the wrong line and deleted the one it edited.
-# ``move`` changes no text and ``ruff_format`` has no text-level form.
+# ``move`` changes no text and a formatter has no text-level form.
 def _exported_until(
     source_text: str,
     *,
@@ -1543,10 +1574,14 @@ def _exported_until(
     """Return ``source_text`` as export handed it to transform ``stop``."""
     text = source_text
     for earlier in transforms[: transforms.index(stop)]:
-        if earlier.type in ("move", "ruff_format") or not _matches_transform(
-            earlier,
-            match_path,
-            globstar,
+        if (
+            earlier.type == "move"
+            or earlier.type in FORMAT_TRANSFORMS
+            or not _matches_transform(
+                earlier,
+                match_path,
+                globstar,
+            )
         ):
             continue
         if earlier.type == "replace":
@@ -1571,26 +1606,35 @@ def _forward_replace(*, transform: Transform, text: str) -> str:
     return compiled.apply(text)
 
 
-# Forward, ``ruff_format`` targets ``root / transform.path`` and formats that whole
-# SUBTREE (``transforms._ruff_format``): ``path = "pkg"`` formats every file under
+# Forward, a formatter targets ``root / transform.path`` and formats that whole
+# SUBTREE (``transforms._format``): ``path = "pkg"`` formats every file under
 # ``pkg/``, and ``path = "."`` / ``""`` formats the entire tree. So the import-side
 # match must be a subtree test, not a literal glob match -- a glob on ``"pkg"`` matches
 # only the path ``"pkg"`` itself, never ``pkg/foo.py`` (and a glob on ``"."`` matches
 # nothing), which would silently skip the post-import reformat for every file under the
 # target.
 #
-# Within that subtree ruff's directory walk formats only Python sources. The post-import
-# reformat names each file, and an explicit path bypasses the walk: ruff then parses a
-# JSON object as a Python dict and adds trailing commas no JSON parser accepts. So a
-# subtree matches only ruff's default source suffixes, while a single-file target still
-# matches itself, because forward passes it to ruff verbatim.
-def _ruff_format_matches(transform: Transform, public_path: str) -> bool:
-    """Return whether a ``ruff_format`` transform reformats a public path."""
+# Within that subtree the formatter's directory walk formats only its own sources. The
+# post-import reformat names each file, and an explicit path bypasses the walk: ruff
+# then parses a JSON object as a Python dict and adds trailing commas no JSON parser
+# accepts. So a subtree matches only the formatter's source suffixes, while a
+# single-file target still matches itself, because forward passes it verbatim.
+def _format_matches(transform: Transform, public_path: str) -> bool:
+    """Return whether a format transform reformats a public path."""
     path = transform.path.removesuffix("/")
     if public_path == path:
         return True
     in_subtree = path in (".", "") or public_path.startswith(f"{path}/")
-    return in_subtree and public_path.endswith((".py", ".pyi", ".ipynb"))
+    return in_subtree and public_path.endswith(_FORMATTED_SUFFIXES[transform.type])
+
+
+def _not_reversed(transform: Transform) -> bool:
+    """Return whether import skips ``transform`` when reversing a public file."""
+    return (
+        transform.type == "move"
+        or transform.type in FORMAT_TRANSFORMS
+        or not transform.reversible
+    )
 
 
 def _has_explicit_reversal(transform: Transform) -> bool:

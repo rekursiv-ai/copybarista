@@ -43,11 +43,12 @@ from copybarista.import_request import (
     _capture_originals,
     _carries_pyproject_change,
     _contains_public_change,
+    _format_matches,
+    _not_reversed,
     _recomment_block,
     _removed_regions,
     _reverse_else_blocks,
     _reverse_replace,
-    _ruff_format_matches,
     _splice_public_edits,
     _splice_source_only_regions,
     _three_way_merge,
@@ -60,6 +61,8 @@ from copybarista.workflow import MoveSequence, _relocate_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from copybarista.globs import Globstar
 
 
 def test_import_public_edit_maps_to_source_root_and_reverses_replace(
@@ -2930,7 +2933,30 @@ def test_ruff_format_matches_treats_path_as_subtree(
         required=False,
         reversible=True,
     )
-    assert _ruff_format_matches(transform, public_path) is expected
+    assert _format_matches(transform, public_path) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "public_path", "expected"),
+    [
+        (".", "web/src/app.ts", True),
+        (".", "web/src/App.tsx", True),
+        (".", "web/styles.css", True),
+        (".", "scripts/build.mjs", True),
+        ("web", "web/src/app.ts", True),
+        ("web", "other/app.ts", False),
+        (".", "pkg/module.py", False),
+        (".", "web/package.json", False),
+        ("web/data.json", "web/data.json", True),
+    ],
+)
+def test_biome_format_matches_the_sources_the_biome_hook_formats(
+    path: str,
+    public_path: str,
+    expected: bool,
+) -> None:
+    transform = Transform(id="fmt", type="biome_format", path=path)
+    assert _format_matches(transform, public_path) is expected
 
 
 def test_import_rejects_empty_after_reverse_replace(tmp_path: Path):
@@ -6705,6 +6731,198 @@ def test_reformat_reruns_ruff_on_the_reversed_file(
         ),
         (["-m", "ruff", "format", "--no-cache", "src/m.py"], importer.destination),
     ]
+
+
+@pytest.mark.parametrize(
+    ("transform", "skipped"),
+    [
+        (Transform(id="m", type="move", path="a", destination="b"), True),
+        (Transform(id="r", type="ruff_format", path="."), True),
+        (Transform(id="b", type="biome_format", path="."), True),
+        (Transform(id="x", type="replace", path="m.py", before="a", after="b"), False),
+        (
+            Transform(
+                id="f",
+                type="replace",
+                path="m.py",
+                before="a",
+                after="b",
+                reversible=False,
+            ),
+            True,
+        ),
+    ],
+    ids=["move", "ruff_format", "biome_format", "replace", "forward-only"],
+)
+def test_import_skips_moves_formatters_and_forward_only_rules(
+    transform: Transform,
+    skipped: bool,
+) -> None:
+    assert _not_reversed(transform) is skipped
+
+
+def _rule(before: str, after: str, path: str = "m.py") -> Transform:
+    return Transform(
+        id=f"{before}>{after}",
+        type="replace",
+        path=path,
+        before=before,
+        after=after,
+    )
+
+
+_UNCOMMENT_LINE = Transform(
+    id="u",
+    type="uncomment",
+    path="m.py",
+    start="# copybarista:external",
+)
+_STRIP = Transform(
+    id="s",
+    type="strip_block",
+    path="m.py",
+    start="# copybarista:internal:start",
+    end="# copybarista:internal:end",
+)
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        Transform(id="rf", type="ruff_format", path="."),
+        _rule("other", "o", path="other.py"),
+        _UNCOMMENT_LINE,
+        _STRIP,
+    ],
+    ids=["skipped", "unmatched", "uncomment", "strip_block"],
+)
+def test_reversal_passes_each_middle_rule_and_reverses_both_sides_of_it(
+    tmp_path: Path,
+    middle: Transform,
+) -> None:
+    importer = _importer(
+        tmp_path,
+        transforms=(_rule("alpha", "AA"), middle, _rule("gamma", "GG")),
+    )
+
+    assert (
+        importer._reverse_content(
+            public_path="m.py",
+            source_path="m.py",
+            data=b"AA GG\n",
+        )
+        == b"alpha gamma\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("globstar", "reversed_text"),
+    [("zero_or_more", b"alpha\n"), ("one_or_more", b"AA\n")],
+)
+def test_reversal_matches_paths_under_the_workflow_globstar(
+    tmp_path: Path,
+    globstar: Globstar,
+    reversed_text: bytes,
+) -> None:
+    """Only ``zero_or_more`` lets ``**/*.py`` reach a root-level module."""
+    importer = _importer(tmp_path, transforms=(_rule("alpha", "AA", path="**/*.py"),))
+    importer = replace(importer, config=replace(importer.config, globstar=globstar))
+
+    assert (
+        importer._reverse_content(public_path="m.py", source_path="m.py", data=b"AA\n")
+        == reversed_text
+    )
+
+
+@pytest.mark.parametrize(
+    ("transforms", "with_source"),
+    [
+        ((_rule("alpha", "AA"),), False),
+        ((_UNCOMMENT_LINE, _rule("alpha", "AA")), False),
+        ((_STRIP, _rule("alpha", "AA")), False),
+        ((_UNCOMMENT_LINE,), True),
+        ((_STRIP,), True),
+    ],
+    ids=["final-run", "run-before-uncomment", "run-before-strip", "uncomment", "strip"],
+)
+def test_undecodable_public_text_names_the_public_path(
+    tmp_path: Path,
+    transforms: tuple[Transform, ...],
+    with_source: bool,
+) -> None:
+    importer = _importer(tmp_path, transforms=transforms)
+    if with_source:
+        (importer.source_base / "src.py").write_text("kept\n", encoding="utf-8")
+
+    with pytest.raises(ImportRequestError, match=r"not UTF-8: m\.py$"):
+        importer._reverse_content(
+            public_path="m.py",
+            source_path="src.py",
+            data=b"\xff\n",
+        )
+
+
+def test_reformat_reruns_biome_on_the_reversed_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[list[str], Path | None]] = []
+
+    class _Runner:
+        def run(self, argv: list[str], *, check: bool, cwd: Path | None) -> None:
+            assert not check
+            calls.append((argv, cwd))
+
+    monkeypatch.setattr(import_request, "CommandRunner", _Runner)
+    importer = _importer(
+        tmp_path,
+        transforms=(
+            Transform(id="rf", type="ruff_format", path="."),
+            Transform(id="bf", type="biome_format", path="."),
+        ),
+    )
+    (importer.destination / "biome.json").write_text(
+        '{"$schema": "https://biomejs.dev/schemas/2.6.7/schema.json"}\n',
+        encoding="utf-8",
+    )
+
+    def which(name: str) -> str:
+        return f"/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", which)
+
+    importer._reformat_imported_source(
+        change=ImportChange(public="web/a.ts", source="src/a.ts", action="modified"),
+        target=importer.destination / "src/a.ts",
+    )
+
+    assert calls == [
+        (
+            [
+                "/bin/npx",
+                "--yes",
+                "@biomejs/biome@2.6.7",
+                "format",
+                "--write",
+                "--no-errors-on-unmatched",
+                "src/a.ts",
+            ],
+            importer.destination,
+        ),
+    ]
+
+
+def test_reformat_without_biome_settings_fails_the_import(tmp_path: Path):
+    importer = _importer(
+        tmp_path,
+        transforms=(Transform(id="bf", type="biome_format", path="."),),
+    )
+
+    with pytest.raises(ImportRequestError, match=r"biome\.json"):
+        importer._reformat_imported_source(
+            change=ImportChange(public="a.ts", source="src/a.ts", action="modified"),
+            target=importer.destination / "src/a.ts",
+        )
 
 
 def test_an_applied_change_reformats_the_file_it_wrote(

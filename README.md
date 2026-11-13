@@ -519,6 +519,7 @@ Copybarista config, and then runs the same export engine.
 | Literal replace | `type = "replace"` | `core.replace(...)` | Regex/options fail |
 | Staged move | `type = "move"` | Not imported | Native TOML only |
 | Ruff formatting | `type = "ruff_format"` | Not imported | Runs `ruff check --fix --no-cache` and `ruff format --no-cache` |
+| Biome formatting | `type = "biome_format"` | Not imported | Runs `biome format --write` at the staged `biome.json`'s version |
 | Strip block | `type = "strip_block"` | Empty multiline replace | Marker form only |
 | Arbitrary logic | Not supported | Rejected | No Starlark execution |
 | Copybara review flows | Not supported | Rejected | Use local `import-change` |

@@ -591,7 +591,8 @@ def test_rejects_file_write_escape(tmp_path: Path):
         load_config(config_path)
 
 
-def test_loads_ruff_format_transform(tmp_path: Path):
+@pytest.mark.parametrize("formatter", ["ruff_format", "biome_format"])
+def test_loads_format_transforms(tmp_path: Path, formatter: str):
     config_path = tmp_path / "copy.barista.toml"
     config_path.write_text(
         """
@@ -604,15 +605,15 @@ def test_loads_ruff_format_transform(tmp_path: Path):
         include = ["**"]
 
         [[transform]]
-        type = "ruff_format"
+        type = "FORMATTER"
         path = "."
-        """,
+        """.replace("FORMATTER", formatter),
         encoding="utf-8",
     )
 
     config = load_config(config_path)
 
-    assert config.transforms[0].type == "ruff_format"
+    assert config.transforms[0].type == formatter
     assert config.transforms[0].path == "."
 
 
@@ -1388,6 +1389,11 @@ def test_workflow_to_toml_round_trips_every_optional_field():
             '[[transform]]\ntype = "ruff_format"\npath = "**/*.py"\n',
             "ruff_format path must be an exact file or directory",
             id="ruff-format-glob",
+        ),
+        pytest.param(
+            '[[transform]]\ntype = "biome_format"\npath = "**/*.ts"\n',
+            "biome_format path must be an exact file or directory",
+            id="biome-format-glob",
         ),
         pytest.param(
             '[[transform]]\ntype = "internal_lines"\npath = "a"\nstart = ""\n',

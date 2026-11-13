@@ -6,6 +6,7 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 import os
+import shutil
 import sys
 
 import pytest
@@ -1668,6 +1669,121 @@ def test_a_text_transform_leaves_a_symlink_and_its_target_alone(
 
     assert (tmp_path / "link.py").is_symlink()
     assert target.read_text(encoding="utf-8") == "# S\n# x\n# E\n"
+
+
+_BIOME_SETTINGS = '{"$schema": "https://biomejs.dev/schemas/2.6.7/schema.json"}\n'
+
+
+@pytest.mark.parametrize("npx", ["/usr/bin/npx", None])
+def test_biome_format_runs_the_biome_its_settings_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    npx: str | None,
+) -> None:
+    calls: list[tuple[list[str], object]] = []
+
+    class FakeRunner:
+        def run(self, argv: list[str], **kwargs: object) -> object:
+            calls.append((argv, kwargs["cwd"]))
+            return object()
+
+    monkeypatch.setattr(transforms, "CommandRunner", FakeRunner)
+
+    def which(name: str) -> str | None:
+        return npx if name == "npx" else None
+
+    monkeypatch.setattr(shutil, "which", which)
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+    (tmp_path / "web").mkdir()
+
+    apply_transforms(tmp_path, (Transform(id="b", type="biome_format", path="web"),))
+
+    assert calls == [
+        (
+            [
+                npx or "npx",
+                "--yes",
+                "@biomejs/biome@2.6.7",
+                "format",
+                "--write",
+                "--no-errors-on-unmatched",
+                "web",
+            ],
+            tmp_path,
+        ),
+    ]
+
+
+def test_biome_format_reports_the_files_biome_rewrote(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+    app = tmp_path / "app.ts"
+    app.write_text("const a = [1,2]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        transforms,
+        "CommandRunner",
+        partial(_Rewriter, path=app, text="const a = [1, 2];\n", keep_mtime=False),
+    )
+
+    (report,) = apply_transforms(
+        tmp_path,
+        (Transform(id="b", type="biome_format", path="."),),
+    )
+
+    assert [file.destination for file in report.files] == ["app.ts"]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        "{}\n",
+        '{"$schema": "./node_modules/@biomejs/biome/configuration_schema.json"}\n',
+        "[]\n",
+    ],
+    ids=["missing", "no-schema", "local-schema", "not-an-object"],
+)
+def test_biome_format_needs_settings_naming_a_biome_version(
+    tmp_path: Path,
+    settings: str | None,
+) -> None:
+    if settings is not None:
+        (tmp_path / "biome.json").write_text(settings, encoding="utf-8")
+
+    with pytest.raises(TransformError, match=r"biome\.json whose \$schema names"):
+        apply_transforms(tmp_path, (Transform(id="b", type="biome_format", path="."),))
+
+
+def test_biome_format_of_a_missing_path_is_an_error_only_when_required(
+    tmp_path: Path,
+) -> None:
+    (optional,) = apply_transforms(
+        tmp_path,
+        (Transform(id="b", type="biome_format", path="web", required=False),),
+    )
+    assert (optional.changed, optional.files) == (0, ())
+    with pytest.raises(TransformError, match="matched no files"):
+        apply_transforms(
+            tmp_path,
+            (Transform(id="b", type="biome_format", path="web"),),
+        )
+
+
+def test_biome_format_reports_a_failed_biome_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FailingRunner:
+        def run(self, argv: list[str], **_: object) -> object:
+            raise ExportError(f"{argv[3]} exited 1")
+
+    monkeypatch.setattr(transforms, "CommandRunner", FailingRunner)
+    (tmp_path / "biome.json").write_text(_BIOME_SETTINGS, encoding="utf-8")
+
+    with pytest.raises(TransformError, match="biome_format failed: format exited 1"):
+        apply_transforms(tmp_path, (Transform(id="b", type="biome_format", path="."),))
 
 
 def test_ruff_format_reports_a_failed_ruff_run(
