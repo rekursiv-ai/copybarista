@@ -35,6 +35,7 @@ from treekle import ReadError, from_plain, json_loads
 
 from copybarista.config import Transform, load_config
 from copybarista.lib.files import tempclaim
+from copybarista.pyproject import rendered_pyproject
 from copybarista.scripts.sync_import_change import (
     ImportBaseError,
     branch_component,
@@ -773,6 +774,7 @@ def _sync_through(request: ExportRequest, *, export_dir: Path) -> None:
                 workflows=_upstream_export_workflows(
                     pyproject=request.public_dir / "pyproject.toml",
                     source_dir=request.source_dir,
+                    target_repo=request.target_repo,
                 ),
                 source_repo=request.source_repo,
                 source_sha=request.source_sha,
@@ -1190,18 +1192,17 @@ def _git_branch_upgrades(pyproject: Path) -> list[str]:
 # A sibling public repo's export from the same source commit publishes what this lock
 # tracks. Locking first pins the sibling's previous HEAD: a stub and its consumer pushed
 # together then failed the consumer's validation (Loop to Sagent, 2026-10-19).
-def _upstream_export_workflows(*, pyproject: Path, source_dir: Path) -> tuple[str, ...]:
-    """Return the source's export workflows for this lock's git-branch sources."""
-    table: object = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    for key in ("tool", "uv", "sources"):
-        table = from_plain(table, dict[str, object]).get(key, {})
-    # A source is a table, or a list of per-marker tables; only a table tracks a branch.
-    sources = from_plain(table, dict[str, dict[str, object] | list[object]])
-    repos = {
-        str(source["git"]).removeprefix("https://github.com/").removesuffix(".git")
-        for source in sources.values()
-        if isinstance(source, dict) and "branch" in source and "git" in source
-    }
+# A sibling tracking this export back is a cycle: both runs waited out the full
+# deadline on each other, so typings and codedoctor exports took 33 minutes, not 4
+# (2026-11-18). Neither waits; each locks the other's previous publish.
+def _upstream_export_workflows(
+    *,
+    pyproject: Path,
+    source_dir: Path,
+    target_repo: str,
+) -> tuple[str, ...]:
+    """Return the export workflows of siblings this lock tracks, cycles excepted."""
+    repos = _tracked_repos(pyproject.read_text(encoding="utf-8"))
     return tuple(
         sorted(
             export_workflow_filename(settings)
@@ -1209,8 +1210,29 @@ def _upstream_export_workflows(*, pyproject: Path, source_dir: Path) -> tuple[st
             for pattern in ("*/*/copybarista.sync.toml", "*/*/*/copybarista.sync.toml")
             for sync in source_dir.glob(pattern)
             if (settings := load_sync_settings(sync)).public_repo in repos
+            and target_repo
+            not in _tracked_repos(
+                rendered_pyproject(
+                    sync.with_name("copy.barista.toml"),
+                    source_ref=source_dir,
+                ),
+            )
         ),
     )
+
+
+def _tracked_repos(pyproject: str) -> set[str]:
+    """Return the ``owner/name`` repos a pyproject's git-branch sources track."""
+    table: object = tomllib.loads(pyproject)
+    for key in ("tool", "uv", "sources"):
+        table = from_plain(table, dict[str, object]).get(key, {})
+    # A source is a table, or a list of per-marker tables; only a table tracks a branch.
+    sources = from_plain(table, dict[str, dict[str, object] | list[object]])
+    return {
+        str(source["git"]).removeprefix("https://github.com/").removesuffix(".git")
+        for source in sources.values()
+        if isinstance(source, dict) and "branch" in source and "git" in source
+    }
 
 
 def _await_upstream_exports(

@@ -174,7 +174,7 @@ def test_check_tree_rejects_private_project_names_in_root_docs(tmp_path: Path):
     mixed casing here -- which no enumeration would have listed -- still trips.
     """
     _write_required_tree(tmp_path)
-    (tmp_path / "CHANGELOG.md").write_text(
+    (tmp_path / "NOTES.md").write_text(
         "Published " + "kNoWoP" + " sync notes.\n",
         encoding="utf-8",
     )

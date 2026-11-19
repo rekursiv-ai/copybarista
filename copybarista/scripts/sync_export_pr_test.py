@@ -3444,9 +3444,59 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
             ),
         )
 
-    workflows = _upstream_export_workflows(pyproject=pyproject, source_dir=source_dir)
+    workflows = _upstream_export_workflows(
+        pyproject=pyproject,
+        source_dir=source_dir,
+        target_repo="rekursiv-ai/self",
+    )
 
     assert workflows == ("loop-to-treekle.yml", "loop-to-typings.yml")
+
+
+def test_upstream_exports_skip_a_sibling_that_tracks_this_export(
+    tmp_path: Path,
+) -> None:
+    """Two exports tracking each other wait on neither: each would wait out the other."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.uv.sources]\n"
+        'treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }\n'
+        'stubs = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }\n',
+        encoding="utf-8",
+    )
+    source_dir = tmp_path / "source"
+    for name in ("treekle", "typings"):
+        write_sync_scaffold(
+            root=source_dir / "src" / name,
+            settings=SyncSettings(
+                package_name=name,
+                sync_label=name.title(),
+                source_root=f"src/{name}",
+                public_repo=f"rekursiv-ai/{name}",
+                source_repo="example/source",
+                copybarista_project_path="src/tool",
+                forbidden_pr_text=("private",),
+            ),
+        )
+    (source_dir / "base.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    (source_dir / "src/typings/delta.toml").write_text(
+        "[tool.uv.sources]\n"
+        'me = { git = "https://github.com/rekursiv-ai/self", branch = "main" }\n'
+        "\n"
+        "[pyproject]\n"
+        'base = "base.toml"\n',
+        encoding="utf-8",
+    )
+    with (source_dir / "src/typings/copy.barista.toml").open("a") as config:
+        config.write('\n[files.pyproject]\ndelta = "src/typings/delta.toml"\n')
+
+    workflows = _upstream_export_workflows(
+        pyproject=pyproject,
+        source_dir=source_dir,
+        target_repo="rekursiv-ai/self",
+    )
+
+    assert workflows == ("loop-to-treekle.yml",)
 
 
 def _public_ci(
@@ -4962,8 +5012,13 @@ def test_a_validated_export_runs_every_step_in_order(
     def plan(**_: object) -> sync_export_pr.PrReplayPlan:
         return _merged_pr_plan()
 
-    def workflows(*, pyproject: Path, source_dir: Path) -> tuple[str, ...]:
-        del pyproject, source_dir
+    def workflows(
+        *,
+        pyproject: Path,
+        source_dir: Path,
+        target_repo: str,
+    ) -> tuple[str, ...]:
+        del pyproject, source_dir, target_repo
         return ("loop-to-sibling.yml",)
 
     for name in (
