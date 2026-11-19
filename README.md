@@ -21,7 +21,7 @@ Bidirectional source sync for publishing OSS-ready trees from a monorepo.
   ·
   <a href="https://github.com/rekursiv-ai/copybarista/blob/main/docs/github-setup.md">GitHub setup</a>
   ·
-  <a href="https://github.com/rekursiv-ai/copybarista/blob/main/CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/rekursiv-ai/copybarista/releases">Releases</a>
   ·
   <a href="https://rekursiv.ai/blog/i-built-copybarista-in-a-day/">Blog post</a>
 </p>
