@@ -1,13 +1,12 @@
-"""Integration tests for shipped examples."""
+"""Tests for shipped examples."""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Final
 
-import os
 import shutil
-import subprocess
 import sys
 
 import pytest
@@ -15,24 +14,41 @@ import pytest
 from copybarista.cli import main
 
 
-pytestmark = pytest.mark.cli_git
+pytest_plugins = ("pytester",)
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
 PACKAGE_TESTS = Path("packages/widget/tests")
 
 
+@pytest.fixture
+def example_tests(
+    pytester: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
+) -> pytest.Pytester:
+    """Return a pytester whose runs load no installed plugin.
+
+    The example's tests are plain functions, and none of the installed plugins
+    (xdist, cov, asyncio, randomly) is under test.
+    """
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    return pytester
+
+
 def test_python_package_example_exports_and_imports_public_change(
     tmp_path: Path,
+    example_tests: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     public_base = tmp_path / "public-base"
     public_head = tmp_path / "public-head"
     destination = tmp_path / "source-destination"
+    run_pytest = partial(_run_pytest, example_tests, monkeypatch)
 
     source_repo = _CWD / "python-package" / "source-repo"
-    _run_pytest(root=source_repo, tests=source_repo / PACKAGE_TESTS)
+    run_pytest(root=source_repo, tests=source_repo / PACKAGE_TESTS)
     _export(source_ref=source_repo, destination=public_base)
     _assert_public_export(public_base)
-    _run_pytest(root=public_base, tests=public_base / "tests")
+    run_pytest(root=public_base, tests=public_base / "tests")
 
     shutil.copytree(public_base, public_head)
     (public_head / "widget/__init__.py").write_text(
@@ -64,7 +80,7 @@ def test_python_package_example_exports_and_imports_public_change(
     assert 'DESCRIPTION = "Public package example."' in (
         destination / "packages/widget/widget/__init__.py"
     ).read_text(encoding="utf-8")
-    _run_pytest(root=destination, tests=destination / PACKAGE_TESTS)
+    run_pytest(root=destination, tests=destination / PACKAGE_TESTS)
 
 
 def test_github_workflow_examples_call_copybarista_commands():
@@ -155,30 +171,33 @@ def _assert_public_export(public_root: Path) -> None:
     assert "packages.widget" not in test_file
 
 
-def _run_pytest(*, root: Path, tests: Path) -> None:
-    """Run example tests with isolated pytest options."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    # The test invokes the current Python interpreter with a fixed argv list.
-    subprocess.run(  # noqa: S603 -- The example test passes a fixed argv list assembled internally.
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+def _run_pytest(
+    example_tests: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root: Path,
+    tests: Path,
+) -> None:
+    """Run example tests with isolated pytest options, ``root`` importable."""
+    # The three trees name the same modules, and a run over this whole package also
+    # collects the source tree itself: hide every module a tree could name, so no
+    # tree resolves another's. The context restores them and ``sys.path``.
+    names = {path.stem for path in (*root.iterdir(), *tests.parent.iterdir())}
+    with monkeypatch.context() as patch:
+        for name in [name for name in sys.modules if name.partition(".")[0] in names]:
+            patch.delitem(sys.modules, name)
+        patch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+        patch.setattr("sys.dont_write_bytecode", True)
+        patch.syspath_prepend(str(root))
+        result = example_tests.runpytest_inprocess(
             "-q",
             "-p",
             "no:cacheprovider",
             "-o",
             "addopts=",
             str(tests),
-        ],
-        check=True,
-        cwd=_CWD.parent,
-        env=env,
-        text=True,
-        capture_output=True,
-    )
+        )
+    assert result.ret == pytest.ExitCode.OK, result.stdout.str()
 
 
 if __name__ == "__main__":
