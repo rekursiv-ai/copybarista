@@ -778,6 +778,7 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
         {
             "WORKFLOW_NAME": _yaml_str(f"loop→{settings.package_name}"),
             "JOB_NAME": _yaml_str(f"loop→{settings.package_name}"),
+            "CI_JOB_NAME": _yaml_str(f"loop→{settings.package_name} public CI"),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
@@ -792,20 +793,17 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "FORBIDDEN_PR_TEXT": _yaml_str(forbidden),
             "SYNC_USER_NAME": _yaml_str(settings.sync_user_name),
             "SYNC_USER_EMAIL": _yaml_str(settings.sync_user_email),
-            "SYNC_TOKEN_LOGIN": _yaml_str(settings.sync_token_login),
             "SYNC_EXPORT_SCRIPT": _sh(script_path),
             "SOURCE_ROOT": _sh(settings.source_root),
             "EXPORT_BRANCH_PREFIX": _sh(settings.export_prefix),
             "IMPORT_BRANCH_PREFIX": _sh(settings.import_prefix),
             "REPLAY_BOOTSTRAP_BASE_DEFAULT": replay_bootstrap_base_default,
             "REPLAY_BOOTSTRAP_BASE_COMMENT": replay_bootstrap_base_comment,
-            "PR_DEFAULT_TITLE": _sh(settings.pr_default_title),
-            "PR_DEFAULT_BODY": _sh(settings.pr_default_body),
             "PR_REPLAY_FLAGS": pr_replay_flags,
             "RELEASE_CHECK_ARG": release_check_arg,
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
-            **_sync_auth(settings, importing=False),
+            **_sync_auth(settings, importing=False),  # pragma: no mutate[truthiness]
         },
     )
 

@@ -2992,13 +2992,20 @@ def test_run_export_sync_removes_its_export_tree(
     assert list(scratch.iterdir()) == []
 
 
+@pytest.mark.parametrize("handoff", [False, True], ids=["inline", "handoff"])
 @pytest.mark.parametrize("pr_open", [True, False], ids=["pr", "no-pr"])
 def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     pr_open: bool,
+    handoff: bool,
 ) -> None:
-    """A no-op export (no PR) must not attempt auto-merge on a missing PR."""
+    """A no-op export (no PR) must not attempt auto-merge on a missing PR.
+
+    Given an output file, the export hands the merged commit to the job that
+    waits on public CI instead of waiting itself: waiting held the export's
+    concurrency slot, so the next push queued behind public CI (2026-11-20).
+    """
     public_dir = tmp_path / "public"
     source_dir = tmp_path / "source"
     public_dir.mkdir()
@@ -3040,8 +3047,13 @@ def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
         del request, pr_title
         merged.append("merge")
 
-    def fake_await_public_ci(*, request: ExportRequest) -> None:
+    def fake_merged_sha(*, request: ExportRequest) -> str:
         del request
+        merged.append("merged")
+        return "c0ffee"
+
+    def fake_await_ci(*, repo: str, sha: str, cwd: Path) -> None:
+        assert (repo, sha, cwd) == ("example/public", "c0ffee", public_dir)
         merged.append("public ci")
 
     monkeypatch.setattr(
@@ -3064,7 +3076,10 @@ def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
         "_enable_export_pr_auto_merge",
         fake_enable_auto_merge,
     )
-    monkeypatch.setattr(sync_export_pr, "_await_public_ci", fake_await_public_ci)
+    monkeypatch.setattr(sync_export_pr, "_merged_sha", fake_merged_sha)
+    monkeypatch.setattr(sync_export_pr, "_await_ci", fake_await_ci)
+    output = tmp_path / "github-output"
+    output.write_text("earlier=1\n", encoding="utf-8")
 
     sync_export_pr.run_export_sync(
         replace(
@@ -3073,11 +3088,40 @@ def test_run_export_sync_merges_then_waits_on_public_ci_only_with_a_pr(
             public_dir=public_dir,
             skip_source_validation=True,
             auto_merge=True,
+            merged_sha_output=output if handoff else None,
         ),
     )
 
-    # A PR merges, then the export waits on public CI; no PR, nothing to wait on.
-    assert merged == (["merge", "public ci"] if pr_open else [])
+    # A PR merges, then public CI on it is awaited here or handed off; no PR,
+    # nothing to wait on and nothing handed off.
+    waits = ["merge", "merged"] if handoff else ["merge", "merged", "public ci"]
+    assert merged == (waits if pr_open else [])
+    handed = "merged-sha=c0ffee\n" if pr_open and handoff else ""
+    assert output.read_text(encoding="utf-8") == f"earlier=1\n{handed}"
+
+
+def test_run_awaits_public_ci_alone_on_a_handed_off_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public CI job needs no checkout of either repository's tree."""
+    awaited: list[tuple[str, str, Path]] = []
+
+    def fake_await_ci(*, repo: str, sha: str, cwd: Path) -> None:
+        awaited.append((repo, sha, cwd))
+
+    def no_export(request: ExportRequest) -> None:
+        raise AssertionError(request)
+
+    monkeypatch.setattr(sync_export_pr, "_await_ci", fake_await_ci)
+    monkeypatch.setattr(sync_export_pr, "run_export_sync", no_export)
+
+    assert (
+        sync_export_pr.run(
+            ["--target-repo", "example/public", "--await-public-ci", "c0ffee"],
+        )
+        == 0
+    )
+    assert awaited == [("example/public", "c0ffee", Path())]
 
 
 def test_enable_auto_merge_falls_back_to_direct_merge_without_protection(
@@ -3525,6 +3569,15 @@ def _no_sleep(seconds: float) -> None:
 _MERGED: Final = '{"state": "MERGED", "mergeCommit": {"oid": "c0ffee"}}'
 
 
+def _await_merge_then_ci(request: ExportRequest) -> None:
+    """Wait for the export PR to merge, then for public CI on its merge commit."""
+    sync_export_pr._await_ci(
+        repo=request.target_repo,
+        sha=sync_export_pr._merged_sha(request=request),
+        cwd=request.public_dir,
+    )
+
+
 def test_the_export_waits_for_public_ci_on_what_it_merged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3544,7 +3597,7 @@ def test_the_export_waits_for_public_ci_on_what_it_merged(
         ],
     )
 
-    sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+    _await_merge_then_ci(_export_request(tmp_path))
 
     run_lists = [argv for argv in calls if argv[1] == "run"]
     assert {"c0ffee", "package-validation.yml", "example/public"} <= set(run_lists[0])
@@ -3572,7 +3625,7 @@ def test_the_export_fails_when_public_ci_does_not_pass(
     _public_ci(monkeypatch, prs=prs, runs=runs)
 
     with pytest.raises(SystemExit):
-        sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+        _await_merge_then_ci(_export_request(tmp_path))
 
     assert says in capsys.readouterr().out
 
@@ -3761,7 +3814,7 @@ def test_the_export_fails_when_public_ci_does_not_finish_in_time(
     monkeypatch.setattr(time, "sleep", sleeps.append)
 
     with pytest.raises(SystemExit):
-        sync_export_pr._await_public_ci(request=_export_request(tmp_path))
+        _await_merge_then_ci(_export_request(tmp_path))
 
     assert (
         "public CI on example/public did not finish in 45 minutes"
@@ -3957,16 +4010,20 @@ def test_await_upstream_exports_gives_up_after_its_deadline(
     )
 
 
-def test_the_upstream_wait_fits_the_export_job_beside_public_ci() -> None:
-    """Both waits and two minutes of export fit the job the template caps."""
+def test_each_wait_fits_the_job_the_template_caps() -> None:
+    """The export job holds the upstream and merge waits; the CI job, CI's."""
     template = (_CWD.parent / "templates" / "internal-to-external.yml.tmpl").read_text(
         encoding="utf-8",
     )
-    job_sec = 60 * int(template.split("timeout-minutes: ", 1)[1].split()[0])
+    export_sec, ci_sec = (
+        60 * int(part.split()[0]) for part in template.split("timeout-minutes: ")[1:]
+    )
+    # The merge wait shares the public CI cap (``_wait_public_ci``).
     waits_sec = (
         sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC + sync_export_pr.PUBLIC_CI_WAIT_SEC
     )
-    assert waits_sec + 120 <= job_sec
+    assert waits_sec + 120 <= export_sec
+    assert ci_sec >= sync_export_pr.PUBLIC_CI_WAIT_SEC + 120
     # The slowest upstream export seen (codedoctor) published 23 minutes in.
     assert sync_export_pr.UPSTREAM_EXPORT_WAIT_SEC >= 23 * 60
 
@@ -4795,6 +4852,8 @@ def test_parser_defaults_without_its_environment(
         "workflow": "manual",
         "runner_temp": str(sync_export_pr.DEFAULT_RUNNER_TEMP),
         "release_check_script": "",
+        "merged_sha_output": "",
+        "await_public_ci": "",
     }
 
 
@@ -4839,6 +4898,11 @@ def test_a_bare_auto_merge_flag_turns_it_on(monkeypatch: pytest.MonkeyPatch) -> 
         ("--dry-run", "Run against a temporary public checkout and"),
         ("--skip-source-validation", "Skip source checkout lint/type/test"),
         ("--release-check-script RELEASE_CHECK_SCRIPT", "Optional project-relative"),
+        (
+            "--merged-sha-output MERGED_SHA_OUTPUT",
+            "Append the merged export commit to this",
+        ),
+        ("--await-public-ci SHA", "Only wait for --target-repo's public CI"),
     ],
 )
 def test_parser_help_explains_each_documented_flag(
@@ -4904,7 +4968,7 @@ def test_run_builds_the_request_from_every_flag(
             *("--publish-source-rev", "--forbidden-pr-text", "zork,quux"),
             *("--auto-merge", "true", "--refresh-public-lockfile"),
             *("--skip-source-validation", "--runner-temp", str(tmp_path)),
-            "--dry-run",
+            *("--merged-sha-output", "out", "--dry-run"),
         ],
     )
 
@@ -4939,6 +5003,7 @@ def test_run_builds_the_request_from_every_flag(
             runner_temp=tmp_path,
             release_check_script=None,
             dry_run=True,
+            merged_sha_output=Path("out"),
             import_branch_prefix="p/import/",
             source_repo="o/src",
         ),
@@ -4996,64 +5061,148 @@ def test_export_pr_text_requires_some_text(
         assert capsys.readouterr().err == "--pr-body is required.\n"
 
 
-def test_a_validated_export_runs_every_step_in_order(
+@pytest.mark.parametrize(
+    ("validate", "dry_run"),
+    [(True, True), (True, False), (False, False)],
+    ids=["validated-dry", "validated", "unvalidated"],
+)
+def test_an_export_runs_every_step_in_order_on_its_inputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    validate: bool,
+    dry_run: bool,
 ) -> None:
-    """Lint, export with its leak checks, types and tests, release check, relock."""
-    calls: list[str] = []
+    """Lint, export with its leak checks, types and tests, release check, relock, PR."""
+    calls: list[tuple[str, dict[str, object]]] = []
+    plan = _merged_pr_plan()
 
-    def step(name: str) -> Callable[..., None]:
-        def record(**_: object) -> None:
-            calls.append(name)
+    def step(name: str, result: object = None) -> Callable[..., object]:
+        def record(**kwargs: object) -> object:
+            calls.append((name, kwargs))
+            return result
 
         return record
 
-    def plan(**_: object) -> sync_export_pr.PrReplayPlan:
-        return _merged_pr_plan()
-
-    def workflows(
-        *,
-        pyproject: Path,
-        source_dir: Path,
-        target_repo: str,
-    ) -> tuple[str, ...]:
-        del pyproject, source_dir, target_repo
-        return ("loop-to-sibling.yml",)
-
-    for name in (
-        "_preleakcheck_validation",
-        "_export_public_tree",
-        "_postleakcheck_validation",
-        "_check_release_tree",
-        "_await_upstream_exports",
-        "_refresh_public_lockfile",
+    for name, result in (
+        ("_resolve_pr_replay_plan", plan),
+        ("_preleakcheck_validation", None),
+        ("_export_public_tree", None),
+        ("_postleakcheck_validation", None),
+        ("_check_release_tree", None),
+        ("_render_pr_replay_plan_body", plan),
+        ("_upstream_export_workflows", ("loop-to-sibling.yml",)),
+        ("_await_upstream_exports", None),
+        ("_refresh_public_lockfile", None),
+        ("_open_or_update_export_pr", True),
+        ("_enable_export_pr_auto_merge", None),
+        ("_merged_sha", "c0ffee"),
     ):
-        monkeypatch.setattr(sync_export_pr, name, step(name))
-    monkeypatch.setattr(sync_export_pr, "_resolve_pr_replay_plan", plan)
-    monkeypatch.setattr(sync_export_pr, "_render_pr_replay_plan_body", plan)
-    monkeypatch.setattr(sync_export_pr, "_upstream_export_workflows", workflows)
-    (tmp_path / "public").mkdir()
-
-    sync_export_pr._run_export_sync(
-        replace(
-            _export_request(tmp_path),
-            public_dir=tmp_path / "public",
-            release_check_script=Path("scripts/check.py"),
-            refresh_public_lockfile=True,
-            source_repo="example/source",
-            dry_run=True,
-        ),
+        monkeypatch.setattr(sync_export_pr, name, step(name, result))
+    public = tmp_path / "public"
+    public.mkdir()
+    request = replace(
+        _export_request(tmp_path),
+        public_dir=public,
+        release_check_script=Path("scripts/check.py"),
+        refresh_public_lockfile=True,
+        source_repo="example/source",
+        skip_source_validation=not validate,
+        auto_merge=True,
+        dry_run=dry_run,
+        merged_sha_output=tmp_path / "out",
     )
 
-    assert calls == [
-        "_preleakcheck_validation",
+    sync_export_pr._run_export_sync(request)
+
+    export_dir = dict(calls)["_export_public_tree"]["export_dir"]
+    exported = (
         "_export_public_tree",
-        "_postleakcheck_validation",
-        "_check_release_tree",
-        "_await_upstream_exports",
-        "_refresh_public_lockfile",
+        {
+            "project": tmp_path,
+            "source_dir": tmp_path,
+            "export_dir": export_dir,
+            "manifest": tmp_path / "copybarista-manifest.json",
+        },
+    )
+    assert calls == [
+        ("_resolve_pr_replay_plan", {"request": request, "pr_template": ""}),
+        *(
+            [
+                ("_preleakcheck_validation", {"project": tmp_path}),
+                exported,
+                ("_postleakcheck_validation", {"project": tmp_path}),
+            ]
+            if validate
+            else [exported]
+        ),
+        (
+            "_check_release_tree",
+            {
+                "project": export_dir,
+                "root": export_dir,
+                "script": Path("scripts/check.py"),
+            },
+        ),
+        (
+            "_render_pr_replay_plan_body",
+            {"request": request, "pr_plan": plan, "pr_template": ""},
+        ),
+        (
+            "_upstream_export_workflows",
+            {
+                "pyproject": public / "pyproject.toml",
+                "source_dir": tmp_path,
+                "target_repo": "example/public",
+            },
+        ),
+        (
+            "_await_upstream_exports",
+            {
+                "workflows": ("loop-to-sibling.yml",),
+                "source_repo": "example/source",
+                "source_sha": "abc123",
+                "cwd": tmp_path,
+            },
+        ),
+        (
+            "_refresh_public_lockfile",
+            {"public_dir": public, "seed": tmp_path / "uv.lock"},
+        ),
+        *(
+            []
+            if dry_run
+            else [
+                ("_open_or_update_export_pr", {"request": request, "pr_plan": plan}),
+                (
+                    "_enable_export_pr_auto_merge",
+                    {"request": request, "pr_title": "Public title"},
+                ),
+                ("_merged_sha", {"request": request}),
+            ]
+        ),
     ]
+    assert capsys.readouterr().out.splitlines() == [
+        "Resolving export PR replay state.",
+        *(
+            [
+                "Validating source checkout (lint/format).",
+                "Exporting public tree (runs leak checks).",
+                "Validating source checkout (types/tests).",
+            ]
+            if validate
+            else ["Skipping source checkout validation.", "Exporting public tree."]
+        ),
+        "Checking exported release tree.",
+        "Replacing public checkout contents.",
+        "Refreshing public lockfile.",
+        (
+            "Dry run complete; skipped public checkout and GitHub mutations."
+            if dry_run
+            else "Opening or updating export PR."
+        ),
+    ]
+    assert (tmp_path / "out").exists() is not dry_run
 
 
 def test_project_discovery_reads_the_release_check_from_settings(

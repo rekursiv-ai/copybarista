@@ -29,17 +29,21 @@ permissions:
   # The export waits for a sibling export of the same commit before locking.
   actions: read
 
-concurrency:
-  group: copybarista-export-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   export-pr:
     name: @@JOB_NAME@@
     runs-on: ubuntu-latest
+    # Only the export is serialized: public CI waits in its own job, so the next
+    # push exports while this one's CI runs. On the workflow, the slot was held
+    # through CI and a queued export waited it out (2026-11-20).
+    concurrency:
+      group: copybarista-export-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
     # Bounded so a hung step fails in minutes, not at the 6h default. It covers
-    # the export and then public CI on what it merged, itself capped at 45.
+    # the upstream wait, the export, and the merge, itself capped at 45.
     timeout-minutes: 75
+    outputs:
+      merged-sha: ${{ steps.export.outputs.merged-sha }}
     env:
 @@EXPORT_JOB_TOKEN_ENV@@      COPYBARISTA_ACTIONS_TOKEN: ${{ github.token }}
       TARGET_REPO: @@PUBLIC_REPO@@
@@ -85,6 +89,7 @@ jobs:
           fetch-depth: 0
       # No system packages: the export runs no package checks (public CI does).
       - name: Open export PR
+        id: export
         env:
 @@EXPORT_STEP_TOKEN_ENV@@          PYTHONPATH: source
         run: |
@@ -103,4 +108,40 @@ jobs:
             --sync-label "$SYNC_LABEL" \
 @@PR_REPLAY_FLAGS@@ \
             --forbidden-pr-text "$FORBIDDEN_PR_TEXT" \
-@@RELEASE_CHECK_ARG@@@@SKIP_SOURCE_VALIDATION_ARG@@            --auto-merge="$COPYBARISTA_AUTO_MERGE"
+@@RELEASE_CHECK_ARG@@@@SKIP_SOURCE_VALIDATION_ARG@@            --merged-sha-output "$GITHUB_OUTPUT" \
+            --auto-merge="$COPYBARISTA_AUTO_MERGE"
+
+  public-ci:
+    name: @@CI_JOB_NAME@@
+    needs: export-pr
+    # Set only when the export merged a PR: no merge, no new public commit to check.
+    if: needs.export-pr.outputs.merged-sha != ''
+    runs-on: ubuntu-latest
+    # Public CI's own job cap is 45 minutes.
+    timeout-minutes: 50
+    env:
+@@EXPORT_JOB_TOKEN_ENV@@      TARGET_REPO: @@PUBLIC_REPO@@
+@@SYNC_LOGIN_ENV@@
+    steps:
+@@SYNC_AUTH_STEPS@@      - uses: @@USES_CHECKOUT@@
+        with:
+          path: source
+      - uses: @@USES_SETUP_PYTHON@@
+        with:
+          python-version: @@PYTHON_VERSION@@
+      - uses: @@USES_SETUP_UV@@
+        with:
+          working-directory: source
+          python-version: @@PYTHON_VERSION@@
+          enable-cache: false
+      # Merging is not landing: the export once went green on merging alone, so
+      # sagent's exports failed public CI for a day with every export run green.
+      - name: Await public CI
+        env:
+@@EXPORT_STEP_TOKEN_ENV@@          PYTHONPATH: source
+          MERGED_SHA: ${{ needs.export-pr.outputs.merged-sha }}
+        run: |
+          uv --quiet run --no-project --with pyyaml --with rignore --with ruff --with tomlkit --with treekle \
+            python3 \
+            @@SYNC_EXPORT_SCRIPT@@ \
+            --target-repo "$TARGET_REPO" --await-public-ci "$MERGED_SHA"
