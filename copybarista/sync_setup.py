@@ -44,6 +44,9 @@ CONTROL_EXCLUDES: Final = (
     "copybarista.sync.toml",
 )
 NPM_WORKFLOW_FILENAME: Final = "publish-npm.yml"
+# Ends the export workflow's public CI job name; a sibling's export waits for every
+# other job of the run, so renaming it would hold siblings through CI again.
+PUBLIC_CI_JOB_SUFFIX: Final = " public CI"
 CI_COMMANDS: Final = (
     # Compiled here, not on first import: pytest's `error` filter otherwise turns a
     # dependency's SyntaxWarning (torchao 0.18's docstring) into a collection error.
@@ -778,7 +781,9 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
         {
             "WORKFLOW_NAME": _yaml_str(f"loop→{settings.package_name}"),
             "JOB_NAME": _yaml_str(f"loop→{settings.package_name}"),
-            "CI_JOB_NAME": _yaml_str(f"loop→{settings.package_name} public CI"),
+            "CI_JOB_NAME": _yaml_str(
+                f"loop→{settings.package_name}{PUBLIC_CI_JOB_SUFFIX}",
+            ),
             "SOURCE_ROOT_PATH": _yaml_str(f"{settings.source_root}/**"),
             "EXPORT_WATCH_PATHS": export_watch_paths,
             "EXPORT_SCRIPT_PATH": _yaml_str(
@@ -1641,31 +1646,40 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
     """Render credentials and identity checks for one direction of a sync pair."""
     if settings.sync_app_slug:
         credential_expression = "${{ steps.sync-app-token.outputs.token }}"
+        app = {
+            "AUTH_GUARD": (
+                "        if: steps.settings.outputs.enabled == 'true'\n"
+                if importing
+                else ""
+            ),
+            "APP_OWNER": _yaml_str(
+                (settings.source_repo if importing else settings.public_repo).split(
+                    "/",
+                    1,  # pragma: no mutate -- [0] is alike for any split limit.
+                )[0],
+            ),
+            "APP_REPOSITORY": (
+                "${{ env.TARGET_REPO }}"
+                if importing
+                else _yaml_str(settings.public_repo)
+            ),
+            "SYNC_APP_SLUG": _yaml_str(settings.sync_app_slug),
+        }
         steps = _render_template(
             "sync-app-auth.yml.tmpl",
-            {
-                "AUTH_GUARD": (
-                    "        if: steps.settings.outputs.enabled == 'true'\n"
-                    if importing
-                    else ""
-                ),
-                "APP_OWNER": _yaml_str(
-                    (settings.source_repo if importing else settings.public_repo).split(
-                        "/",
-                        1,  # pragma: no mutate -- [0] is alike for any split limit.
-                    )[0],
-                ),
-                "APP_REPOSITORY": (
-                    "${{ env.TARGET_REPO }}"
-                    if importing
-                    else _yaml_str(settings.public_repo)
-                ),
-                # The export reads public CI on what it merges; the import reads none.
-                "APP_ACTIONS_PERMISSION": (
-                    "" if importing else "          permission-actions: read\n"
-                ),
-                "SYNC_APP_SLUG": _yaml_str(settings.sync_app_slug),
+            app
+            | {
+                "APP_PERMISSIONS": "          permission-contents: write\n"
+                "          permission-pull-requests: write\n"
+                "          permission-workflows: write\n",
             },
+            include_banner=False,  # pragma: no mutate -- None reads as False.
+        )
+        # The export's public CI job only reads runs: a write token there could
+        # push to the public repository from a job that has no reason to.
+        ci_steps = _render_template(
+            "sync-app-auth.yml.tmpl",
+            app | {"APP_PERMISSIONS": "          permission-actions: read\n"},
             include_banner=False,  # pragma: no mutate -- None reads as False.
         )
     else:
@@ -1683,9 +1697,12 @@ def _sync_auth(settings: SyncSettings, *, importing: bool) -> dict[str, str]:
                 include_banner=False,  # pragma: no mutate -- None reads as False.
             )
         )
+        # A personal token carries its own scopes; the CI job checks it the same way.
+        ci_steps = steps
     return {
         "SYNC_TOKEN": credential_expression,
         "SYNC_AUTH_STEPS": steps,
+        "SYNC_CI_AUTH_STEPS": ci_steps,
         "EXPORT_JOB_TOKEN_ENV": (
             ""
             if settings.sync_app_slug

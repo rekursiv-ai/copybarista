@@ -3830,7 +3830,13 @@ def test_await_upstream_exports_waits_until_each_run_completes(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The lock waits for a sibling export of the same commit to publish."""
-    statuses = iter(['[{"status": "in_progress"}]', '[{"status": "completed"}]'])
+    statuses = iter(
+        [
+            '[{"databaseId": 7, "status": "in_progress"}]',
+            '{"jobs": [{"name": "loop→typings", "status": "in_progress"}]}',
+            '[{"databaseId": 7, "status": "completed"}]',
+        ],
+    )
     calls: list[tuple[list[str], dict[str, object]]] = []
     sleeps: list[float] = []
 
@@ -3856,18 +3862,68 @@ def test_await_upstream_exports_waits_until_each_run_completes(
         "--commit",
         "8b466d40b6aa1234",
         "--json",
-        "status",
+        "databaseId,status",
     ]
     assert {key: kwargs[key] for key in ("cwd", "capture", "check")} == {
         "cwd": Path("/src"),
         "capture": True,
         "check": False,
     }
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert sleeps == [sync_export_pr.UPSTREAM_EXPORT_POLL_SEC]
     assert capsys.readouterr().out == (
         "Waiting for loop-to-typings.yml on 8b466d40b6aa to publish.\n"
     )
+
+
+def test_await_upstream_exports_stops_once_the_sibling_has_exported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sibling publishes when its export job ends, not its public CI job.
+
+    Waiting for the whole run held every tracking export through the sibling's
+    public CI too (2026-11-20).
+    """
+    statuses = iter(
+        [
+            '[{"databaseId": 7, "status": "in_progress"}]',
+            (
+                '{"jobs": [{"name": "loop→typings", "status": "completed"},'
+                ' {"name": "loop→typings public CI", "status": "in_progress"}]}'
+            ),
+        ],
+    )
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(sync_export_pr, "_run_gh", partial(_answered, calls, statuses))
+    monkeypatch.setattr(time, "sleep", _no_sleep_allowed)
+
+    _await_upstream_exports(
+        workflows=("loop-to-typings.yml",),
+        source_repo="example/source",
+        source_sha="8b466d40b6aa1234",
+        cwd=Path("/src"),
+    )
+
+    argv, kwargs = calls[1]
+    assert argv == [
+        "gh",
+        "run",
+        "view",
+        "7",
+        "--repo",
+        "example/source",
+        "--json",
+        "jobs",
+    ]
+    assert {key: kwargs[key] for key in ("cwd", "capture")} == {
+        "cwd": Path("/src"),
+        "capture": True,
+    }
+    assert from_plain(kwargs["env"], dict[str, str]) == sync_export_pr._source_gh_env()
+
+
+def _no_sleep_allowed(seconds: float) -> None:
+    raise AssertionError(seconds)
 
 
 def test_await_upstream_exports_checks_every_workflow(
@@ -3878,7 +3934,11 @@ def test_await_upstream_exports_checks_every_workflow(
 
     def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         workflows.append(argv[argv.index("--workflow") + 1])
-        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "completed"}]')
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"databaseId": 7, "status": "completed"}]',
+        )
 
     monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
 
@@ -3912,6 +3972,24 @@ def test_await_upstream_exports_names_the_workflow_whose_runs_are_not_json(
         )
 
 
+def test_await_upstream_exports_names_the_run_whose_jobs_are_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses = iter(['[{"databaseId": 7, "status": "in_progress"}]', "not json"])
+    monkeypatch.setattr(sync_export_pr, "_run_gh", partial(_answered, [], statuses))
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^run 7 jobs was not valid JSON\.$",
+    ):
+        _await_upstream_exports(
+            workflows=("loop-to-typings.yml",),
+            source_repo="example/source",
+            source_sha="8b466d40b6",
+            cwd=Path("/src"),
+        )
+
+
 def test_await_upstream_exports_lists_runs_with_the_workflow_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3920,7 +3998,11 @@ def test_await_upstream_exports_lists_runs_with_the_workflow_token(
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         tokens.append(from_plain(kwargs["env"], dict[str, str])["GH_TOKEN"])
-        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "completed"}]')
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"databaseId": 7, "status": "completed"}]',
+        )
 
     monkeypatch.setattr(sync_export_pr, "_run", fake_run)
     monkeypatch.setenv("GH_TOKEN", "sync-token")
@@ -3988,7 +4070,13 @@ def test_await_upstream_exports_gives_up_after_its_deadline(
     sleeps: list[float] = []
 
     def fake_run_gh(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(argv, 0, stdout='[{"status": "queued"}]')
+        listed = '[{"databaseId": 7, "status": "queued"}]'
+        viewed = '{"jobs": [{"name": "loop→treekle", "status": "queued"}]}'
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=viewed if argv[2] == "view" else listed,
+        )
 
     monkeypatch.setattr(sync_export_pr, "_run_gh", fake_run_gh)
     monkeypatch.setattr(time, "sleep", sleeps.append)

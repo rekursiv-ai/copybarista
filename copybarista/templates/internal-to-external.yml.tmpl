@@ -120,15 +120,13 @@ jobs:
     # Public CI's own job cap is 45 minutes.
     timeout-minutes: 50
     env:
-@@EXPORT_JOB_TOKEN_ENV@@      TARGET_REPO: @@PUBLIC_REPO@@
-@@SYNC_LOGIN_ENV@@
+@@EXPORT_JOB_TOKEN_ENV@@@@SYNC_LOGIN_ENV@@      TARGET_REPO: @@PUBLIC_REPO@@
+
     steps:
-@@SYNC_AUTH_STEPS@@      - uses: @@USES_CHECKOUT@@
+@@SYNC_CI_AUTH_STEPS@@      - uses: @@USES_CHECKOUT@@
         with:
           path: source
-      - uses: @@USES_SETUP_PYTHON@@
-        with:
-          python-version: @@PYTHON_VERSION@@
+      # No setup-python: setup-uv installs the interpreter it names.
       - uses: @@USES_SETUP_UV@@
         with:
           working-directory: source

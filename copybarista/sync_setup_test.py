@@ -431,12 +431,16 @@ def test_setup_uv_runs_the_python_setup_python_installed(
     render: Callable[[], str],
 ):
     steps = _setup_steps(render())
-    pairs = list(zip(steps[::2], steps[1::2], strict=True))
+    installed = [version for action, version in steps if "setup-python" in action]
 
-    assert pairs
-    for (python, version), (uv, uv_version) in pairs:
-        assert (python, uv) == ("actions/setup-python", "astral-sh/setup-uv")
-        assert uv_version == version
+    assert steps[:2] == [
+        ("actions/setup-python", installed[0]),
+        ("astral-sh/setup-uv", installed[0]),
+    ]
+    # Each later setup-uv runs a version setup-python installed, or installs it.
+    for action, version in steps:
+        assert action in {"actions/setup-python", "astral-sh/setup-uv"}
+        assert version in installed
 
 
 def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
@@ -1583,10 +1587,20 @@ def test_the_export_frees_its_slot_before_public_ci(tmp_path: Path, app: bool):
     assert exporting[-1]["id"] == "export"
     assert '--merged-sha-output "$GITHUB_OUTPUT"' in str(exporting[-1]["run"])
     awaiting = _job_steps(text, job="public-ci")
-    # The CI job reads the public repository with the same verified credential.
+    # The CI job reads the public repository with the same verified credential,
+    # an App token scoped to reading runs alone.
     assert [step.get("name") for step in awaiting][:2] == [
         step.get("name") for step in exporting
     ][:2]
+    minted = [step for step in awaiting if step.get("id") == "sync-app-token"]
+    assert [
+        {
+            key: value
+            for key, value in from_plain(step["with"], dict[str, object]).items()
+            if "permission" in key
+        }
+        for step in minted
+    ] == ([{"permission-actions": "read"}] if app else [])
     assert from_plain(awaiting[-1]["env"], dict[str, str])["MERGED_SHA"] == (
         "${{ needs.export-pr.outputs.merged-sha }}"
     )
@@ -1779,8 +1793,8 @@ def test_sync_workflows_name_each_template_as_shipped(
 @pytest.mark.parametrize(
     ("render", "job", "destination", "actions"),
     [
-        # The export reads public CI on the commit it merged; the import reads none.
-        (_export_workflow, "export-pr", "example/configgle", "read"),
+        # The export's public CI job reads runs; the export itself reads none.
+        (_export_workflow, "export-pr", "example/configgle", None),
         (import_workflow, "import-change", "${{ env.TARGET_REPO }}", None),
     ],
 )
