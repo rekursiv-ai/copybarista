@@ -431,12 +431,12 @@ def test_setup_uv_runs_the_python_setup_python_installed(
     render: Callable[[], str],
 ):
     steps = _setup_steps(render())
+    pairs = list(zip(steps[::2], steps[1::2], strict=True))
 
-    assert [action for action, _ in steps] == [
-        "actions/setup-python",
-        "astral-sh/setup-uv",
-    ]
-    assert steps[1][1] == steps[0][1]
+    assert pairs
+    for (python, version), (uv, uv_version) in pairs:
+        assert (python, uv) == ("actions/setup-python", "astral-sh/setup-uv")
+        assert uv_version == version
 
 
 def test_check_sync_config_rejects_workflow_drift(tmp_path: Path):
@@ -1549,6 +1549,81 @@ def test_export_workflow_uses_metadata_without_package_specific_env_names():
     assert "--pr-default-title" in workflow
     assert "--pr-default-body" in workflow
     assert "--require-pr-metadata" not in workflow
+
+
+@pytest.mark.parametrize("app", [False, True], ids=["personal", "app"])
+def test_the_export_frees_its_slot_before_public_ci(tmp_path: Path, app: bool):
+    """A queued export waited out the previous one's public CI (2026-11-20).
+
+    Two pushes seven minutes apart held the second treekle export behind a run
+    that had merged and was only polling public CI, so a release waited for both.
+    """
+    sync_actor = "rekursiv-bot"
+    settings = (
+        _app_settings(tmp_path) if app else _settings(sync_token_login=sync_actor)
+    )
+    text = export_workflow(settings, inputs=())
+    workflow = from_plain(yaml.safe_load(text), dict[object, object])
+    jobs = from_plain(workflow["jobs"], dict[str, dict[str, object]])
+    export, ci = jobs["export-pr"], jobs["public-ci"]
+
+    assert "concurrency" not in workflow
+    assert "concurrency" not in ci
+    assert export["concurrency"] == {
+        "group": "copybarista-export-${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }
+    assert export["outputs"] == {
+        "merged-sha": "${{ steps.export.outputs.merged-sha }}",
+    }
+    assert ci["name"] == "loop→configgle public CI"
+    assert ci["needs"] == "export-pr"
+    assert ci["if"] == "needs.export-pr.outputs.merged-sha != ''"
+    exporting = _job_steps(text, job="export-pr")
+    assert exporting[-1]["id"] == "export"
+    assert '--merged-sha-output "$GITHUB_OUTPUT"' in str(exporting[-1]["run"])
+    awaiting = _job_steps(text, job="public-ci")
+    # The CI job reads the public repository with the same verified credential.
+    assert [step.get("name") for step in awaiting][:2] == [
+        step.get("name") for step in exporting
+    ][:2]
+    assert from_plain(awaiting[-1]["env"], dict[str, str])["MERGED_SHA"] == (
+        "${{ needs.export-pr.outputs.merged-sha }}"
+    )
+    assert str(awaiting[-1]["run"]).split("\\\n")[-1].split() == [
+        "--target-repo",
+        '"$TARGET_REPO"',
+        "--await-public-ci",
+        '"$MERGED_SHA"',
+    ]
+
+
+def test_export_workflow_renders_each_setting_where_the_export_reads_it():
+    """Each setting lands on the line the export reads; an unset one renders nothing."""
+    plain = export_workflow(_settings(), inputs=())
+    full = export_workflow(
+        _settings(
+            forbidden_pr_text=("loop", "monorepo"),
+            export_watch_paths=("# Why: shared.", "shared/**"),
+            replay_bootstrap_base_comment=("First.", "Second."),
+        ),
+        inputs=(),
+    )
+    run = _step_run(plain, job="export-pr", name="Open export PR")
+
+    assert "--project-path packages/configgle \\\n" in run
+    assert "--branch-prefix configgle/export/ \\\n" in run
+    assert "--import-branch-prefix configgle/import/ \\\n" in run
+    assert "--release-check-script" not in plain
+    assert "--skip-source-validation" not in plain
+    assert (
+        "COPYBARISTA_REPLAY_BOOTSTRAP_BASE: ${{ inputs.replay_bootstrap_base }}\n"
+        in plain
+    )
+    assert 'FORBIDDEN_PR_TEXT: "loop,monorepo"\n' in full
+    assert '      # Why: shared.\n      - "shared/**"\n' in full
+    assert "      # First.\n      # Second.\n      COPYBARISTA_REPLAY" in full
+    assert {version for _, version in _setup_steps(plain)} == {"3.12"}
 
 
 def test_export_workflow_passes_pr_replay_flags():

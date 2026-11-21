@@ -99,6 +99,9 @@ def run(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _apply_project_discovery(argv)
     flags = cast(_Flags, _parser().parse_args(argv))
+    if flags.await_public_ci:
+        _await_ci(repo=flags.target_repo, sha=flags.await_public_ci, cwd=Path())
+        return 0
     if not flags.project_path:
         _parser().error("--project-path is required")
     forbidden_pr_text = _split_forbidden_text(list(flags.forbidden_pr_text))
@@ -150,6 +153,9 @@ def run(argv: list[str] | None = None) -> int:
         if flags.release_check_script
         else None,
         dry_run=flags.dry_run,
+        merged_sha_output=Path(flags.merged_sha_output)
+        if flags.merged_sha_output
+        else None,
     )
     try:
         run_export_sync(request)
@@ -197,6 +203,7 @@ class ExportRequest:
     runner_temp: Path
     release_check_script: Path | None
     dry_run: bool
+    merged_sha_output: Path | None = None
     import_branch_prefix: str = ""
     source_repo: str = ""
 
@@ -793,9 +800,20 @@ def _sync_through(request: ExportRequest, *, export_dir: Path) -> None:
         return
     _log("Opening or updating export PR.")
     pr_open = _open_or_update_export_pr(request=request, pr_plan=pr_plan)
-    if request.auto_merge and pr_open:
-        _enable_export_pr_auto_merge(request=request, pr_title=pr_plan.state.title)
-        _await_public_ci(request=request)
+    if not (request.auto_merge and pr_open):
+        return
+    _enable_export_pr_auto_merge(request=request, pr_title=pr_plan.state.title)
+    merged = _merged_sha(request=request)
+    # Waiting on public CI here held the export's concurrency slot, so the next push's
+    # export queued behind CI (2026-11-20). The workflow's CI job waits instead.
+    if request.merged_sha_output:
+        with request.merged_sha_output.open("ab") as output:
+            output.write(f"merged-sha={merged}\n".encode())
+        return
+    # Merging is not landing: public CI runs on the merged commit, and the export used
+    # to exit green before it did, so sagent's exports failed public CI for a day with
+    # every export run green. Waiting makes the export's status public CI's.
+    _await_ci(repo=request.target_repo, sha=merged, cwd=request.public_dir)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -953,6 +971,20 @@ def _parser() -> argparse.ArgumentParser:
         "--release-check-script",
         default=os.environ.get("COPYBARISTA_RELEASE_CHECK_SCRIPT", ""),
         help="Optional project-relative release-tree checker script.",
+    )
+    parser.add_argument(
+        "--merged-sha-output",
+        default="",
+        help=(
+            "Append the merged export commit to this GitHub Actions output file as "
+            "`merged-sha`, leaving public CI on it to --await-public-ci."
+        ),
+    )
+    parser.add_argument(
+        "--await-public-ci",
+        default="",
+        metavar="SHA",
+        help="Only wait for --target-repo's public CI on SHA; export nothing.",
     )
     return parser
 
@@ -1995,18 +2027,6 @@ def _enable_export_pr_auto_merge(*, request: ExportRequest, pr_title: str) -> No
         return
     _write_process_output(result)
     raise SystemExit(result.returncode)
-
-
-# Merging is not landing: public CI runs on the merged commit, and the export used to
-# exit green before it did, so sagent's exports failed public CI for a day with every
-# export run green. Waiting here makes the export's status public CI's.
-def _await_public_ci(*, request: ExportRequest) -> None:
-    """Wait for the export PR to merge and public CI on it to pass; fail otherwise."""
-    _await_ci(
-        repo=request.target_repo,
-        sha=_merged_sha(request=request),
-        cwd=request.public_dir,
-    )
 
 
 def _merged_sha(*, request: ExportRequest) -> str:
@@ -3069,6 +3089,8 @@ class _Flags(Protocol):
     workflow: str
     runner_temp: str
     release_check_script: str
+    merged_sha_output: str
+    await_public_ci: str
 
 
 if __name__ == "__main__":
