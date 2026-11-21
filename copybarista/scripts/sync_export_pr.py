@@ -43,6 +43,7 @@ from copybarista.scripts.sync_import_change import (
     validated_generated_branch,
 )
 from copybarista.sync_setup import (
+    PUBLIC_CI_JOB_SUFFIX,
     SyncSettings,
     export_workflow_filename,
     load_sync_settings,
@@ -1293,7 +1294,7 @@ def _await_upstream_exports(
                     "--commit",
                     source_sha,
                     "--json",
-                    "status",
+                    "databaseId,status",
                 ],
                 cwd=cwd,
                 capture=True,
@@ -1308,9 +1309,13 @@ def _await_upstream_exports(
                 return
             runs = from_plain(
                 _json_from_gh(result.stdout, context=f"{workflow} runs"),
-                list[dict[str, object]],
+                list[_UpstreamRun],
             )
-            if all(run.get("status") == "completed" for run in runs):
+            if all(
+                run["status"] == "completed"
+                or _exported(run["databaseId"], source_repo=source_repo, cwd=cwd)
+                for run in runs
+            ):
                 break
             _log(f"Waiting for {workflow} on {source_sha[:12]} to publish.")
             time.sleep(
@@ -1321,6 +1326,38 @@ def _await_upstream_exports(
             # Silent, the stale lock surfaced only as the public CI failures it caused.
             _log(f"Gave up waiting for {workflow}; locking its previous publish.")
             return
+
+
+class _UpstreamRun(TypedDict):
+    databaseId: int
+    status: str
+
+
+class _Job(TypedDict):
+    name: str
+    status: str
+
+
+class _Jobs(TypedDict):
+    jobs: list[_Job]
+
+
+# A run publishes when its export job ends; its public CI job runs on after. Waiting
+# for the whole run held each tracking export through the sibling's CI (2026-11-20).
+def _exported(run: int, *, source_repo: str, cwd: Path) -> bool:
+    """Return whether every job of sibling export ``run`` but public CI has ended."""
+    viewed = _run_gh(
+        ["gh", "run", "view", str(run), "--repo", source_repo, "--json", "jobs"],
+        cwd=cwd,
+        capture=True,
+        env=_source_gh_env(),
+    )
+    jobs = from_plain(_json_from_gh(viewed.stdout, context=f"run {run} jobs"), _Jobs)
+    return all(
+        job["status"] == "completed"
+        for job in jobs["jobs"]
+        if not job["name"].endswith(PUBLIC_CI_JOB_SUFFIX)
+    )
 
 
 def _run_basedpyright(*, project: Path, targets: tuple[str, ...]) -> None:
