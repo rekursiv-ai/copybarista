@@ -1149,28 +1149,32 @@ def _clone_public_checkout_for_dry_run(*, public_dir: Path) -> Path:
     """Clone the public checkout locally for strict dry-run mutations."""
     dry_public_dir = Path(tempfile.mkdtemp(prefix="copybarista-dry-public-"))
     _delete_path(dry_public_dir)
-    if _is_git_checkout(public_dir):
-        _run(["git", "clone", "--no-local", str(public_dir), str(dry_public_dir)])
+    try:
+        if _is_git_checkout(public_dir):
+            _run(["git", "clone", "--no-local", str(public_dir), str(dry_public_dir)])
+            return dry_public_dir
+        _log(f"Dry run: public checkout {public_dir} unavailable; using empty repo.")
+        dry_public_dir.mkdir(parents=True)
+        _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=dry_public_dir)
+        _run(
+            [
+                "git",
+                "-c",
+                "user.name=copybarista-dry-run",
+                "-c",
+                "user.email=copybarista@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+            cwd=dry_public_dir,
+        )
         return dry_public_dir
-    _log(f"Dry run: public checkout {public_dir} unavailable; using empty repo.")
-    dry_public_dir.mkdir(parents=True)
-    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=dry_public_dir)
-    _run(
-        [
-            "git",
-            "-c",
-            "user.name=copybarista-dry-run",
-            "-c",
-            "user.email=copybarista@example.com",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-        cwd=dry_public_dir,
-    )
-    return dry_public_dir
+    except BaseException:
+        shutil.rmtree(dry_public_dir, ignore_errors=True)
+        raise
 
 
 def _is_git_checkout(path: Path) -> bool:

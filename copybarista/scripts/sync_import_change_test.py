@@ -1167,6 +1167,7 @@ def test_cli_refresh_preserves_public_trees_and_relocks_the_validation_checkout(
     report = tmp_path / "reports" / "nested" / "import.json"
     processes = SyncProcesses()
     sanitized: list[Path] = []
+    seeded_locks: list[str] = []
 
     def run(
         argv: list[str],
@@ -1201,6 +1202,10 @@ def test_cli_refresh_preserves_public_trees_and_relocks_the_validation_checkout(
                 'treekle = { git = "https://example.com/treekle", branch = "main" }\n',
                 encoding="utf-8",
             )
+        if argv[:2] == ["uv", "lock"]:
+            cwd = options["cwd"]
+            assert isinstance(cwd, Path)
+            seeded_locks.append((cwd / "uv.lock").read_text(encoding="utf-8"))
         return done
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -1261,7 +1266,8 @@ def test_cli_refresh_preserves_public_trees_and_relocks_the_validation_checkout(
     ]
     tree = runner_temp / "copybarista-validation-tree"
     assert relock_options["cwd"] == tree
-    assert (tree / "uv.lock").read_text(encoding="utf-8") == "source lock\n"
+    assert seeded_locks == ["source lock\n"]
+    assert not tree.exists()
     (validation,) = [command for command in calls if command[0] == "bash"]
     assert validation[-1] == "uv run pytest package"
     assert (
@@ -1313,15 +1319,8 @@ def test_cli_preserves_utf8_protocols_under_a_native_ascii_startup(
                 assert_cli_utf8_protocol(
                     tmp_path, monkeypatch=monkeypatch, flow={flow!r},
                 )
-                inputs = [tmp_path / "utf8-pyproject.toml"]
-                if {flow!r} == "refresh":
-                    inputs.append(
-                        tmp_path / "runner" / "copybarista-validation-tree"
-                        / "pyproject.toml"
-                    )
-                for path in inputs:
-                    with pytest.raises(UnicodeDecodeError):
-                        path.read_text(encoding=None)
+                with pytest.raises(UnicodeDecodeError):
+                    (tmp_path / "utf8-pyproject.toml").read_text(encoding=None)
             """,
         ),
         encoding="utf-8",
@@ -1787,6 +1786,95 @@ def test_validate_target_runs_checks_against_exported_tree(
             tree,
         ),
     ]
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["pass", "fail"])
+def test_validate_target_removes_the_exported_validation_tree_and_venv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fails: bool,
+) -> None:
+    tree = tmp_path / "copybarista-validation-tree"
+    (tree / ".venv" / "bin").mkdir(parents=True)
+    (tree / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+
+    def fake_export(
+        *,
+        request: ImportRequest,
+        project: Path,
+        runner_temp: Path,
+        requirements: Path,
+    ) -> Path:
+        del request, project, runner_temp, requirements
+        return tree
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if fails:
+            raise SystemExit(1)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_export_public_tree", fake_export)
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    if fails:
+        with pytest.raises(SystemExit):
+            _validate_target(
+                request=replace(
+                    _import_request(target_dir=tmp_path / "target"),
+                    validation_commands=("uv sync",),
+                ),
+                project=tmp_path / "target" / "pkg",
+                runner_temp=tmp_path,
+                requirements=tmp_path / "requirements.txt",
+            )
+    else:
+        _validate_target(
+            request=replace(
+                _import_request(target_dir=tmp_path / "target"),
+                validation_commands=("uv sync",),
+            ),
+            project=tmp_path / "target" / "pkg",
+            runner_temp=tmp_path,
+            requirements=tmp_path / "requirements.txt",
+        )
+
+    assert not tree.exists()
+
+
+def test_export_public_tree_removes_partial_tree_when_relock_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if "--folder-dir" in argv:
+            tree = Path(argv[argv.index("--folder-dir") + 1])
+            tree.mkdir(parents=True, exist_ok=True)
+            (tree / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+            return subprocess.CompletedProcess(argv, 0)
+        if argv[:2] == ["uv", "lock"]:
+            raise SystemExit(1)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sync_import_change, "_run", fake_run)
+
+    with pytest.raises(SystemExit):
+        sync_import_change._export_public_tree(
+            request=replace(
+                _import_request(target_dir=target),
+                refresh_public_lockfile=True,
+            ),
+            project=target / "package",
+            runner_temp=runner_temp,
+            requirements=tmp_path / "copybarista-requirements.txt",
+        )
+
+    assert not (runner_temp / "copybarista-validation-tree").exists()
 
 
 def test_export_public_tree_runs_copybarista_export(
@@ -3430,7 +3518,8 @@ def assert_cli_utf8_protocol(
         options for command, options in processes.calls if command == validation
     ]
     assert validation_options["cwd"] == tree
-    assert (tree / "pyproject.toml").read_bytes() == pyproject.read_bytes()
+    assert processes.exported_pyprojects == [pyproject.read_bytes()]
+    assert not tree.exists()
     assert report.read_text(encoding="utf-8") == '{"imported":true}\n'
 
 
@@ -3440,6 +3529,7 @@ class Utf8Processes(SyncProcesses):
 
     pyproject: Path
     bodies: list[bytes] = field(default_factory=list)
+    exported_pyprojects: list[bytes] = field(default_factory=list)
 
     @override
     def __call__(
@@ -3452,6 +3542,10 @@ class Utf8Processes(SyncProcesses):
             tree = Path(argv[argv.index("--folder-dir") + 1])
             exported = tree / "pyproject.toml"
             exported.write_bytes(self.pyproject.read_bytes())
+        if argv[:2] == ["uv", "lock"]:
+            cwd = options["cwd"]
+            assert isinstance(cwd, Path)
+            self.exported_pyprojects.append((cwd / "pyproject.toml").read_bytes())
         if argv[:3] == ["gh", "pr", "create"]:
             body_file = Path(argv[argv.index("--body-file") + 1])
             self.bodies.append(body_file.read_bytes())

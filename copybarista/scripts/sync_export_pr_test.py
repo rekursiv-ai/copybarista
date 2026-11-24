@@ -5505,6 +5505,31 @@ def test_a_dry_run_clones_a_public_git_checkout(
     assert not dry.exists()
 
 
+def test_a_failed_dry_run_clone_removes_its_temporary_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dry = tmp_path / "dry"
+
+    def mkdtemp(prefix: str) -> str:
+        assert prefix == "copybarista-dry-public-"
+        dry.mkdir()
+        return str(dry)
+
+    def fail_commit(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if "commit" in argv:
+            raise SystemExit(1)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(sync_export_pr, "_run", fail_commit)
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._clone_public_checkout_for_dry_run(public_dir=tmp_path / "none")
+
+    assert not dry.exists()
+
+
 def test_a_missing_directory_is_no_git_checkout(tmp_path: Path) -> None:
     assert not sync_export_pr._is_git_checkout(tmp_path / "missing")
 
