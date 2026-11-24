@@ -1453,7 +1453,7 @@ class ChangeRequestImporter:
                 ours = self._ours_public_entry(
                     public=change.path,
                     # An unplanned path names no source; any non-path stand-in reads alike.
-                    source=sources.get(change.path, ""),  # pragma: no mutate
+                    source=sources.get(change.path, ""),  # pragma: no mutate -- Unread.
                     source_root=self.destination,
                     source_export=Path(exported),
                 )
@@ -2019,7 +2019,7 @@ def _splice_public_edits(
     source_lines: list[str],
 ) -> str:
     """Return source with only the public edit's hunks applied."""
-    # pragma: no mutate[truthiness] start
+    # pragma: no mutate[truthiness] start -- Only truth values are read.
     edit = difflib.SequenceMatcher(
         a=reversed_ours_lines,
         b=reversed_lines,

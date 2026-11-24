@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from functools import partial
+from io import TextIOWrapper
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TextIO
+from typing import TYPE_CHECKING, Final, Literal, TextIO
 
+import itertools
 import shutil
 import subprocess
 import sys
@@ -57,7 +60,7 @@ from copybarista.sync_setup import SyncSettings, write_sync_scaffold
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -166,6 +169,8 @@ def test_main_accepts_dry_run(
     )
 
     assert captured[0].dry_run
+    assert captured[0].merged_sha_output is None
+    assert captured[0].release_check_script is None
 
 
 def test_main_derives_request_from_project_positional(
@@ -2064,6 +2069,7 @@ def _no_tree_change(path: Path) -> bool:
 def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The branch keeps the merged squash's tree, which the export guard reads.
 
@@ -2094,6 +2100,39 @@ def test_an_export_pr_merged_mid_run_stays_in_the_export_branch_history(
 
     assert git.left == []
     assert created == [_created(tmp_path)]
+    assert (
+        "main moved during the export (an export PR merged); "
+        "rebuilding the export commit on it.\n"
+    ) in capsys.readouterr().out
+
+
+def test_the_export_commit_message_is_written_as_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The commit message is written as UTF-8 whatever the process locale."""
+    written: list[tuple[str, str | None]] = []
+    write_text = Path.write_text
+
+    def record_write(self: Path, data: str, *, encoding: str | None = None) -> int:
+        written.append((self.name, encoding))
+        return write_text(self, data, encoding=encoding)
+
+    git = _ScriptedGit(
+        cwd=tmp_path,
+        left=[*_staged(tmp_path), *_pushed(holds_main=True)],
+    )
+    monkeypatch.setattr(sync_export_pr, "_run", git)
+    _stub_pr_calls(monkeypatch, [], public_dir=tmp_path)
+    monkeypatch.setattr(Path, "write_text", record_write)
+
+    assert _open_or_update_export_pr(
+        request=_export_request(tmp_path),
+        pr_plan=_merged_pr_plan(),
+    )
+
+    assert git.left == []
+    assert ("copybarista-commit-message.txt", "utf-8") in written
 
 
 def test_an_export_main_already_holds_opens_no_pr(
@@ -2229,7 +2268,7 @@ class _ScriptedGit:
         (expected, code), *self.left = self.left
         assert (argv, cwd) == (expected, self.cwd)
         # ``_run`` exits on a failure it checks; a step that fails is never checked.
-        assert code == 0 or not check, argv
+        assert code == 0 or check is False, argv
         if not capture:
             # Uncaptured, ``_run`` leaves the output to the job's log.
             return subprocess.CompletedProcess(argv, code)
@@ -2712,6 +2751,7 @@ class _OpenPrGh:
     view: str
     listed: str = '[{"number": 7}]'
     ran: list[list[str]] = field(default_factory=list)
+    cwds: list[Path] = field(default_factory=list)
 
     def run(
         self,
@@ -2722,7 +2762,8 @@ class _OpenPrGh:
         capture: bool,
         env: dict[str, str] | None,
     ) -> subprocess.CompletedProcess[str]:
-        del cwd, env
+        del env
+        self.cwds.append(cwd)
         if check or not capture:
             raise AssertionError(f"gh ran with check={check}, capture={capture}")
         self.ran.append(argv)
@@ -2989,6 +3030,7 @@ def test_run_export_sync_removes_its_export_tree(
 
     assert (public_dir / "module.py").read_text(encoding="utf-8") == "source\n"
     assert [path.parent for path in exported] == [scratch]
+    assert exported[0].name.startswith("copybarista-public-")
     assert list(scratch.iterdir()) == []
 
 
@@ -3261,6 +3303,7 @@ def test_run_export_sync_keeps_validation_mutations_out_of_public_checkout(
 def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
     git: FakeGit,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     public_dir = tmp_path / "public"
     public_dir.mkdir()
@@ -3275,6 +3318,10 @@ def test_dry_run_uses_empty_repo_for_existing_non_git_directory(
         assert sentinel.read_text(encoding="utf-8") == "preserve me\n"
         (initial,) = git.repos[dry_public_dir.resolve()].refs["refs/heads/main"]
         assert initial.message == "initial\n"
+        assert (
+            f"Dry run: public checkout {public_dir} unavailable; using empty repo.\n"
+            in capsys.readouterr().out
+        )
     finally:
         sync_export_pr._delete_path(dry_public_dir)
 
@@ -3298,6 +3345,7 @@ def test_delete_path_ignores_missing_child_during_recursive_cleanup(
 def test_run_export_sync_dry_run_uses_temp_public_checkout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     public_dir = tmp_path / "public"
     source_dir = tmp_path / "source"
@@ -3386,6 +3434,10 @@ def test_run_export_sync_dry_run_uses_temp_public_checkout(
     ]
     assert calls[-1][0] == "export"
     assert not dry_public_dir.exists()
+    assert (
+        f"Dry run: using temporary public checkout at {dry_public_dir}.\n"
+        in capsys.readouterr().out
+    )
 
 
 def test_refresh_public_lockfile_upgrades_git_branch_dependencies(
@@ -3461,7 +3513,8 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
         'treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }\n'
         'stubs = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }\n'
         'pinned = { git = "https://github.com/rekursiv-ai/wesearch", rev = "abc" }\n'
-        'other = { git = "https://example.invalid/other", branch = "main" }\n',
+        'other = { git = "https://example.invalid/other", branch = "main" }\n'
+        'deep = { git = "https://github.com/rekursiv-ai/deep.git", branch = "main" }\n',
         encoding="utf-8",
     )
 
@@ -3470,6 +3523,8 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
     for root, repo in (
         ("src/treekle", "treekle"),
         ("src/typings", "typings"),
+        ("src/wesearch", "wesearch"),
+        ("src/labs/deep", "deep"),
         ("src/labs/sagent", "sagent"),
         # Deeper than a package sits: a doc fixture, not a sibling export.
         ("src/tool/examples/demo", "treekle"),
@@ -3494,7 +3549,11 @@ def test_upstream_exports_are_the_sibling_exports_the_lock_tracks(
         target_repo="rekursiv-ai/self",
     )
 
-    assert workflows == ("loop-to-treekle.yml", "loop-to-typings.yml")
+    assert workflows == (
+        "loop-to-deep.yml",
+        "loop-to-treekle.yml",
+        "loop-to-typings.yml",
+    )
 
 
 def test_upstream_exports_skip_a_sibling_that_tracks_this_export(
@@ -3624,9 +3683,10 @@ def test_the_export_fails_when_public_ci_does_not_pass(
     prs, runs = replies
     _public_ci(monkeypatch, prs=prs, runs=runs)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exited:
         _await_merge_then_ci(_export_request(tmp_path))
 
+    assert exited.value.code == 1
     assert says in capsys.readouterr().out
 
 
@@ -3813,9 +3873,10 @@ def test_the_export_fails_when_public_ci_does_not_finish_in_time(
     _public_ci(monkeypatch, prs=[_MERGED], runs=[run] * 1000)
     monkeypatch.setattr(time, "sleep", sleeps.append)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exited:
         _await_merge_then_ci(_export_request(tmp_path))
 
+    assert exited.value.code == 1
     assert (
         "public CI on example/public did not finish in 45 minutes"
         in capsys.readouterr().out
@@ -4806,11 +4867,24 @@ def _commits(git: FakeGit, root: Path, commits: list[tuple[str, str]]) -> list[s
     ]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RunCall:
+    """One ``_run`` call, whole; its defaults are ``_run``'s."""
+
+    argv: list[str]
+    cwd: Path | None = None
+    stdout: TextIO | int | None = None
+    check: bool = True
+    capture: bool = False
+    env: dict[str, str] | None = None
+
+
 @dataclass(slots=True, kw_only=True)
 class _Answers:
     """Stands in for ``_run``: answers each expected command in turn, with its output."""
 
     left: list[tuple[list[str], int, str]]
+    calls: list[_RunCall] = field(default_factory=list)
 
     def __call__(
         self,
@@ -4822,7 +4896,16 @@ class _Answers:
         capture: bool = False,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del cwd, stdout, env
+        self.calls.append(
+            _RunCall(
+                argv=argv,
+                cwd=cwd,
+                stdout=stdout,
+                check=check,
+                capture=capture,
+                env=env,
+            ),
+        )
         assert self.left, f"unexpected command {argv}"
         (expected, code, out), *self.left = self.left
         assert argv == expected
@@ -5439,6 +5522,7 @@ def test_basedpyright_runs_in_the_projects_environment(
     sync_export_pr._run_basedpyright(project=Path("pkg"), targets=(".",))
 
     assert answers.left == []
+    assert [call.cwd for call in answers.calls] == [Path("pkg")]
 
 
 def _replay_inputs(
@@ -5490,7 +5574,11 @@ def test_replay_requires_metadata_when_the_settings_ask(
 
     with pytest.raises(
         sync_export_pr.PrReplayError,
-        match=r"found no Copybarista-PR-\* fields in 1111111\.\.2222222",
+        match=(
+            r"^PR metadata replay found no Copybarista-PR-\* fields in "
+            r"1111111\.\.2222222\. Add commit metadata or disable "
+            r"\[pull_request\]\.require_pr_metadata\.$"
+        ),
     ):
         sync_export_pr._resolve_pr_replay_plan(request=request, pr_template="")
 
@@ -5546,7 +5634,7 @@ def test_current_source_rev_fails_without_either(
 
     with pytest.raises(
         sync_export_pr.PrReplayError,
-        match="Cannot resolve current source",
+        match=r"^Cannot resolve current source revision from source checkout\.$",
     ):
         sync_export_pr._current_source_rev(source_dir=Path(), fallback="")
 
@@ -5705,7 +5793,7 @@ def test_an_export_gives_up_when_main_keeps_moving(
 
     with pytest.raises(
         sync_export_pr.ExportGuardError,
-        match="main kept moving across 3 export pushes",
+        match=r"^main kept moving across 3 export pushes; re-run this export\.$",
     ):
         sync_export_pr._push_export_branch(
             request=_export_request(tmp_path),
@@ -6125,6 +6213,2111 @@ def test_pr_text_rewrites_with_the_projects_replace_rules(tmp_path: Path) -> Non
     assert [transform.type for transform in transforms] == ["replace"]
     assert sync_export_pr._rewrite_public_text("see loop.pkg.cli", transforms) == (
         "see pkg.cli"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        (" TRUE ", True),
+        ("Yes", True),
+        ("ON", True),
+        ("", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("xx", False),
+    ],
+)
+def test_a_truthy_string_reads_as_true_from_a_flag_or_a_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv("COPYBARISTA_TEST_FLAG", text)
+
+    assert sync_export_pr._string_bool(text) is expected
+    assert sync_export_pr._env_bool("COPYBARISTA_TEST_FLAG") is expected
+
+
+def test_an_unset_variable_reads_as_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COPYBARISTA_TEST_FLAG", raising=False)
+
+    assert sync_export_pr._env_bool("COPYBARISTA_TEST_FLAG") is False
+
+
+def test_a_child_command_never_sees_the_virtual_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KEPT", "1")
+    monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere/.venv")
+    env = sync_export_pr._child_env()
+    monkeypatch.delenv("VIRTUAL_ENV")
+
+    assert "VIRTUAL_ENV" not in env
+    assert env["KEPT"] == "1"
+    assert "VIRTUAL_ENV" not in sync_export_pr._child_env()
+
+
+@pytest.mark.parametrize(
+    ("actions", "sync", "expected"),
+    [("a", "g", "a"), (None, "g", "g"), (None, None, "")],
+    ids=["workflow token", "sync token", "no token"],
+)
+def test_source_reads_use_the_workflow_token_else_the_sync_token(
+    monkeypatch: pytest.MonkeyPatch,
+    actions: str | None,
+    sync: str | None,
+    expected: str,
+) -> None:
+    for name, value in (("COPYBARISTA_ACTIONS_TOKEN", actions), ("GH_TOKEN", sync)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    assert sync_export_pr._source_gh_env()["GH_TOKEN"] == expected
+
+
+def test_revisions_and_markers_are_shortened_for_the_log() -> None:
+    assert sync_export_pr._short_rev("abcdefghi") == "abcdefg"
+    assert sync_export_pr._short_rev("") == "<root>"
+    assert sync_export_pr._short_source_marker("sha256:" + "0123456789abcdef" * 2) == (
+        "sha256:0123456789ab"
+    )
+    assert sync_export_pr._short_source_marker("sha:abcdefghij") == "sha:abc"
+
+
+def test_a_checklist_item_is_ticked_once_at_any_indent() -> None:
+    assert sync_export_pr._checked_template_line("  - [ ] a [ ] b") == "  - [x] a [ ] b"
+    assert sync_export_pr._checked_template_line("- [x] done") == "- [x] done"
+    assert sync_export_pr._checked_template_line("prose [ ]") == "prose [ ]"
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "HTTP 503",
+        "Timeout",
+        "It timed out",
+        "Try resubmitting",
+        "Temporarily Unavailable",
+    ],
+)
+def test_a_transient_github_failure_is_retried(stream: str, text: str) -> None:
+    result = subprocess.CompletedProcess(
+        [],
+        1,
+        stdout=text if stream == "stdout" else "",
+        stderr=text if stream == "stderr" else "",
+    )
+
+    assert sync_export_pr._retryable_github_failure(result)
+
+
+def test_another_github_failure_is_not_retried() -> None:
+    result = subprocess.CompletedProcess(
+        [],
+        1,
+        stdout="",
+        stderr="HTTP 403: Resource not accessible",
+    )
+
+    assert not sync_export_pr._retryable_github_failure(result)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("GraphQL: Protected branch rules not configured for this branch", True),
+        ("GraphQL: enablePullRequestAutoMerge failed", True),
+        ("GraphQL: some other error", False),
+    ],
+    ids=["no protection", "no auto-merge", "another error"],
+)
+def test_auto_merge_is_unavailable_for_either_of_its_two_causes(
+    stderr: str,
+    expected: bool,
+) -> None:
+    result = subprocess.CompletedProcess([], 1, stdout="", stderr=stderr)
+
+    assert sync_export_pr._auto_merge_unavailable(result) is expected
+
+
+def test_a_commit_message_splits_into_title_and_description() -> None:
+    assert sync_export_pr._split_commit_message(" Title \n\n Body. \n") == (
+        "Title",
+        "Body.",
+    )
+    assert sync_export_pr._split_commit_message("Title") == ("Title", "")
+
+
+def test_managed_prose_splits_into_intro_and_updates() -> None:
+    assert sync_export_pr._split_updates_section("Intro.\n\n### Updates\n\n- a") == (
+        "Intro.",
+        "- a",
+    )
+    assert sync_export_pr._split_updates_section("Intro.") == ("Intro.", "")
+
+
+def test_a_state_marker_gives_its_applied_revision_among_other_tokens() -> None:
+    marker = "<!-- copybarista:pr-state applied=sha:abc version=1 -->"
+
+    assert _applied_marker_from_pr_body(marker) == "sha:abc"
+
+
+def test_an_entry_marker_gives_its_source_among_other_tokens() -> None:
+    entry = "<!-- copybarista:pr-entry source=sha256:ab -->"
+
+    assert sync_export_pr._entry_commit_marker(entry) == "sha256:ab"
+    assert sync_export_pr._entry_commit_marker("<!-- copybarista:pr-entry -->") is None
+
+
+def test_a_source_revision_digest_is_the_sha256_of_its_utf8() -> None:
+    assert _source_rev_digest("é") == (
+        "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"
+    )
+
+
+def _template_body(template: str) -> str:
+    return sync_export_pr._render_pr_template_body(
+        template=template,
+        summary_lines=["Intro."],
+    )
+
+
+@pytest.mark.parametrize(
+    ("template", "body"),
+    [
+        (
+            "## Summary\n## Testing\n- [ ] ran\n",
+            "## Summary\n\nIntro.\n\n## Testing\n- [x] ran",
+        ),
+        ("## Summary\n", "## Summary\n\nIntro."),
+        ("## Checklist\n## Notes\nx\n", "Intro.\n\n## Notes\nx"),
+        ("## Notes\ntext\n  ", "Intro.\n\n## Notes\ntext"),
+        (
+            "  ## Testing\n- [ ] ran X\nsee X\n",
+            "Intro.\n\n  ## Testing\n- [ ] ran X\nsee X",
+        ),
+    ],
+    ids=["summary", "bare summary", "dropped section", "trailing blank", "indented"],
+)
+def test_a_template_takes_the_summary_in_place_and_keeps_the_rest(
+    template: str,
+    body: str,
+) -> None:
+    assert _template_body(template) == body
+
+
+def test_a_summary_ends_at_the_next_heading() -> None:
+    summary = sync_export_pr._summary_section
+    assert summary("## Summary\nText\n## Other\nmore") == "Text"
+    assert summary("## Summary\n## Notes\nx") == ""
+    assert summary("## Notes\nx") == ""
+
+
+def test_a_body_footer_starts_at_the_nearest_separator_above_its_marker() -> None:
+    body = f"Intro.\n----\na\nb\nc\n{_MARKER}\n"
+
+    assert sync_export_pr._body_before_footer(body) == "Intro."
+
+
+def test_replacing_some_fields_of_a_state_keeps_the_rest() -> None:
+    state = replace(_pr_state(), authors=(_AUTHOR,))
+
+    assert _replace_pr_state(state, title="New") == replace(state, title="New")
+    assert _replace_pr_state(state, body_intro="Intro.") == replace(
+        state,
+        body_intro="Intro.",
+    )
+    assert _replace_pr_state(state, applied_source_rev="r") == replace(
+        state,
+        applied_source_rev="r",
+    )
+    assert _replace_pr_state(state, applied_source_digest="d") == replace(
+        state,
+        applied_source_digest="d",
+    )
+
+
+def test_a_pr_body_gives_back_every_field_of_its_state() -> None:
+    body = (
+        "## Summary\n\n"
+        "Intro line.\n"
+        "Source attribution: A <a@x.org>\n"
+        "source attribution: kept\n\n"
+        "### Updates\n\n"
+        "- Note one.\n\n"
+        "----\n"
+        "Copybarista export branch: `copybarista/export/main`\n\n"
+        "<!-- copybarista:pr-state version=1 applied=sha:abc -->\n"
+    )
+
+    assert _state_from_pr_body(
+        title="Title",
+        body=body,
+        default_body="Default.",
+    ) == PrReplayState(
+        title="Title",
+        authors=(),
+        body_intro="Intro line.\nsource attribution: kept",
+        body_entries=(PrBodyEntry(commit_sha="", text="Note one."),),
+        applied_source_rev="",
+        applied_source_digest="",
+        metadata_count=0,
+    )
+
+
+def test_body_entries_without_a_marker_keep_an_empty_source() -> None:
+    assert sync_export_pr._parse_body_entries("- Hand note.\n  continued") == (
+        PrBodyEntry(commit_sha="", text="Hand note.\ncontinued"),
+    )
+
+
+def test_a_marker_belongs_to_the_first_bullet_under_it_only() -> None:
+    entries = sync_export_pr._parse_body_entries(
+        "<!-- copybarista:pr-entry source=sha256:aa -->\n"
+        "- a\n"
+        "- b\n"
+        "<!-- copybarista:pr-entry source=sha256:bb -->\n"
+        "- c",
+    )
+
+    assert entries == (
+        PrBodyEntry(commit_sha="sha256:aa", text="a"),
+        PrBodyEntry(commit_sha="", text="b"),
+        PrBodyEntry(commit_sha="sha256:bb", text="c"),
+    )
+
+
+@pytest.mark.parametrize("text", ["- a\nstray", "  indented"])
+def test_text_that_continues_no_bullet_is_ambiguous(text: str) -> None:
+    with pytest.raises(sync_export_pr.PrReplayError):
+        sync_export_pr._parse_body_entries(text)
+
+
+_FOOTER: Final = (
+    "\n----\n"
+    "Copybarista export branch: `copybarista/export/main`\n"
+    "\n"
+    "Do not push manual commits to this generated branch. Change the source "
+    "repository, then rerun the export workflow with the same branch.\n"
+    "\n"
+    "<!-- copybarista:pr-state version=1 applied={applied} -->\n"
+)
+
+
+def _render(state: PrReplayState, *, pr_template: str = "") -> str:
+    return _render_pr_body(
+        state=state,
+        branch="copybarista/export/main",
+        sync_label="Copybarista",
+        publish_source_rev=False,
+        pr_template=pr_template,
+    )
+
+
+def test_a_rendered_body_is_its_summary_then_the_footer() -> None:
+    state = _pr_state()
+
+    assert _render(state) == "Public body.\n" + _FOOTER.format(
+        applied=f"sha256:{state.applied_source_digest}",
+    )
+
+
+def test_a_blank_template_renders_as_no_template() -> None:
+    assert _render(_pr_state(), pr_template="  \n\n") == _render(_pr_state())
+
+
+def test_a_template_keeps_its_leading_blank_lines() -> None:
+    body = _render(_pr_state(), pr_template="  \n## Summary\n")
+
+    assert body.startswith("  \n## Summary\n\nPublic body.\n\n----\n")
+
+
+def test_a_body_without_an_applied_digest_is_refused() -> None:
+    with pytest.raises(sync_export_pr.PrReplayError, match="applied source marker"):
+        _render(replace(_pr_state(), applied_source_digest=""))
+
+
+def test_a_plan_body_names_its_branch_label_and_source_revision() -> None:
+    request = _export_request(Path("/unused"))
+    request = replace(
+        request,
+        sync_label="Zork",
+        branch="zork/export/x",
+        replay_settings=replace(request.replay_settings, publish_source_rev=True),
+    )
+    plan = sync_export_pr.PrReplayPlan(
+        state=_pr_state(),
+        body="",
+        replay_base="",
+        replay_base_digest="",
+        current_pr=None,
+    )
+
+    body = sync_export_pr._render_pr_replay_plan_body(
+        request=request,
+        pr_plan=plan,
+        pr_template="",
+    ).body
+
+    assert "Zork export branch: `zork/export/x`" in body
+    assert "applied=sha:abc123 -->" in body
+
+
+@pytest.mark.parametrize(
+    ("title", "body", "expected"),
+    [
+        ("", "Manual body.", ("Message title", "Manual body.")),
+        ("Manual title", "", ("Manual title", "Message body.")),
+    ],
+    ids=["no title", "no body"],
+)
+def test_the_source_message_fills_only_the_missing_half(
+    title: str,
+    body: str,
+    expected: tuple[str, str],
+) -> None:
+    text = export_pr_text(
+        title=title,
+        body=body,
+        source_message="Message title\n\nMessage body.",
+        use_source_message=True,
+        forbidden_text=(),
+    )
+
+    assert (text.title, text.body) == expected
+
+
+def test_a_title_left_empty_is_refused_by_name(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        export_pr_text(
+            title="",
+            body="Body.",
+            source_message="",
+            use_source_message=False,
+            forbidden_text=(),
+            default_title="",
+        )
+
+    assert raised.value.code == 2
+    assert capsys.readouterr().err == "--pr-title is required.\n"
+
+
+def test_a_forbidden_title_is_refused_by_name(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        export_pr_text(
+            title="About zork",
+            body="Body.",
+            source_message="",
+            use_source_message=False,
+            forbidden_text=("zork",),
+        )
+
+    assert raised.value.code == 2
+    assert capsys.readouterr().err == (
+        "--pr-title contains restricted source-specific text.\n"
+    )
+
+
+def test_a_manual_run_without_a_branch_says_what_to_pass(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        export_branch_name(
+            explicit="",
+            source_branch="",
+            source_sha="manual",
+            prefix="pkg/export/",
+        )
+
+    assert raised.value.code == 2
+    assert capsys.readouterr().err == (
+        "--branch or --source-branch is required for manual runs.\n"
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _GhCall:
+    """One ``_run_gh`` call, whole; its defaults are ``_run_gh``'s."""
+
+    argv: list[str]
+    cwd: Path
+    capture: bool = False
+    check: bool = True
+    env: dict[str, str] | None = None
+
+
+@dataclass(slots=True, kw_only=True)
+class _GhAnswers:
+    """Stands in for ``_run_gh``: records each call whole, answers with the next reply."""
+
+    replies: Iterator[subprocess.CompletedProcess[str]]
+    calls: list[_GhCall] = field(default_factory=list)
+
+    def __call__(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        capture: bool = False,
+        check: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(
+            _GhCall(argv=argv, cwd=cwd, capture=capture, check=check, env=env),
+        )
+        return next(self.replies)
+
+
+def _reply(
+    stdout: str = "",
+    *,
+    code: int = 0,
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], code, stdout, stderr)
+
+
+def _pr_view(state: str, commit: str | None) -> subprocess.CompletedProcess[str]:
+    merge = "null" if commit is None else f'{{"oid": "{commit}"}}'
+    return _reply(f'{{"state": "{state}", "mergeCommit": {merge}}}')
+
+
+def _probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    argv: list[str],
+    code: int,
+    out: str,
+) -> _Answers:
+    """Answer the one git command ``argv`` with ``code`` and ``out``."""
+    answers = _Answers(left=[(argv, code, out)])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+    return answers
+
+
+_PUBLIC: Final = Path("/public")
+_SRC: Final = Path("/src")
+_BRANCH: Final = "pkg/export/main"
+_REF: Final = f"refs/remotes/origin/{_BRANCH}"
+_FETCH: Final = ["git", "fetch", "origin", f"+refs/heads/{_BRANCH}:{_REF}"]
+
+
+def test_branch_markers_probe_the_public_checkout_without_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verify = ["git", "rev-parse", "--verify", _REF]
+    answers = _Answers(left=[(_FETCH, 0, ""), (verify, 1, "")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    assert sync_export_pr._branch_markers(
+        branch=_BRANCH,
+        cwd=_PUBLIC,
+    ) == sync_export_pr.BranchMarkers(
+        source_digest="",
+        replay_base_digest="",
+        exists=False,
+    )
+    assert answers.calls == [
+        _RunCall(argv=_FETCH, cwd=_PUBLIC, check=False),
+        _RunCall(argv=verify, cwd=_PUBLIC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("message", "digests"),
+    [
+        (
+            "Title\n\ncopybarista-source-rev-sha256= src \nunrelated=1\nx=y=z\n",
+            ("src", ""),
+        ),
+        ("copybarista-replay-base-sha256=base=2\nplain=1\n", ("", "base=2")),
+    ],
+    ids=["source only", "replay base only"],
+)
+def test_branch_markers_read_each_key_of_the_tip_message(
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+    digests: tuple[str, str],
+) -> None:
+    verify = ["git", "rev-parse", "--verify", _REF]
+    tip = ["git", "log", "-1", "--format=%B", _REF]
+    answers = _Answers(left=[(_FETCH, 0, ""), (verify, 0, ""), (tip, 0, message)])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    assert sync_export_pr._branch_markers(
+        branch=_BRANCH,
+        cwd=_PUBLIC,
+    ) == sync_export_pr.BranchMarkers(
+        source_digest=digests[0],
+        replay_base_digest=digests[1],
+        exists=True,
+    )
+    assert answers.calls[2] == _RunCall(argv=tip, cwd=_PUBLIC, capture=True)
+
+
+_LIST_TAIL: Final = ("--head", "b/x", "--json", "number")
+
+
+def test_current_pr_asks_github_about_its_branch_in_the_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh = _OpenPrGh(view='{"number": 7, "title": "T", "body": "B", "url": "u"}')
+    monkeypatch.setattr(sync_export_pr, "_run", gh.run)
+
+    _current_pr(branch="b/x", repo="o/r", cwd=_PUBLIC)
+
+    assert gh.ran == [
+        [*("gh", "pr", "list", "--repo", "o/r", "--state", "open"), *_LIST_TAIL],
+        ["gh", "pr", "view", "b/x", "--repo", "o/r", "--json", "number,title,body,url"],
+    ]
+    assert gh.cwds == [_PUBLIC, _PUBLIC]
+    assert capsys.readouterr().out == ""
+
+
+def test_current_pr_fills_what_github_leaves_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sync_export_pr, "_run", _OpenPrGh(view="{}").run)
+
+    assert _current_pr(branch="b/x", repo="o/r", cwd=_PUBLIC) == (
+        sync_export_pr.CurrentPr(title="", body="", number=0, url="")
+    )
+
+
+def test_current_pr_names_a_state_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sync_export_pr, "_run", _OpenPrGh(view="nope").run)
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^GitHub PR state for branch b/x was not valid JSON\.$",
+    ):
+        _current_pr(branch="b/x", repo="o/r", cwd=_PUBLIC)
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "expected"),
+    [(0, "\n", "given"), (1, "abc\n", "given"), (0, "abc\n", "abc")],
+    ids=["empty head", "failed read", "a head"],
+)
+def test_current_source_rev_needs_a_clean_read_of_head(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    out: str,
+    expected: str,
+) -> None:
+    argv = ["git", "rev-parse", "HEAD"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out=out)
+
+    assert sync_export_pr._current_source_rev(source_dir=_SRC, fallback="given") == (
+        expected
+    )
+    assert answers.calls == [_RunCall(argv=argv, cwd=_SRC, check=False, capture=True)]
+
+
+@pytest.mark.parametrize(
+    ("out", "expected"),
+    [(" M f.txt\n", True), ("\n", False)],
+    ids=["changed", "clean"],
+)
+def test_git_has_changes_reads_the_porcelain_status(
+    monkeypatch: pytest.MonkeyPatch,
+    out: str,
+    expected: bool,
+) -> None:
+    argv = ["git", "status", "--porcelain"]
+    answers = _probe(monkeypatch, argv=argv, code=0, out=out)
+
+    assert sync_export_pr._git_has_changes(_PUBLIC) is expected
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_PUBLIC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "expected"),
+    [(0, "4b82\n", "4b82"), (1, "junk\n", "")],
+    ids=["found", "failed"],
+)
+def test_the_empty_tree_is_asked_of_git_in_the_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    out: str,
+    expected: str,
+) -> None:
+    argv = ["git", "hash-object", "-t", "tree", "/dev/null"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out=out)
+
+    assert sync_export_pr._git_empty_tree(cwd=_PUBLIC) == expected
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_PUBLIC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "expected"),
+    [(0, "bbbb222\n", "bbbb222"), (128, "junk\n", "")],
+    ids=["found", "failed"],
+)
+def test_the_public_head_is_asked_of_git_in_the_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    out: str,
+    expected: str,
+) -> None:
+    argv = ["git", "rev-parse", "HEAD"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out=out)
+
+    assert sync_export_pr._public_head_sha(cwd=_PUBLIC) == expected
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_PUBLIC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_ancestry_is_asked_of_git_in_the_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+) -> None:
+    argv = ["git", "merge-base", "--is-ancestor", "old", "new"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out="")
+
+    assert sync_export_pr._is_source_ancestor(
+        source_dir=_SRC,
+        ancestor="old",
+        rev="new",
+    ) is (code == 0)
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_SRC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "expected"),
+    [(0, "parent\n", "parent"), (128, "", "")],
+    ids=["a parent", "a root commit"],
+)
+def test_the_source_parent_is_asked_of_git_in_the_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    out: str,
+    expected: str,
+) -> None:
+    argv = ["git", "rev-parse", "head^"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out=out)
+
+    assert sync_export_pr._source_parent(source_dir=_SRC, rev="head") == expected
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_SRC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "toplevel", "expected"),
+    [(0, "same", True), (0, "/elsewhere", False), (128, "", False)],
+    ids=["its root", "inside another", "no repository"],
+)
+def test_a_checkout_is_the_root_of_its_own_working_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    code: int,
+    toplevel: str,
+    expected: bool,
+) -> None:
+    argv = ["git", "rev-parse", "--show-toplevel"]
+    out = f"{tmp_path if toplevel == 'same' else toplevel}\n"
+    answers = _probe(monkeypatch, argv=argv, code=code, out=out)
+
+    assert sync_export_pr._is_git_checkout(tmp_path) is expected
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=tmp_path, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(("code", "expected"), [(0, "abc"), (1, "")])
+def test_a_revision_resolves_when_it_is_an_ancestor_of_head(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    expected: str,
+) -> None:
+    argv = ["git", "merge-base", "--is-ancestor", "abc", "HEAD"]
+    answers = _probe(monkeypatch, argv=argv, code=code, out="")
+
+    assert sync_export_pr._maybe_resolve_source_rev(source_dir=_SRC, rev="abc") == (
+        expected
+    )
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_SRC, check=False, capture=True),
+    ]
+
+
+def test_each_kind_of_source_marker_is_resolved_in_the_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor = ["git", "merge-base", "--is-ancestor", "abc", "HEAD"]
+    listing = ["git", "rev-list", "HEAD"]
+    answers = _Answers(left=[(ancestor, 0, ""), (listing, 0, "c0ffee\n")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+    resolve = sync_export_pr._maybe_resolve_source_marker
+
+    assert resolve(source_dir=_SRC, marker="sha:abc", marker_source="m") == "abc"
+    assert resolve(
+        source_dir=_SRC,
+        marker=f"sha256:{_source_rev_digest('c0ffee')}",
+        marker_source="m",
+    ) == ("c0ffee")
+    assert answers.calls == [
+        _RunCall(argv=ancestor, cwd=_SRC, check=False, capture=True),
+        _RunCall(argv=listing, cwd=_SRC, capture=True),
+    ]
+
+
+def test_an_unreachable_digest_is_named_with_its_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _probe(monkeypatch, argv=["git", "rev-list", "HEAD"], code=0, out="abc\n")
+
+    with pytest.raises(sync_export_pr.PrReplayError) as raised:
+        sync_export_pr._resolve_source_marker(
+            source_dir=_SRC,
+            marker="sha256:" + "0" * 64,
+            marker_source="PR applied marker",
+        )
+
+    assert str(raised.value) == (
+        "Cannot resolve PR applied marker digest 000000000000 in /src."
+    )
+
+
+def test_foreign_commits_read_the_range_in_the_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ["git", "log", "a..b", "--format=%h%x00%ae%x00%s"]
+    answers = _probe(
+        monkeypatch,
+        argv=argv,
+        code=0,
+        out="abc\x00bot@example.com\x00Fix\x00tail\n",
+    )
+
+    assert (
+        sync_export_pr._foreign_commits_since(
+            base="a",
+            head="b",
+            author_email="bot@example.com",
+            cwd=_PUBLIC,
+        )
+        == ()
+    )
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_PUBLIC, check=False, capture=True),
+    ]
+
+
+def test_git_toplevel_asks_git_in_the_start_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(argv: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, options))
+        return subprocess.CompletedProcess(argv, 0, "/repo\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert sync_export_pr._git_toplevel(Path("/repo/sub")) == Path("/repo")
+    assert calls == [
+        (
+            ["git", "rev-parse", "--show-toplevel"],
+            {
+                "cwd": Path("/repo/sub"),
+                "check": False,
+                "capture_output": True,
+                "text": True,
+            },
+        ),
+    ]
+
+
+def test_a_start_outside_any_repository_says_what_to_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(subprocess, "run", RecordingRun(returncode=128))
+
+    with pytest.raises(SystemExit) as raised:
+        sync_export_pr._git_toplevel(Path("/elsewhere"))
+
+    assert str(raised.value) == (
+        "Cannot find Git repository containing /elsewhere: "
+        "pass --source-dir or run from within a Git checkout."
+    )
+
+
+def test_gh_output_is_replayed_unless_the_caller_captures_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv = ["gh", "pr", "list"]
+    answers = _Answers(left=[(argv, 0, "out\n"), (argv, 0, "out\n")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    sync_export_pr._run_gh(argv, cwd=_PUBLIC)
+    replayed = capsys.readouterr().out
+    sync_export_pr._run_gh(argv, cwd=_PUBLIC, capture=True)
+
+    assert (replayed, capsys.readouterr().out) == ("out\n", "")
+    assert (
+        answers.calls
+        == [
+            _RunCall(argv=argv, cwd=_PUBLIC, check=False, capture=True),
+        ]
+        * 2
+    )
+
+
+def test_a_transient_failure_is_logged_and_waited_out(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    replies = iter([_reply(code=1, stderr="HTTP 503"), _reply("ok")])
+    sleeps: list[float] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        del argv
+        return next(replies)
+
+    monkeypatch.setattr(sync_export_pr, "_run", run)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    sync_export_pr._run_gh(["gh"], cwd=_PUBLIC, capture=True)
+
+    assert sleeps == [sync_export_pr.GITHUB_RETRY_DELAY_SEC]
+    assert capsys.readouterr().out == (
+        "GitHub CLI command failed with a transient API error; "
+        "retrying in 2 seconds (1/3).\n"
+    )
+
+
+_MERGE: Final = [
+    *("gh", "pr", "merge", "copybarista/export/main", "--repo", "example/public"),
+    *("--squash", "--subject", "T"),
+    *("--body", "Copybarista export branch: copybarista/export/main"),
+]
+
+
+def test_auto_merge_falls_back_to_a_direct_merge_in_the_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh = _GhAnswers(
+        replies=iter(
+            [
+                _reply(code=1, stderr="Protected branch rules not configured"),
+                _reply("merged\n"),
+            ],
+        ),
+    )
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+
+    sync_export_pr._enable_export_pr_auto_merge(
+        request=_export_request(tmp_path),
+        pr_title="T",
+    )
+
+    assert gh.calls == [
+        _GhCall(argv=[*_MERGE, "--auto"], cwd=tmp_path, capture=True, check=False),
+        _GhCall(argv=_MERGE, cwd=tmp_path),
+    ]
+    assert capsys.readouterr().out == (
+        "Auto-merge unavailable (no branch protection / pending checks); "
+        "merging the export PR directly.\n"
+    )
+
+
+def test_an_unrelated_auto_merge_failure_exits_with_its_status_and_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh = _GhAnswers(replies=iter([_reply(code=3, stderr="GraphQL: other")]))
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+
+    with pytest.raises(SystemExit) as raised:
+        sync_export_pr._enable_export_pr_auto_merge(
+            request=_export_request(tmp_path),
+            pr_title="T",
+        )
+
+    assert raised.value.code == 3
+    assert capsys.readouterr().err == "GraphQL: other"
+
+
+def test_the_merge_commit_is_awaited_in_the_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only a merged PR with a merge commit ends the wait."""
+    replies = [
+        _pr_view("OPEN", None),
+        _pr_view("OPEN", "zz"),
+        _pr_view("MERGED", None),
+        _pr_view("MERGED", "c0ffee"),
+    ]
+    gh = _GhAnswers(replies=iter(replies))
+    sleeps: list[float] = []
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    request = _export_request(tmp_path)
+
+    assert sync_export_pr._merged_sha(request=request) == "c0ffee"
+
+    view = _GhCall(
+        argv=[
+            *("gh", "pr", "view", request.branch, "--repo", "example/public"),
+            *("--json", "state,mergeCommit"),
+        ],
+        cwd=tmp_path,
+        capture=True,
+    )
+    assert gh.calls == [view] * 4
+    assert sleeps == [sync_export_pr.PUBLIC_CI_POLL_SEC] * 3
+
+
+def test_the_merge_state_is_named_when_it_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_run_gh",
+        _GhAnswers(replies=iter([_reply("x")])),
+    )
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^export PR was not valid JSON\.$",
+    ):
+        sync_export_pr._merged_sha(request=_export_request(tmp_path))
+
+
+def test_waiting_for_a_merge_gives_up_at_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sleeps: list[float] = []
+    gh = _GhAnswers(replies=itertools.repeat(_pr_view("OPEN", None)))
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(sync_export_pr, "PUBLIC_CI_POLL_SEC", 1.0)
+    monkeypatch.setattr(sync_export_pr, "PUBLIC_CI_WAIT_SEC", 3.0)
+
+    with pytest.raises(SystemExit) as raised:
+        sync_export_pr._merged_sha(request=_export_request(tmp_path))
+
+    assert raised.value.code == 1
+    assert sleeps == [1.0, 1.0, 1.0]
+    assert capsys.readouterr().out == (
+        "::error::public CI on example/public did not finish in 0.05 minutes\n"
+    )
+
+
+def test_waiting_for_public_ci_starts_its_clock_at_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sleeps: list[float] = []
+    running = _reply('[{"status": "in_progress", "conclusion": ""}]')
+    gh = _GhAnswers(replies=itertools.repeat(running))
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(sync_export_pr, "PUBLIC_CI_POLL_SEC", 1.0)
+    monkeypatch.setattr(sync_export_pr, "PUBLIC_CI_WAIT_SEC", 3.0)
+
+    with pytest.raises(SystemExit):
+        sync_export_pr._await_ci(repo="example/public", sha=_SHA, cwd=_PUBLIC)
+
+    assert sleeps == [1.0, 1.0, 1.0]
+    assert gh.calls[0] == _GhCall(
+        argv=_RUN_LIST,
+        cwd=_PUBLIC,
+        capture=True,
+        check=False,
+    )
+    assert capsys.readouterr().out == (
+        "::error::public CI on example/public did not finish in 0.05 minutes\n"
+    )
+
+
+_PENDING: Final = [
+    *("gh", "pr", "list", "--repo", "o/src", "--state", "open"),
+    *("--limit", "100", "--json", "number,headRefName"),
+]
+
+
+def test_pending_import_prs_lists_open_prs_of_the_source_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = (
+        '[{"number": 68, "headRefName": "p/import/a"},'
+        ' {"number": 69, "headRefName": "q/x"}]'
+    )
+    gh = _GhAnswers(replies=iter([_reply(rows)]))
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+
+    assert _pending_import_prs(prefix="p/import/", repo="o/src", cwd=_SRC) == (
+        "#68 p/import/a",
+    )
+    assert gh.calls == [
+        _GhCall(
+            argv=_PENDING,
+            cwd=_SRC,
+            capture=True,
+            env=sync_export_pr._source_gh_env(),
+        ),
+    ]
+
+
+def test_a_pending_row_missing_its_fields_reads_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gh = _GhAnswers(replies=iter([_reply("[{}]")]))
+    monkeypatch.setattr(sync_export_pr, "_run_gh", gh)
+
+    assert _pending_import_prs(prefix="", repo="o/src", cwd=_SRC) == ("#0 ",)
+
+
+def test_pending_import_prs_names_a_list_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sync_export_pr,
+        "_run_gh",
+        _GhAnswers(replies=iter([_reply("x")])),
+    )
+
+    with pytest.raises(
+        sync_export_pr.PrReplayError,
+        match=r"^open PR list for o/src was not valid JSON\.$",
+    ):
+        _pending_import_prs(prefix="p/", repo="o/src", cwd=_SRC)
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new dirs", "existing dirs"])
+def test_the_public_tree_is_exported_into_its_folder_beside_its_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    existing: bool,
+) -> None:
+    export_dir = tmp_path / "a" / "export"
+    manifest = tmp_path / "m" / "n" / "manifest.json"
+    if existing:
+        export_dir.mkdir(parents=True)
+        manifest.parent.mkdir(parents=True)
+    opened: list[tuple[str, str | None]] = []
+    open_ = Path.open
+
+    def record_open(
+        self: Path,
+        mode: Literal["w"],
+        *,
+        encoding: str | None = None,
+    ) -> TextIOWrapper:
+        opened.append((self.name, encoding))
+        return open_(self, mode, encoding=encoding)
+
+    argv = [
+        *(sys.executable, "-m", "copybarista", "export"),
+        *("/repo/packages/example/copy.barista.toml", "/repo"),
+        *("--folder-dir", str(export_dir), "--force", "--json"),
+    ]
+    answers = _Answers(left=[(argv, 0, "")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+    monkeypatch.setattr(Path, "open", record_open)
+
+    _export_public_tree(
+        project=Path("/repo/packages/example"),
+        source_dir=Path("/repo"),
+        export_dir=export_dir,
+        manifest=manifest,
+    )
+
+    (call,) = answers.calls
+    assert isinstance(call.stdout, TextIOWrapper)
+    assert call.stdout.name == str(manifest)
+    assert call == _RunCall(argv=argv, stdout=call.stdout)
+    assert opened == [("manifest.json", "utf-8")]
+
+
+def _uv(project: str, *words: str) -> list[str]:
+    return ["uv", "--quiet", "--project", project, "run", *words]
+
+
+def test_the_cheap_source_checks_run_in_the_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = Path("/repo/pkg")
+    sync = ["uv", "--quiet", "--project", "/repo/pkg", "sync", "--all-groups"]
+    lint = _uv("/repo/pkg", "ruff", "check", "--no-fix", "--no-cache", ".")
+    fmt = _uv("/repo/pkg", "ruff", "format", "--check", "--no-cache", ".")
+    answers = _Answers(left=[(sync, 0, ""), (lint, 0, ""), (fmt, 0, "")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    _preleakcheck_validation(project=project)
+
+    assert answers.calls == [
+        _RunCall(argv=sync),
+        _RunCall(argv=lint, cwd=project),
+        _RunCall(argv=fmt, cwd=project),
+    ]
+
+
+def test_the_slow_source_checks_run_in_the_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = Path("/repo/pkg")
+    commands = [
+        _uv("/repo/pkg", "ty", "check", "."),
+        _uv("/repo/pkg", "basedpyright", "."),
+        _uv("/repo/pkg", "pytest", "-q"),
+    ]
+    answers = _Answers(left=[(argv, 0, "") for argv in commands])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    _postleakcheck_validation(project=project)
+
+    assert answers.calls == [_RunCall(argv=argv, cwd=project) for argv in commands]
+
+
+def test_a_metadata_log_gives_each_commit_its_own_author() -> None:
+    log = _metadata_log(
+        "Copybarista-PR-Title: One\n",
+        commit_sha="a" * 12,
+        author="A",
+        email="a@x.org",
+    ) + _metadata_log(
+        "Copybarista-PR-Title: Two\n",
+        commit_sha="b" * 12,
+        author="B",
+        email="b@x.org",
+    )
+
+    patches = _parse_pr_metadata_log(log, forbidden_text=())
+
+    assert [(p.commit_sha, p.title, p.author) for p in patches] == [
+        ("a" * 12, "One", SourceAuthor(name="A", email="a@x.org")),
+        ("b" * 12, "Two", SourceAuthor(name="B", email="b@x.org")),
+    ]
+
+
+def test_a_scoped_block_is_dropped_when_no_scope_is_asked() -> None:
+    message = "Copybarista-PR-Scope: xxxx\nCopybarista-PR-Title: T\n"
+
+    assert _parse_pr_metadata_log(_metadata_log(message), forbidden_text=()) == ()
+
+
+def test_a_metadata_title_keeps_its_own_colons() -> None:
+    (patch,) = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Title: Fix: thing\n"),
+        forbidden_text=(),
+    )
+
+    assert patch.title == "Fix: thing"
+
+
+def test_metadata_ignores_lines_that_are_not_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (patch,) = _parse_pr_metadata_log(
+        _metadata_log(
+            "Note: something\nCopybarista-PR-Title\nCopybarista-PR-Title: T\n",
+        ),
+        forbidden_text=(),
+    )
+
+    assert patch.title == "T"
+    assert capsys.readouterr().err == ""
+
+
+def test_metadata_skips_an_unknown_field_after_other_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    message = "Subject\nCopybarista-PR-Description: typo\nCopybarista-PR-Title: T\n"
+
+    (patch,) = _parse_pr_metadata_log(_metadata_log(message), forbidden_text=())
+
+    assert patch.title == "T"
+    assert capsys.readouterr().err == (
+        "Commit abcdef1 Copybarista-PR-Description: unknown field; ignored.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    [
+        (
+            "Subject\nCopybarista-PR-Author: x\n",
+            (
+                "Commit abcdef1 Copybarista-PR-Author: "
+                "unsupported; use the git author for attribution."
+            ),
+        ),
+        (
+            "Copybarista-PR-Title: a\nCopybarista-PR-Title: b\n",
+            "Commit abcdef1 Copybarista-PR-Title: duplicate field.",
+        ),
+        (
+            "Copybarista-PR-Body:\ntext\nCopybarista-PR-Title: late\n",
+            (
+                "Commit abcdef1 Copybarista-PR-Body: "
+                "body must be the final Copybarista-PR-* field."
+            ),
+        ),
+    ],
+    ids=["author", "duplicate", "late field"],
+)
+def test_a_malformed_metadata_block_names_its_commit_field_and_reason(
+    message: str,
+    error: str,
+) -> None:
+    with pytest.raises(sync_export_pr.PrMetadataError) as raised:
+        _parse_pr_metadata_log(_metadata_log(message), forbidden_text=())
+
+    assert str(raised.value) == error
+
+
+def test_a_metadata_body_keeps_its_lines() -> None:
+    (patch,) = _parse_pr_metadata_log(
+        _metadata_log("Copybarista-PR-Body:\nline one\nline two\n\nafter\n"),
+        forbidden_text=(),
+    )
+
+    assert patch.body == "line one\nline two"
+
+
+def test_fields_after_a_body_block_are_unscoped() -> None:
+    message = (
+        "Copybarista-PR-Scope: pkg\n"
+        "Copybarista-PR-Body:\nB1\n\n"
+        "Copybarista-PR-Title: Later\n"
+    )
+
+    patches = _parse_pr_metadata_log(
+        _metadata_log(message),
+        forbidden_text=(),
+        scope="other",
+    )
+
+    assert [(p.scope, p.title) for p in patches] == [("", "Later")]
+
+
+def test_a_scoped_block_closed_by_the_next_scope_is_judged_whole() -> None:
+    message = (
+        "Copybarista-PR-Scope: pkg\nCopybarista-PR-Title: A\n"
+        "Copybarista-PR-Scope: other\nCopybarista-PR-Title: B\n"
+    )
+
+    patches = _parse_pr_metadata_log(
+        _metadata_log(message),
+        forbidden_text=(),
+        scope="pkg",
+    )
+
+    assert [(p.scope, p.title) for p in patches] == [("pkg", "A")]
+
+
+def test_a_block_closed_by_a_scope_is_a_whole_patch() -> None:
+    message = (
+        "Copybarista-PR-Title: Shared\n"
+        "Copybarista-PR-Scope: pkg\n"
+        "Copybarista-PR-Title: Scoped\n"
+    )
+    author = SourceAuthor(name="Commit Author", email="author@example.com")
+
+    patches = _parse_pr_metadata_log(
+        _metadata_log(message),
+        forbidden_text=(),
+        scope="pkg",
+    )
+
+    assert patches == (
+        PrMetadataPatch(
+            commit_sha="abcdef123456",
+            scope="",
+            title="Shared",
+            author=author,
+            body="",
+            body_mode="append",
+        ),
+        PrMetadataPatch(
+            commit_sha="abcdef123456",
+            scope="pkg",
+            title="Scoped",
+            author=author,
+            body="",
+            body_mode="append",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "Copybarista-PR-Title: Touch priv.mod\n"
+            "Copybarista-PR-Scope: pkg\n"
+            "Copybarista-PR-Title: x\n"
+        ),
+        "Copybarista-PR-Title: Touch priv.mod\n",
+    ],
+    ids=["closed by a scope", "closed by the end"],
+)
+def test_a_block_is_rewritten_by_the_projects_replace_rules(message: str) -> None:
+    transforms = (
+        Transform(
+            id="lib",
+            type="replace",
+            path="**",
+            before="priv.mod",
+            after="pub.mod",
+        ),
+    )
+
+    patches = _parse_pr_metadata_log(
+        _metadata_log(message),
+        forbidden_text=("priv.",),
+        scope="pkg",
+        text_transforms=transforms,
+    )
+
+    assert patches[0].title == "Touch pub.mod"
+
+
+def test_a_replace_rule_for_a_module_rewrites_each_spelling_of_it() -> None:
+    transform = Transform(
+        id="m",
+        type="replace",
+        path="**",
+        before="priv.mod",
+        after="pub.mod",
+        module=True,
+    )
+
+    assert sync_export_pr._rewrite_public_text(
+        "from priv import mod\nimport priv.mod",
+        (transform,),
+    ) == ("from pub import mod\nimport pub.mod")
+
+
+def test_the_source_replay_reads_its_log_in_the_checkout_by_scope_and_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor = ["git", "merge-base", "--is-ancestor", "base", "head"]
+    log = [
+        *("git", "log", "-z", "--reverse", "--format=%H%x00%aN%x00%aE%x00%B"),
+        "base..head",
+    ]
+    transforms = (
+        Transform(
+            id="lib",
+            type="replace",
+            path="**",
+            before="priv.mod",
+            after="pub.mod",
+        ),
+    )
+    message = "Copybarista-PR-Scope: pkg\nCopybarista-PR-Title: Fix priv.mod\n"
+    answers = _Answers(left=[(ancestor, 0, ""), (log, 0, _metadata_log(message))])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    patches = sync_export_pr._source_pr_metadata(
+        source_dir=_SRC,
+        replay_base="base",
+        current_source_rev="head",
+        forbidden_text=("priv.",),
+        scope="pkg",
+        text_transforms=transforms,
+    )
+
+    assert [(p.scope, p.title) for p in patches] == [("pkg", "Fix pub.mod")]
+    assert answers.calls == [
+        _RunCall(argv=ancestor, cwd=_SRC, check=False, capture=True),
+        _RunCall(argv=log, cwd=_SRC, capture=True),
+    ]
+
+
+def test_missing_source_history_is_named_with_its_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ["git", "merge-base", "--is-ancestor", "1111111111", "2222222222"]
+    answers = _probe(monkeypatch, argv=argv, code=1, out="")
+
+    with pytest.raises(sync_export_pr.PrReplayError) as raised:
+        sync_export_pr._require_source_history(
+            source_dir=_SRC,
+            replay_base="1111111111",
+            current_source_rev="2222222222",
+        )
+
+    assert str(raised.value) == (
+        "Source checkout history is insufficient for PR metadata replay. "
+        "Missing base 1111111 before 2222222 in /src. Use fetch-depth: 0 "
+        "or fetch the replay range before running Copybarista."
+    )
+    assert answers.calls == [
+        _RunCall(argv=argv, cwd=_SRC, check=False, capture=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("base", "bootstrap"),
+    [("base", ""), ("", "boot")],
+    ids=["no bootstrap", "no base"],
+)
+def test_a_base_is_floored_only_with_both_a_base_and_a_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    base: str,
+    bootstrap: str,
+) -> None:
+    answers = _Answers(left=[])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+
+    assert (
+        sync_export_pr._floor_replay_base(
+            source_dir=_SRC,
+            base=base,
+            bootstrap_base=bootstrap,
+        )
+        == base
+    )
+    assert answers.calls == []
+
+
+@pytest.mark.parametrize(
+    ("out", "forbidden", "email"),
+    [("Dev\0devX\n", (), "devX"), ("Dev\0dev@x \n", ("x>",), "dev@x")],
+    ids=["a trailing X", "a trailing space"],
+)
+def test_a_source_author_is_read_without_only_its_line_end(
+    monkeypatch: pytest.MonkeyPatch,
+    out: str,
+    forbidden: tuple[str, ...],
+    email: str,
+) -> None:
+    argv = ["git", "show", "-s", "--format=%aN%x00%aE", "abc"]
+    answers = _probe(monkeypatch, argv=argv, code=0, out=out)
+
+    assert sync_export_pr._source_author(
+        source_dir=_SRC,
+        commit_sha="abc",
+        forbidden_text=forbidden,
+    ) == SourceAuthor(name="Dev", email=email)
+    assert answers.calls == [_RunCall(argv=argv, cwd=_SRC, capture=True)]
+
+
+def test_a_source_author_with_private_text_is_refused_by_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ["git", "show", "-s", "--format=%aN%x00%aE", "abc"]
+    _probe(monkeypatch, argv=argv, code=0, out="Dev\0dev@leak.org\n")
+
+    with pytest.raises(sync_export_pr.PrMetadataError) as raised:
+        sync_export_pr._source_author(
+            source_dir=_SRC,
+            commit_sha="abc",
+            forbidden_text=("leak.org>",),
+        )
+
+    assert str(raised.value) == (
+        "Commit abc Copybarista-PR-Author: contains restricted source-specific text."
+    )
+
+
+def test_a_source_author_that_does_not_parse_is_named_by_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ["git", "show", "-s", "--format=%aN%x00%aE", "abc"]
+    _probe(monkeypatch, argv=argv, code=0, out="Dev\n")
+
+    with pytest.raises(sync_export_pr.PrReplayError) as raised:
+        sync_export_pr._source_author(
+            source_dir=_SRC,
+            commit_sha="abc",
+            forbidden_text=(),
+        )
+
+    assert str(raised.value) == "Cannot parse source author for commit abc."
+
+
+@pytest.mark.parametrize(
+    ("name", "email"),
+    [(" ", "a@x.org"), ("A", " ")],
+    ids=["no name", "no email"],
+)
+def test_an_author_missing_a_name_or_email_is_refused_by_commit(
+    name: str,
+    email: str,
+) -> None:
+    with pytest.raises(sync_export_pr.PrMetadataError) as raised:
+        sync_export_pr._validated_source_author(
+            commit_sha=_COMMIT,
+            author=SourceAuthor(name=name, email=email),
+            forbidden_text=(),
+        )
+
+    assert str(raised.value) == (
+        "Commit abcdef1 Copybarista-PR-Author: "
+        "source commit author name and email are required for attribution."
+    )
+
+
+def test_an_author_name_is_checked_for_private_text() -> None:
+    with pytest.raises(sync_export_pr.PrMetadataError):
+        sync_export_pr._validated_source_author(
+            commit_sha=_COMMIT,
+            author=SourceAuthor(name="Zork", email="z@x.org"),
+            forbidden_text=("zork <",),
+        )
+
+
+def test_recovered_entries_keep_notes_and_read_each_marked_author(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ancestor = ["git", "merge-base", "--is-ancestor", "abc", "HEAD"]
+    show = ["git", "show", "-s", "--format=%aN%x00%aE", "abc"]
+    answers = _Answers(left=[(ancestor, 0, ""), (show, 0, "Dev\0dev@example.com\n")])
+    monkeypatch.setattr(sync_export_pr, "_run", answers)
+    note = PrBodyEntry(commit_sha="", text="Note.")
+    marked = PrBodyEntry(commit_sha="sha:abc", text="Marked.")
+
+    assert sync_export_pr._recover_body_entries(
+        source_dir=_SRC,
+        entries=(note, marked),
+        forbidden_text=(),
+    ) == ((note, marked), (SourceAuthor(name="Dev", email="dev@example.com"),))
+    assert answers.calls == [
+        _RunCall(argv=ancestor, cwd=_SRC, check=False, capture=True),
+        _RunCall(argv=show, cwd=_SRC, capture=True),
+    ]
+    assert capsys.readouterr().out == (
+        "Recovered PR entry author: marker=sha:abc commit=abc "
+        "author=Dev <dev@example.com>\n"
+    )
+
+
+def test_an_entry_marker_of_an_unknown_kind_is_named() -> None:
+    with pytest.raises(sync_export_pr.PrReplayError) as raised:
+        sync_export_pr._recover_body_entries(
+            source_dir=_SRC,
+            entries=(PrBodyEntry(commit_sha="md5:abc", text="x"),),
+            forbidden_text=(),
+        )
+
+    assert str(raised.value) == (
+        "PR body entry marker has unsupported source marker md5:abc."
+    )
+
+
+def test_the_ledger_is_read_for_this_source_and_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def synced(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return "aaaa111"
+
+    monkeypatch.setattr(sync_export_pr, "last_synced_public_sha", synced)
+
+    assert (
+        sync_export_pr._last_synced_public_sha(
+            target_dir=_SRC,
+            public_dir=_PUBLIC,
+            sync_label="Sagent",
+            base_branch="dev",
+        )
+        == "aaaa111"
+    )
+    assert seen == {
+        "target_dir": _SRC,
+        "public_dir": _PUBLIC,
+        "sync_label": "Sagent",
+        "base_branch": "dev",
+        "fallback": "",
+    }
+
+
+def test_the_unimported_check_hands_each_step_its_own_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, dict[str, object]] = {}
+
+    def head(**kwargs: object) -> str:
+        seen["head"] = kwargs
+        return "bbbb222"
+
+    def synced(**kwargs: object) -> str:
+        seen["synced"] = kwargs
+        return "aaaa111"
+
+    def foreign(**kwargs: object) -> tuple[str, ...]:
+        seen["foreign"] = kwargs
+        return ()
+
+    monkeypatch.setattr(sync_export_pr, "_public_head_sha", head)
+    monkeypatch.setattr(sync_export_pr, "_last_synced_public_sha", synced)
+    monkeypatch.setattr(sync_export_pr, "_foreign_commits_since", foreign)
+
+    assert (
+        _public_head_unimported(
+            public_dir=_PUBLIC,
+            source_dir=_SRC,
+            sync_label="Sagent",
+            base_branch="dev",
+            sync_user_email="b@x.org",
+        )
+        == ""
+    )
+    assert seen == {
+        "head": {"cwd": _PUBLIC},
+        "synced": {
+            "target_dir": _SRC,
+            "public_dir": _PUBLIC,
+            "sync_label": "Sagent",
+            "base_branch": "dev",
+        },
+        "foreign": {
+            "base": "aaaa111",
+            "head": "bbbb222",
+            "author_email": "b@x.org",
+            "cwd": _PUBLIC,
+        },
+    }
+
+
+def _guarded_request(tmp_path: Path) -> ExportRequest:
+    return replace(
+        _export_request(tmp_path),
+        import_branch_prefix="p/import/",
+        source_repo="o/src",
+        source_dir=_SRC,
+        public_dir=_PUBLIC,
+        sync_label="Zork",
+        base_branch="dev",
+        sync_user_email="b@x.org",
+    )
+
+
+def test_the_export_guards_run_on_the_requests_own_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _guarded_request(tmp_path)
+    seen: dict[str, dict[str, object]] = {}
+
+    def pending(**kwargs: object) -> tuple[str, ...]:
+        seen["pending"] = kwargs
+        return ()
+
+    def unimported(**kwargs: object) -> str:
+        seen["unimported"] = kwargs
+        return ""
+
+    def export(request: ExportRequest) -> None:
+        seen["export"] = {"request": request}
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", export)
+
+    sync_export_pr.run_export_sync(request)
+
+    assert seen == {
+        "pending": {"prefix": "p/import/", "repo": "o/src", "cwd": _SRC},
+        "unimported": {
+            "public_dir": _PUBLIC,
+            "source_dir": _SRC,
+            "sync_label": "Zork",
+            "base_branch": "dev",
+            "sync_user_email": "b@x.org",
+        },
+        "export": {"request": request},
+    }
+
+
+def test_open_import_prs_are_named_with_how_to_clear_them(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def pending(**_: object) -> tuple[str, ...]:
+        return ("#1 p/import/a", "#2 p/import/b")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", pending)
+
+    with pytest.raises(sync_export_pr.ExportGuardError) as raised:
+        sync_export_pr.run_export_sync(_guarded_request(tmp_path))
+
+    assert str(raised.value) == (
+        "Zork export is blocked: import PR(s) still open, so the source does not "
+        "yet contain the public changes: #1 p/import/a, #2 p/import/b. "
+        "Land or close them, then re-run this export."
+    )
+
+
+def test_an_unimported_public_head_is_named_with_how_to_clear_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def no_pending(**_: object) -> tuple[str, ...]:
+        return ()
+
+    def unimported(**_: object) -> str:
+        return "0123456789abcdef0123"
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", no_pending)
+    monkeypatch.setattr(sync_export_pr, "_public_head_unimported", unimported)
+
+    with pytest.raises(sync_export_pr.ExportGuardError) as raised:
+        sync_export_pr.run_export_sync(_guarded_request(tmp_path))
+
+    assert str(raised.value) == (
+        "Zork export is blocked: public commit 0123456789ab has not been imported "
+        "into the source (no landed import records it), so exporting would revert "
+        "it. Land that import -- check the public repository's import workflow for "
+        "a failure -- then re-run this export."
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefix", "repo"),
+    [("p/import/", ""), ("", "o/src")],
+    ids=["no repo", "no prefix"],
+)
+def test_the_import_guards_need_both_a_prefix_and_a_repo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    prefix: str,
+    repo: str,
+) -> None:
+    ran: list[str] = []
+
+    def unreached(**_: object) -> tuple[str, ...]:
+        raise AssertionError("the guard must not run")
+
+    def export(request: ExportRequest) -> None:
+        del request
+        ran.append("ran")
+
+    monkeypatch.setattr(sync_export_pr, "_pending_import_prs", unreached)
+    monkeypatch.setattr(sync_export_pr, "_run_export_sync", export)
+
+    sync_export_pr.run_export_sync(
+        replace(
+            _export_request(tmp_path),
+            import_branch_prefix=prefix,
+            source_repo=repo,
+        ),
+    )
+
+    assert ran == ["ran"]
+
+
+@pytest.mark.parametrize(
+    ("replay_base", "scope", "base_label"),
+    [
+        ("1111111111111111", "sagent", "1111111"),
+        ("", "", "<root>"),
+    ],
+    ids=["based", "root"],
+)
+def test_the_replay_plan_hands_each_step_its_own_inputs(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    replay_base: str,
+    scope: str,
+    base_label: str,
+) -> None:
+    base_request = _export_request(tmp_path)
+    request = replace(
+        base_request,
+        source_dir=_SRC,
+        public_dir=_PUBLIC,
+        project_path=Path("pkg"),
+        source_sha="fallback",
+        forbidden_pr_text=("zork",),
+        replay_settings=replace(base_request.replay_settings, scope=scope),
+    )
+    head = "2222222222222222"
+    current_pr = sync_export_pr.CurrentPr(title="T", body="B", number=7, url="u")
+    markers = sync_export_pr.BranchMarkers(
+        source_digest="d",
+        replay_base_digest="",
+        exists=True,
+    )
+    transforms = (
+        Transform(id="lib", type="replace", path="**", before="a", after="b"),
+    )
+    author = SourceAuthor(name="Source Author", email="source@example.com")
+    patches = (
+        PrMetadataPatch(
+            commit_sha=head,
+            scope=scope,
+            title="Patch title",
+            author=author,
+            body="Update.",
+            body_mode="append",
+        ),
+    )
+    seen: dict[str, dict[str, object]] = {}
+
+    def step(name: str, result: object) -> Callable[..., object]:
+        def record(**kwargs: object) -> object:
+            seen[name] = kwargs
+            return result
+
+        return record
+
+    for name, result in (
+        ("_current_source_rev", head),
+        ("_current_pr", current_pr),
+        ("_branch_markers", markers),
+        ("_replay_base", replay_base),
+        ("_load_pr_text_transforms", transforms),
+        ("_source_pr_metadata", patches),
+        ("_base_pr_state", _pr_state()),
+    ):
+        monkeypatch.setattr(sync_export_pr, name, step(name, result))
+
+    plan = sync_export_pr._resolve_pr_replay_plan(request=request, pr_template="")
+
+    digest = _source_rev_digest(head)
+    assert seen == {
+        "_current_source_rev": {"source_dir": _SRC, "fallback": "fallback"},
+        "_current_pr": {
+            "branch": request.branch,
+            "repo": "example/public",
+            "cwd": _PUBLIC,
+        },
+        "_branch_markers": {"branch": request.branch, "cwd": _PUBLIC},
+        "_replay_base": {
+            "request": request,
+            "current_source_rev": head,
+            "current_pr": current_pr,
+            "branch_markers": markers,
+        },
+        "_load_pr_text_transforms": {
+            "source_dir": _SRC,
+            "project_path": Path("pkg"),
+        },
+        "_source_pr_metadata": {
+            "source_dir": _SRC,
+            "replay_base": replay_base,
+            "current_source_rev": head,
+            "forbidden_text": ("zork",),
+            "scope": scope,
+            "text_transforms": transforms,
+        },
+        "_base_pr_state": {
+            "request": request,
+            "current_pr": current_pr,
+            "current_source_rev": head,
+            "current_source_digest": digest,
+        },
+    }
+    assert plan.replay_base == replay_base
+    assert plan.replay_base_digest == (
+        _source_rev_digest(replay_base) if replay_base else ""
+    )
+    assert plan.current_pr is current_pr
+    assert plan.state == PrReplayState(
+        title="Patch title",
+        authors=(author,),
+        body_intro="Public body.",
+        body_entries=(PrBodyEntry(commit_sha=head, text="Update."),),
+        applied_source_rev=head,
+        applied_source_digest=digest,
+        metadata_count=1,
+    )
+    assert plan.body.startswith("Public body.\n\n### Updates\n\n")
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            f"PR replay source range: base={base_label} head=2222222 "
+            f"scope={scope or '<all>'} branch=copybarista/export/main"
+        ),
+        "PR metadata replay: patches=1 commits=1",
+        (
+            "PR replay result: title='Patch title' entries=1 "
+            f"authors=Source Author <source@example.com> applied=sha256:{digest[:12]}"
+        ),
+    ]
+
+
+def test_replace_tree_keeps_symlinks_as_links_and_merges_a_kept_git_dir(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg/real.txt").write_text("real\n", encoding="utf-8")
+    (source / "pkg/link.txt").symlink_to("real.txt")
+    (source / "top.txt").write_text("top\n", encoding="utf-8")
+    (source / "top-link.txt").symlink_to("top.txt")
+    (source / ".git").mkdir()
+    (source / ".git/config").write_text("c\n", encoding="utf-8")
+    (destination / ".git").mkdir(parents=True)
+    (destination / ".git/HEAD").write_text("h\n", encoding="utf-8")
+
+    _replace_tree(source=source, destination=destination)
+
+    assert (destination / "pkg/link.txt").is_symlink()
+    assert (destination / "top-link.txt").is_symlink()
+    assert sorted(path.name for path in (destination / ".git").iterdir()) == [
+        "HEAD",
+        "config",
+    ]
+
+
+def _spy_reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None]]:
+    """Record the file name and encoding of every ``Path.read_text``."""
+    reads: list[tuple[str, str | None]] = []
+    read_text = Path.read_text
+
+    def record_read(self: Path, *, encoding: str | None = None) -> str:
+        reads.append((self.name, encoding))
+        return read_text(self, encoding=encoding)
+
+    monkeypatch.setattr(Path, "read_text", record_read)
+    return reads
+
+
+def test_a_pyproject_is_read_as_utf8_for_its_branch_upgrades(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    reads = _spy_reads(monkeypatch)
+
+    assert sync_export_pr._git_branch_upgrades(tmp_path / "pyproject.toml") == []
+    assert reads == [("pyproject.toml", "utf-8")]
+
+
+def test_a_pyproject_is_read_as_utf8_for_its_upstream_exports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    reads = _spy_reads(monkeypatch)
+
+    assert (
+        _upstream_export_workflows(
+            pyproject=tmp_path / "pyproject.toml",
+            source_dir=tmp_path / "source",
+            target_repo="o/self",
+        )
+        == ()
+    )
+    assert reads == [("pyproject.toml", "utf-8")]
+
+
+def test_a_pr_template_is_read_as_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github/PULL_REQUEST_TEMPLATE.md").write_text(
+        "## Summary\n",
+        encoding="utf-8",
+    )
+    reads = _spy_reads(monkeypatch)
+
+    assert sync_export_pr._read_pr_template(tmp_path) == "## Summary\n"
+    assert reads == [("PULL_REQUEST_TEMPLATE.md", "utf-8")]
+
+
+def test_the_pr_body_file_is_written_as_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    written: list[tuple[str, str | None]] = []
+    write_text = Path.write_text
+
+    def record_write(self: Path, data: str, *, encoding: str | None = None) -> int:
+        written.append((self.name, encoding))
+        return write_text(self, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "write_text", record_write)
+
+    sync_export_pr._write_pr_body_file(request=_export_request(tmp_path), body="b\n")
+
+    assert written == [("copybarista-pr-body.md", "utf-8")]
+
+
+def test_tracked_repos_are_the_git_branch_sources_only() -> None:
+    pyproject = (
+        "[tool.uv.sources]\n"
+        'a = { git = "https://github.com/o/a.git", branch = "main" }\n'
+        'b = { git = "https://github.com/o/b", rev = "abc" }\n'
+        'c = { branch = "main" }\n'
+        'd = [{ git = "https://github.com/o/d", branch = "main" }]\n'
+    )
+
+    assert sync_export_pr._tracked_repos(pyproject) == {"o/a"}
+
+
+def test_the_lockfile_is_refreshed_in_the_public_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n',
+        encoding="utf-8",
+    )
+    answers = _probe(monkeypatch, argv=["uv", "lock"], code=0, out="")
+
+    _refresh_public_lockfile(public_dir=tmp_path, seed=tmp_path / "absent.lock")
+
+    assert answers.calls == [_RunCall(argv=["uv", "lock"], cwd=tmp_path)]
+
+
+def test_an_export_commit_message_is_its_title_markers_and_coauthors() -> None:
+    message = _export_commit_message(
+        title=" Title ",
+        sync_label="Label",
+        branch="b/x",
+        source_digest="s",
+        replay_base_digest="r",
+        authors=(
+            SourceAuthor(name="First", email="f@x.org"),
+            SourceAuthor(name="Second", email="s@x.org"),
+        ),
+    )
+
+    assert message == (
+        "Title\n\n"
+        "Label export branch: b/x\n"
+        "copybarista-source-rev-sha256=s\n"
+        "copybarista-replay-base-sha256=r\n"
+        "copybarista-pr-state-version=1\n"
+        "Co-authored-by: Second <s@x.org>\n"
     )
 
 

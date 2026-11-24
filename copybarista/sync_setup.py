@@ -414,7 +414,7 @@ def write_sync_scaffold(
         path.parent.mkdir(parents=True, exist_ok=True)
         # A test cannot change the process locale, so it cannot tell "UTF-8" or
         # the default encoding from "utf-8".
-        path.write_text(content, encoding="utf-8")  # pragma: no mutate
+        path.write_text(content, encoding="utf-8")  # pragma: no mutate -- Locale fixed.
         written.append(path)
     return written
 
@@ -808,7 +808,10 @@ def export_workflow(settings: SyncSettings, *, inputs: tuple[str, ...]) -> str:
             "RELEASE_CHECK_ARG": release_check_arg,
             "SKIP_SOURCE_VALIDATION_ARG": skip_source_validation_arg,
             "PYTHON_VERSION": _yaml_str(settings.validation_python_versions[0]),
-            **_sync_auth(settings, importing=False),  # pragma: no mutate[truthiness]
+            **_sync_auth(
+                settings,
+                importing=False,  # pragma: no mutate[truthiness] -- Only truth is read.
+            ),
         },
     )
 
@@ -1616,7 +1619,7 @@ def _render_template(
     template = resources.files(f"{__package__}.templates").joinpath(name)
     # A test cannot change the process locale, so it cannot tell "UTF-8" or the
     # default encoding from "utf-8".
-    text = template.read_text(encoding="utf-8")  # pragma: no mutate
+    text = template.read_text(encoding="utf-8")  # pragma: no mutate -- Locale is fixed.
     # Action pins are injected for every template rather than passed by each
     # caller: they are the same everywhere, and a caller that forgot one would
     # trip the unrendered-token check below instead of silently shipping a

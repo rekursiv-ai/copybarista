@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from treekle import from_plain, json_loads
@@ -19,7 +20,7 @@ from copybarista.errors import (
     OutputMismatchError,
     TransformError,
 )
-from copybarista.import_request import ImportResult
+from copybarista.import_request import ImportChange, ImportResult
 from copybarista.manifest import ExportManifest
 from copybarista.sync_setup import (
     DEFAULT_SYNC_USER_EMAIL,
@@ -29,8 +30,6 @@ from copybarista.sync_setup import (
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from copybarista.config import WorkflowConfig
     from copybarista.import_request import ImportRequest
 
@@ -48,6 +47,19 @@ def _config(path: Path, source_root: str = "project") -> None:
         """,
         encoding="utf-8",
     )
+
+
+def _record_write_encodings(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Record each ``Path.write_text`` encoding; the write still happens."""
+    real_write_text = Path.write_text
+    encodings: list[str | None] = []
+
+    def spy(self: Path, data: str, *, encoding: str | None = None) -> int:
+        encodings.append(encoding)
+        return real_write_text(self, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    return encodings
 
 
 def test_cli_validate_accepts_valid_config(tmp_path: Path):
@@ -235,6 +247,7 @@ def test_cli_check_leaks_honors_config_globstar(
 
 def test_cli_translate_prints_or_writes_the_native_config(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
     sky = tmp_path / "copy.bara.sky"
@@ -254,8 +267,10 @@ def test_cli_translate_prints_or_writes_the_native_config(
     assert main(["translate", str(sky)]) == 0
     printed = capsys.readouterr().out
     native = tmp_path / "copy.barista.toml"
+    encodings = _record_write_encodings(monkeypatch)
     assert main(["translate", str(sky), "--output", str(native)]) == 0
 
+    assert encodings == ["utf-8"]
     assert printed.startswith('[workflow]\nname = "export"\n')
     assert native.read_text(encoding="utf-8") == printed
     assert capsys.readouterr().out == ""
@@ -334,6 +349,7 @@ def test_cli_import_change_runs_the_import_its_flags_describe(
     )
 
     [request] = requests
+    assert request.config.name == "demo"
     assert (request.public_base, request.public_head) == (paths["base"], paths["head"])
     assert (request.source_base, request.destination) == (paths["source"], paths["out"])
     assert (request.verify, request.merge_import) == (verify, merge)
@@ -346,6 +362,7 @@ def test_cli_import_change_runs_the_import_its_flags_describe(
 
 def test_cli_write_export_workflow_writes_to_an_output_file(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
     main(
@@ -367,6 +384,7 @@ def test_cli_write_export_workflow_writes_to_an_output_file(
     capsys.readouterr()
     output = tmp_path / "loop-to-configgle.yml"
 
+    encodings = _record_write_encodings(monkeypatch)
     main(
         [
             "write-export-workflow",
@@ -376,6 +394,7 @@ def test_cli_write_export_workflow_writes_to_an_output_file(
         ],
     )
 
+    assert encodings == ["utf-8"]
     assert "configgle/export/main" in output.read_text(encoding="utf-8")
     assert capsys.readouterr().out == ""
 
@@ -817,6 +836,43 @@ def test_cli_write_public_workflows_rewrites_every_generated_file(
     assert "--hook-stage pre-push" in generated[0].read_text(encoding="utf-8")
 
 
+def test_cli_write_public_workflows_writes_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "packages/configgle",
+            "--public-repo",
+            "example/configgle",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+        ],
+    )
+    capsys.readouterr()
+    workflows = tmp_path / ".export/.github/workflows"
+    workflows.mkdir(parents=True)
+    encodings = _record_write_encodings(monkeypatch)
+
+    def public_workflows(settings: object) -> dict[str, str]:
+        del settings
+        return {"x.yml": "é\n"}
+
+    monkeypatch.setattr(cli, "public_workflows", public_workflows)
+    main(["write-public-workflows", str(tmp_path / "copybarista.sync.toml")])
+
+    assert encodings == ["utf-8"]
+    assert (workflows / "x.yml").read_bytes() == b"\xc3\xa9\n"
+
+
 def test_cli_write_public_workflows_adds_the_npm_workflow_only_when_enabled(
     tmp_path: Path,
 ):
@@ -909,6 +965,164 @@ def test_cli_write_public_workflows_keeps_the_ci_a_tree_owns(tmp_path: Path):
     main(["write-public-workflows", str(sync)])
 
     assert owned.read_text(encoding="utf-8") == "name: Package validation\n"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["validate", "c", "--workflow", "other"], id="validate"),
+        pytest.param(["check-leaks", "c", "r", "--workflow", "other"], id="check"),
+        pytest.param(["export", "c", "s", "--workflow", "other"], id="export"),
+        pytest.param(["publish-git", "c", "s", "--workflow", "other"], id="publish"),
+        pytest.param(
+            ["import-change", "c", *_IMPORT_CHANGE_REQUIRED, "--workflow", "other"],
+            id="import-change",
+        ),
+    ],
+)
+def test_each_command_loads_the_workflow_it_names(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    loaded: list[str] = []
+
+    def load(path: Path, *, workflow_name: str) -> WorkflowConfig:
+        del path
+        loaded.append(workflow_name)
+        raise ConfigError("stop after the load")
+
+    monkeypatch.setattr(cli, "load_config", load)
+
+    assert main(argv) == 1
+    assert loaded == ["other"]
+
+
+def test_cli_translate_loads_the_workflow_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    translated: list[str] = []
+
+    def translate(path: Path, *, workflow_name: str) -> str:
+        del path
+        translated.append(workflow_name)
+        return "name = 'other'\n"
+
+    monkeypatch.setattr(cli, "translate_copy_bara_sky_to_toml", translate)
+
+    assert main(["translate", "c", "--workflow", "other"]) == 0
+    assert translated == ["other"]
+    assert capsys.readouterr().out == "name = 'other'\n"
+
+
+@pytest.mark.parametrize(("flags", "forced"), [([], False), (["--force"], True)])
+def test_cli_export_passes_its_force_flag_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    forced: bool,
+):
+    copy_config = tmp_path / "copy.barista.toml"
+    _config(copy_config)
+    exported: list[object] = []
+
+    def export_folder(**settings: object) -> ExportManifest:
+        exported.append(settings["force"])
+        return ExportManifest(files=(), transforms=(), elapsed_sec=0.0)
+
+    monkeypatch.setattr(cli, "export_folder", export_folder)
+
+    assert (
+        main(
+            [
+                "export",
+                str(copy_config),
+                str(tmp_path / "repo"),
+                "--folder-dir",
+                str(tmp_path / "out"),
+                *flags,
+            ],
+        )
+        == 0
+    )
+    assert exported == [forced]
+
+
+def test_cli_import_change_prints_sorted_indented_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    copy_config = tmp_path / "copy.barista.toml"
+    _config(copy_config)
+    change = ImportChange(public="p.py", source="s.py", action="modified")
+
+    def import_change_request(request: ImportRequest) -> ImportResult:
+        del request
+        return ImportResult(changes=(change,))
+
+    monkeypatch.setattr(cli, "import_change_request", import_change_request)
+
+    assert (
+        main(["import-change", str(copy_config), *_IMPORT_CHANGE_REQUIRED, "--json"])
+        == 0
+    )
+    assert capsys.readouterr().out == (
+        '{\n  "changes": [\n    {\n      "action": "modified",\n'
+        '      "outcome": "applied",\n      "public": "p.py",\n'
+        '      "source": "s.py",\n      "transforms": []\n    }\n  ]\n}\n'
+    )
+
+
+def test_cli_write_export_workflow_lists_each_copied_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    main(
+        [
+            "init-sync",
+            str(tmp_path),
+            "--package-name",
+            "configgle",
+            "--source-root",
+            "packages/configgle",
+            "--public-repo",
+            "example/configgle",
+            "--source-repo",
+            "example/source",
+            "--copybarista-project-path",
+            "tools/copybarista",
+        ],
+    )
+    (tmp_path / "copy.barista.toml").write_text(
+        """
+        [workflow]
+        name = "demo"
+        mode = "squash"
+        source_root = "project"
+
+        [files]
+        include = ["**"]
+
+        [[files.copy]]
+        source = "lib/files"
+        destination = "files"
+        """,
+        encoding="utf-8",
+    )
+    (tmp_path / "lib/files").mkdir(parents=True)
+    capsys.readouterr()
+
+    main(
+        [
+            "write-export-workflow",
+            str(tmp_path / "copybarista.sync.toml"),
+            "--source-ref",
+            str(tmp_path),
+        ],
+    )
+
+    assert "lib/files/**" in capsys.readouterr().out
 
 
 if __name__ == "__main__":

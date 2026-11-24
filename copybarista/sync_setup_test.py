@@ -197,6 +197,39 @@ def test_write_sync_scaffold_uses_stable_public_file_names(tmp_path: Path):
     assert not (tmp_path / "scripts/sync_configgle_export.py").exists()
 
 
+def test_every_text_file_is_read_and_written_as_utf_8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each text file is read and written as UTF-8, never in the process locale."""
+    read_text, write_text = Path.read_text, Path.write_text
+    encodings: list[str | None] = []
+
+    def read(self: Path, *, encoding: str | None = None) -> str:
+        encodings.append(encoding)
+        return read_text(self, encoding=encoding)
+
+    def write(self: Path, data: str, *, encoding: str | None = None) -> int:
+        encodings.append(encoding)
+        return write_text(self, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "write_text", write)
+    write_sync_scaffold(
+        root=tmp_path,
+        settings=_settings(
+            npm_packages=_NPM_PACKAGES,
+            npm_build_commands=_NPM_BUILD_COMMANDS,
+        ),
+    )
+    (tmp_path / ".gitignore").write_text("", encoding="utf-8")
+    check_sync_config(root=tmp_path)
+    load_sync_settings(tmp_path / "copybarista.sync.toml")
+
+    assert encodings
+    assert set(encodings) == {"utf-8"}
+
+
 def test_sync_metadata_stores_package_name_as_data(tmp_path: Path):
     write_sync_scaffold(root=tmp_path, settings=_settings())
 
@@ -369,8 +402,13 @@ def test_the_scaffold_pins_a_checkout_to_the_newest_supported_python(tmp_path: P
             "*.pyc\n.python-version\n",
             r"\.gitignore must not ignore \.python-version",
         ),
+        (
+            ".gitignore",
+            "/.python-version\n",
+            r"\.gitignore must not ignore \.python-version",
+        ),
     ],
-    ids=["missing", "another version", "ignored"],
+    ids=["missing", "another version", "ignored", "ignored from the root"],
 )
 def test_check_sync_config_rejects_a_checkout_without_its_python_pin(
     tmp_path: Path,
@@ -660,6 +698,177 @@ def test_check_sync_config_rejects_an_import_job_reshaped_by_hand(
         check_sync_config(root=tmp_path)
 
 
+def _edit_import_job(
+    parsed: dict[object, object],
+    change: Callable[[dict[str, object]], None],
+) -> None:
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+    change(jobs["import-change"])
+    parsed["jobs"] = jobs
+
+
+def _jobs_as_a_list(parsed: dict[object, object]) -> str:
+    parsed["jobs"] = list[object]()
+    return "<repo>-to-loop.yml jobs must be a YAML mapping."
+
+
+def _job_as_a_list(parsed: dict[object, object]) -> str:
+    parsed["jobs"] = {"import-change": list[object]()}
+    return "<repo>-to-loop.yml jobs.import-change must be a YAML mapping."
+
+
+def _env_as_a_list(parsed: dict[object, object]) -> str:
+    _edit_import_job(parsed, lambda job: job.update(env=[]))
+    return "<repo>-to-loop.yml jobs.import-change.env must be a YAML mapping."
+
+
+def _no_if(parsed: dict[object, object]) -> str:
+    def change(job: dict[str, object]) -> None:
+        del job["if"]
+
+    _edit_import_job(parsed, change)
+    return (
+        "<repo>-to-loop.yml jobs.import-change.if must contain "
+        "github.event.pull_request.head.repo.full_name == github.repository."
+    )
+
+
+def _setup_python_with_as_a_list(parsed: dict[object, object]) -> str:
+    def change(job: dict[str, object]) -> None:
+        steps = from_plain(job["steps"], list[dict[str, object]])
+        _step_named(steps, "uses", action_ref("actions/setup-python"))["with"] = []
+        job["steps"] = steps
+
+    _edit_import_job(parsed, change)
+    return (
+        "<repo>-to-loop.yml jobs.import-change.steps.setup-python.with "
+        "must be a YAML mapping."
+    )
+
+
+def _checkout_without_with(parsed: dict[object, object]) -> str:
+    def change(job: dict[str, object]) -> None:
+        steps = from_plain(job["steps"], list[dict[str, object]])
+        first = next(step for step in steps if _checkout_path(step) == "target")
+        del first["with"]
+        job["steps"] = steps
+
+    _edit_import_job(parsed, change)
+    return "<repo>-to-loop.yml checkout.with must be a YAML mapping."
+
+
+def _string_step_before_the_import_step(parsed: dict[object, object]) -> str:
+    def change(job: dict[str, object]) -> None:
+        steps = from_plain(job["steps"], list[object])
+        index = [from_plain(step, dict[str, object]).get("id") for step in steps].index(
+            "refs",
+        )
+        steps.insert(index + 1, "echo")
+        job["steps"] = steps
+
+    _edit_import_job(parsed, change)
+    return (
+        "<repo>-to-loop.yml steps.Import public tree into target repository "
+        "must be a YAML mapping."
+    )
+
+
+def _string_step_last(parsed: dict[object, object]) -> str:
+    count = 0
+
+    def change(job: dict[str, object]) -> None:
+        nonlocal count
+        steps = from_plain(job["steps"], list[object])
+        count = len(steps)
+        job["steps"] = [*steps, "echo"]
+
+    _edit_import_job(parsed, change)
+    return (
+        f"<repo>-to-loop.yml jobs.import-change.steps[{count}] must be a YAML mapping."
+    )
+
+
+def _rewrite_import_workflow(
+    tmp_path: Path,
+    edit: Callable[[dict[object, object]], str],
+) -> str:
+    """Scaffold a package, rewrite its import workflow, and return what ``edit`` did."""
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+    parsed = from_plain(
+        yaml.safe_load(workflow.read_text(encoding="utf-8")),
+        dict[object, object],
+    )
+    expected = edit(parsed)
+    workflow.write_text(yaml.safe_dump(parsed, sort_keys=False), encoding="utf-8")
+    return expected
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        _jobs_as_a_list,
+        _job_as_a_list,
+        _env_as_a_list,
+        _no_if,
+        _setup_python_with_as_a_list,
+        _checkout_without_with,
+        _string_step_before_the_import_step,
+        _string_step_last,
+    ],
+    ids=[
+        "jobs as a list",
+        "the import job as a list",
+        "env as a list",
+        "no if",
+        "setup-python with as a list",
+        "a checkout with no with",
+        "a string step before the import step",
+        "a string step last",
+    ],
+)
+def test_check_sync_config_names_the_import_part_that_is_malformed(
+    tmp_path: Path,
+    edit: Callable[[dict[object, object]], str],
+):
+    expected = _rewrite_import_workflow(tmp_path, edit)
+
+    with pytest.raises(ConfigError) as raised:
+        check_sync_config(root=tmp_path)
+
+    # `_workflow_step_run` prefixes its own workflow name to the one the error adds.
+    assert str(raised.value).endswith(expected)
+
+
+def _refs_id_moves_to_the_checkout_at(
+    path: str,
+) -> Callable[[dict[object, object]], str]:
+    """Give the ``refs`` id to the checkout writing to ``path``."""
+
+    def edit(parsed: dict[object, object]) -> str:
+        def change(job: dict[str, object]) -> None:
+            steps = from_plain(job["steps"], list[dict[str, object]])
+            del _step_named(steps, "id", "refs")["id"]
+            next(step for step in steps if _checkout_path(step) == path)["id"] = "refs"
+            job["steps"] = steps
+
+        _edit_import_job(parsed, change)
+        return path
+
+    return edit
+
+
+@pytest.mark.parametrize("path", ["public-history", "public-base"])
+def test_check_sync_config_accepts_the_import_step_that_is_also_a_checkout(
+    tmp_path: Path,
+    path: str,
+):
+    """The refs step may be the last checkout it needs before it, or the first after."""
+    _rewrite_import_workflow(tmp_path, _refs_id_moves_to_the_checkout_at(path))
+
+    check_sync_config(root=tmp_path)
+
+
 def test_check_sync_config_names_each_missing_sync_file(tmp_path: Path):
     with pytest.raises(
         ConfigError,
@@ -739,6 +948,45 @@ def test_load_sync_settings_uses_defaults_for_optional_fields(tmp_path: Path):
     assert not settings.publish_source_rev
     assert not settings.refresh_public_lockfile
     assert settings.release_check_script == ""
+    assert not settings.skip_source_validation
+    assert settings.python_package
+    assert settings.export_watch_paths == ()
+    assert settings.system_packages == ("ripgrep", "fd-find")
+    assert settings.npm_packages == ()
+    assert settings.npm_build_commands == ()
+    assert settings.replay_bootstrap_base_comment == ()
+
+
+def test_load_sync_settings_without_a_sync_table_names_the_first_setting(
+    tmp_path: Path,
+):
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text("", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as raised:
+        load_sync_settings(config)
+
+    assert str(raised.value) == "copybarista.sync.toml must define sync.package_name."
+
+
+def test_load_sync_settings_reads_no_forbidden_text_when_none_is_listed(
+    tmp_path: Path,
+):
+    config = tmp_path / "copybarista.sync.toml"
+    config.write_text(
+        """
+        [sync]
+        package_name = "configgle"
+        sync_label = "Configgle"
+        source_root = "packages/configgle"
+        public_repo = "rekursiv-ai/configgle"
+        source_repo = "example/source"
+        copybarista_project_path = "tools/copybarista"
+        """,
+        encoding="utf-8",
+    )
+
+    assert load_sync_settings(config).forbidden_pr_text == ()
 
 
 def test_load_sync_settings_reads_pull_request_defaults(tmp_path: Path):
@@ -851,6 +1099,16 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
     [
         ('package_name = "configgle"\n', "", r"must define sync\.package_name\."),
         (
+            'package_name = "configgle"',
+            'package_name = ""',
+            r"must define sync\.package_name\.",
+        ),
+        (
+            'package_name = "configgle"',
+            "package_name = 1",
+            r"must define sync\.package_name\.",
+        ),
+        (
             'sync_user_name = "copybarista"',
             "sync_user_name = 1",
             r"sync\.sync_user_name must be a string\.",
@@ -878,6 +1136,8 @@ def test_load_sync_settings_rejects_a_key_it_does_not_read(tmp_path: Path, key: 
     ],
     ids=[
         "no package name",
+        "an empty package name",
+        "a number for a package name",
         "a number for a name",
         "a string for a flag",
         "a number for a title",
@@ -1319,7 +1579,10 @@ def test_npm_build_commands_without_packages_are_refused():
         sync_toml(_settings(npm_build_commands=("node build.js",)))
 
 
-@pytest.mark.parametrize("command", ["", "  ", "# comment", "one\ntwo"])
+@pytest.mark.parametrize(
+    "command",
+    ["", "  ", "# comment", "  # indented comment", "one\ntwo"],
+)
 def test_npm_build_commands_must_be_executable_single_lines(command: str):
     with pytest.raises(ConfigError, match="npm_build_commands"):
         sync_toml(_settings(npm_packages=("npm/a",), npm_build_commands=(command,)))
@@ -2456,6 +2719,168 @@ def test_generated_toml_escapes_strings(tmp_path: Path):
     loaded = load_sync_settings(tmp_path / "copybarista.sync.toml")
 
     assert loaded.sync_label == 'Configgle "Core"'
+
+
+def test_an_action_token_joins_every_path_part_after_the_owner():
+    assert sync_setup._action_token("owner/a-b/c") == "A_B_C"
+
+
+def test_a_github_expression_doubles_each_single_quote():
+    assert sync_setup._github_expr_str("it's") == "'it''s'"
+
+
+def test_the_apt_cache_key_hashes_the_sorted_names_joined_by_spaces():
+    assert sync_setup._packages_key(("b", "a")) == sync_setup._packages_key(("a b",))
+
+
+def test_the_branch_slug_replaces_each_character_that_is_no_letter_or_digit():
+    assert _settings(package_name="My Pkg_x").branch_slug == "my-pkg-x"
+    assert _settings(package_name="-a-").branch_slug == "a"
+
+
+def test_shell_args_pairs_each_flag_with_the_value_after_it():
+    args = ["x", "--a", "1", "--b", "--c", "2"]
+
+    assert sync_setup._shell_args(args, indent="  ") == (
+        "  x \\\n  --a 1 \\\n  --b \\\n  --c 2"
+    )
+
+
+def test_pr_replay_args_lists_each_enabled_flag():
+    plain = sync_setup._pr_replay_args(_settings())
+    full = sync_setup._pr_replay_args(
+        _settings(
+            require_pr_metadata=True,
+            publish_source_rev=True,
+            refresh_public_lockfile=True,
+        ),
+    )
+
+    assert plain == [
+        "--pr-scope",
+        "configgle",
+        "--pr-default-title",
+        "Update Configgle export",
+        "--pr-default-body",
+        "Updates the generated Configgle public repository export.",
+    ]
+    assert full[len(plain) :] == [
+        "--require-pr-metadata",
+        "--publish-source-rev",
+        "--refresh-public-lockfile",
+    ]
+
+
+@pytest.mark.parametrize("prefix", ["main", "master"])
+def test_a_protected_branch_is_no_generated_branch_prefix(prefix: str):
+    with pytest.raises(ConfigError, match="export_branch_prefix is not a safe"):
+        sync_toml(_settings(export_branch_prefix=prefix))
+
+
+def test_a_release_check_script_path_may_hold_a_space():
+    """The first control character is the one below the space, not the space."""
+    assert "release_check_script" in sync_toml(
+        _settings(release_check_script="scripts/check it.py"),
+    )
+
+
+def test_check_sync_config_lists_every_missing_workflow(tmp_path: Path):
+    write_sync_scaffold(root=tmp_path, settings=_settings())
+    (tmp_path / ".github/workflows/configgle-to-loop.yml").unlink()
+    (tmp_path / ".github/workflows/package-validation.yml").unlink()
+
+    with pytest.raises(ConfigError) as raised:
+        check_sync_config(root=tmp_path)
+
+    assert str(raised.value) == (
+        "Missing sync files: .github/workflows/configgle-to-loop.yml, "
+        ".github/workflows/package-validation.yml"
+    )
+
+
+def test_check_sync_config_requires_the_lockfile_flag_a_refreshing_import_passes(
+    tmp_path: Path,
+):
+    write_sync_scaffold(
+        root=tmp_path,
+        settings=_settings(refresh_public_lockfile=True),
+    )
+    check_sync_config(root=tmp_path)
+    workflow = tmp_path / ".github/workflows/configgle-to-loop.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "--refresh-public-lockfile",
+            "--keep-lockfile",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"must reference --refresh-public-lockfile\.",
+    ):
+        check_sync_config(root=tmp_path)
+
+
+def test_the_import_workflow_names_itself_and_its_job_for_the_package():
+    parsed = from_plain(
+        yaml.safe_load(import_workflow(_settings())),
+        dict[object, object],
+    )
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+
+    assert parsed["name"] == "configgle→loop"
+    assert jobs["import-change"]["name"] == "configgle→loop"
+
+
+def test_the_import_passes_the_lockfile_flag_only_when_the_package_refreshes():
+    def import_lines(settings: SyncSettings) -> list[str]:
+        run = _step_run(
+            import_workflow(settings),
+            job="import-change",
+            name="Import public tree into target repository",
+        )
+        return [line.strip() for line in run.splitlines()]
+
+    assert "--refresh-public-lockfile \\" in import_lines(
+        _settings(refresh_public_lockfile=True),
+    )
+    assert not [line for line in import_lines(_settings()) if "refresh" in line]
+
+
+def test_package_validation_runs_one_python_without_a_matrix():
+    text = package_validation_workflow(_settings())
+    parsed = from_plain(yaml.safe_load(text), dict[object, object])
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+
+    assert "strategy" not in jobs["validate"]
+    assert [version for _, version in _setup_steps(text)] == ["3.12", "3.12"]
+
+
+@pytest.mark.parametrize("versions", [("3.12", "3.13"), ("3.12", "3.13", "3.14")])
+def test_package_validation_matrix_lists_every_python(versions: tuple[str, ...]):
+    text = package_validation_workflow(_settings(validation_python_versions=versions))
+    parsed = from_plain(yaml.safe_load(text), dict[object, object])
+    jobs = from_plain(parsed["jobs"], dict[str, dict[str, object]])
+
+    assert jobs["validate"]["strategy"] == {
+        "matrix": {"python-version": list(versions)},
+    }
+    assert {version for _, version in _setup_steps(text)} == {
+        "${{ matrix.python-version }}",
+    }
+
+
+def test_npm_package_paths_may_start_with_a_capital():
+    text = publish_npm_workflow(_settings(npm_packages=("Npm/Pkg-A",)))
+
+    assert "for package in Npm/Pkg-A; do" in text
+
+
+def test_publish_npm_workflow_separates_packages_with_a_space():
+    text = publish_npm_workflow(_settings(npm_packages=_NPM_PACKAGES))
+
+    assert "for package in npm/configgle-a npm/configgle-b; do" in text
 
 
 def _import_steps(workflow: str) -> list[dict[str, object]]:

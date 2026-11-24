@@ -19,6 +19,7 @@ import pytest
 from copybarista import import_request, transforms
 from copybarista.cli import main
 from copybarista.config import (
+    FileCopy,
     FileMove,
     Transform,
     WorkflowConfig,
@@ -1843,6 +1844,7 @@ def test_merge_import_folds_an_edit_onto_a_hand_formatted_public_base(tmp_path: 
     assert [c.outcome for c in result.changes] == ["applied"]
     delta = (destination / "internal/demo/pyproject.delta.toml").read_text()
     assert tomllib.loads(delta)["b"] == 3
+    assert delta == 'b   =   3\n\n[pyproject]\nbase = "pyproject.toml"\n'
 
 
 def test_merge_import_keeps_a_comment_the_source_moved(tmp_path: Path):
@@ -7317,6 +7319,57 @@ def test_text_that_is_not_utf8_is_refused(tmp_path: Path):
         import_request._decoded(b"\xff\n", public_path="m.txt")
 
 
+def test_import_result_reports_every_change_under_its_key() -> None:
+    result = ImportResult(
+        changes=(
+            ImportChange(
+                public="a.py",
+                source="src/a.py",
+                action="modified",
+                transforms=("rename",),
+                outcome="merged",
+            ),
+        ),
+    )
+
+    assert result.to_dict() == {
+        "changes": [
+            {
+                "public": "a.py",
+                "source": "src/a.py",
+                "action": "modified",
+                "transforms": ["rename"],
+                "outcome": "merged",
+            },
+        ],
+    }
+
+
+def test_reversal_reads_the_source_as_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    importer = _importer(tmp_path)
+    (tmp_path / "source-base/m.py").write_text("x = 1\n", encoding="utf-8")
+    real = Path.read_text
+    reads: list[str | None] = []
+
+    def spy(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        reads.append(encoding)
+        return real(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+
+    importer._reverse_changed_lines(
+        public_path="m.py",
+        source_path="m.py",
+        merged_public=b"x = 2\n",
+        ours_public=b"x = 1\n",
+    )
+
+    assert reads == ["utf-8"]
+
+
 def test_write_symlink_refuses_an_absolute_target(tmp_path: Path):
     (tmp_path / "public").mkdir()
     (tmp_path / "public/link").symlink_to("/etc/hosts")
@@ -7417,6 +7470,1216 @@ def test_validated_target_refuses_a_symlink_loop(
 
     with pytest.raises(ImportRequestError, match="cannot be resolved: loop"):
         import_request._validated_target(destination=tmp_path, relative_path="loop")
+
+
+def _rmtree_that_fails_unless_ignoring_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Make ``shutil.rmtree`` delete, then raise for a caller that keeps its errors."""
+    rmtree = shutil.rmtree
+
+    def stuck(path: Path, *, ignore_errors: bool = False, **_: object) -> None:
+        rmtree(path, ignore_errors=True)
+        if not ignore_errors:
+            raise OSError("stuck")
+
+    monkeypatch.setattr(shutil, "rmtree", stuck)
+
+
+def test_capture_originals_skips_only_paths_under_a_replaced_directory(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d/f.txt").write_text("f\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("o\n", encoding="utf-8")
+
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(
+            ImportChange(public="d", source="d", action="type_changed"),
+            ImportChange(public="d/f.txt", source="d/f.txt", action="modified"),
+            ImportChange(public="other.txt", source="other.txt", action="modified"),
+        ),
+    )
+    import_request._discard_backups(originals)
+
+    assert [original.path for original in originals] == [
+        tmp_path / "d",
+        tmp_path / "other.txt",
+    ]
+
+
+def test_capture_originals_records_a_shared_absent_parent_once(tmp_path: Path) -> None:
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(
+            ImportChange(public="a/b/x.txt", source="a/b/x.txt", action="created"),
+            ImportChange(public="a/b/y.txt", source="a/b/y.txt", action="created"),
+        ),
+    )
+
+    assert [(original.path, original.backup) for original in originals] == [
+        (tmp_path / "a", None),
+    ]
+
+
+def test_capture_originals_removes_its_backups_without_masking_the_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "good.txt").write_text("good\n", encoding="utf-8")
+    (tmp_path / "link").symlink_to(".")
+    _rmtree_that_fails_unless_ignoring_errors(monkeypatch)
+    changes = (
+        ImportChange(public="good.txt", source="good.txt", action="modified"),
+        ImportChange(public="bad.txt", source="link/bad.txt", action="created"),
+    )
+
+    with pytest.raises(ImportRequestError, match="escapes destination"):
+        _capture_originals(destination=tmp_path, changes=changes)
+
+
+def test_discard_backups_ignores_removal_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "f.txt").write_text("f\n", encoding="utf-8")
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(ImportChange(public="f.txt", source="f.txt", action="modified"),),
+    )
+    backup = originals[0].backup
+    assert backup is not None
+    _rmtree_that_fails_unless_ignoring_errors(monkeypatch)
+
+    import_request._discard_backups(originals)
+
+    assert not backup.parent.exists()
+
+
+def test_rollback_keeps_the_symlinks_inside_a_replaced_directory(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d/real.txt").write_text("kept\n", encoding="utf-8")
+    (tmp_path / "d/dangling").symlink_to("missing.txt")
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(ImportChange(public="d", source="d", action="type_changed"),),
+    )
+    shutil.rmtree(tmp_path / "d")
+    (tmp_path / "d").write_text("file\n", encoding="utf-8")
+
+    import_request._restore_originals(originals)
+    import_request._discard_backups(originals)
+
+    assert (tmp_path / "d/real.txt").read_text(encoding="utf-8") == "kept\n"
+    assert (tmp_path / "d/dangling").readlink() == Path("missing.txt")
+
+
+def test_rollback_restores_a_replaced_symlink_as_a_link(tmp_path: Path) -> None:
+    (tmp_path / "link").symlink_to("missing.txt")
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(ImportChange(public="link", source="link", action="modified"),),
+    )
+    (tmp_path / "link").unlink()
+    (tmp_path / "link").write_text("file\n", encoding="utf-8")
+
+    import_request._restore_originals(originals)
+    import_request._discard_backups(originals)
+
+    assert (tmp_path / "link").readlink() == Path("missing.txt")
+
+
+def test_restore_originals_recreates_a_missing_parent_directory(
+    tmp_path: Path,
+) -> None:
+    backup = tmp_path / "backup.txt"
+    backup.write_text("kept\n", encoding="utf-8")
+    original = import_request._OriginalPath(path=tmp_path / "x/y/f.txt", backup=backup)
+
+    import_request._restore_originals((original,))
+
+    assert (tmp_path / "x/y/f.txt").read_text(encoding="utf-8") == "kept\n"
+
+
+def test_restore_originals_restores_every_path_around_a_created_one(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "keep.txt").write_text("old\n", encoding="utf-8")
+    originals = _capture_originals(
+        destination=tmp_path,
+        changes=(
+            ImportChange(public="keep.txt", source="keep.txt", action="modified"),
+            ImportChange(public="new/f.txt", source="new/f.txt", action="created"),
+        ),
+    )
+    (tmp_path / "keep.txt").write_text("changed\n", encoding="utf-8")
+    (tmp_path / "new").mkdir()
+    (tmp_path / "new/f.txt").write_text("new\n", encoding="utf-8")
+
+    import_request._restore_originals(originals)
+    import_request._discard_backups(originals)
+
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "old\n"
+    assert not (tmp_path / "new").exists()
+
+
+def test_highest_absent_path_names_the_first_missing_ancestor(tmp_path: Path) -> None:
+    (tmp_path / "kept").mkdir()
+
+    assert import_request._highest_absent_path(
+        destination=tmp_path,
+        target=tmp_path / "x/y/f.txt",
+    ) == (tmp_path / "x")
+    assert import_request._highest_absent_path(
+        destination=tmp_path,
+        target=tmp_path / "kept/new/f.txt",
+    ) == (tmp_path / "kept/new")
+
+
+def test_entry_parents_are_the_strict_directory_prefixes() -> None:
+    entries = {"a/b/c.txt": _file(b""), "top.txt": _file(b"")}
+
+    assert import_request._entry_parent_paths(entries) == {"a", "a/b"}
+    assert import_request._has_parent("a/b/c", parents={"a"})
+    assert not import_request._has_parent("a/b", parents={"a/b"})
+    assert not import_request._has_parent("a/b", parents={"."})
+
+
+@pytest.mark.parametrize(
+    ("path", "metadata"),
+    [
+        (".copybarista", True),
+        (".copybarista/state", True),
+        ("pkg/.git/config", True),
+        (".copybaristax/state", False),
+        ("pkg/module.py", False),
+    ],
+)
+def test_metadata_paths_are_vcs_and_copybarista_state(
+    path: str,
+    *,
+    metadata: bool,
+) -> None:
+    assert import_request._is_metadata_path(path) is metadata
+
+
+@pytest.mark.parametrize(
+    ("mode", "executable"),
+    [(0o600, False), (0o700, True), (0o610, True), (0o601, True)],
+)
+def test_a_file_is_executable_when_any_execute_bit_is_set(
+    tmp_path: Path,
+    mode: int,
+    *,
+    executable: bool,
+) -> None:
+    path = tmp_path / "f"
+    path.write_bytes(b"x")
+    path.chmod(mode)
+
+    assert import_request._tree_file(path).executable is executable
+
+
+def test_tree_snapshot_diff_reports_a_directory_replaced_by_a_file() -> None:
+    directory = TreeSnapshot(entries={"d/f.txt": _file(b"1"), "e.txt": _file(b"1")})
+    file = TreeSnapshot(entries={"d": _file(b"2"), "e.txt": _file(b"2")})
+
+    assert [(c.path, c.action) for c in directory.diff(file).changes] == [
+        ("d", "type_changed"),
+        ("e.txt", "modified"),
+    ]
+    assert [(c.path, c.action) for c in file.diff(directory).changes] == [
+        ("d", "type_changed"),
+        ("d/f.txt", "created"),
+        ("e.txt", "modified"),
+    ]
+
+
+def test_tree_snapshot_keeps_a_symlinked_directory_after_a_metadata_one(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git/HEAD").write_text("ref\n", encoding="utf-8")
+    (tmp_path / "target").mkdir()
+    (tmp_path / "zlink").symlink_to("target")
+
+    entries = TreeSnapshot.from_root(tmp_path).entries
+
+    assert entries["zlink"] == TreeEntry(kind="symlink", data=b"target")
+    assert ".git/HEAD" not in entries
+
+
+def test_match_count_counts_through_the_template_each_flavour_compiles() -> None:
+    regex = Transform(
+        id="r",
+        type="replace",
+        path="m.py",
+        before="a${n}",
+        after="b${n}",
+        regex_groups=(("n", "[0-9]"),),
+    )
+    module = Transform(
+        id="m",
+        type="replace",
+        path="m.py",
+        before="x.pkg",
+        after="pkg",
+        module=True,
+    )
+
+    assert import_request._match_count(regex, "a${n}", "a1 a2 ax") == 2
+    assert import_request._match_count(module, "x.pkg", "import x.pkg\nx.pkg_y\n") == 1
+    assert import_request._match_count(_rule("a", "b"), "a", "a a") == 2
+
+
+def test_forward_replace_applies_a_module_rename_in_every_spelling() -> None:
+    transform = Transform(
+        id="m",
+        type="replace",
+        path="m.py",
+        before="loop.pkg.mod",
+        after="pkg.mod",
+        module=True,
+    )
+
+    assert import_request._forward_replace(
+        transform=transform,
+        text="import loop.pkg.mod\nfrom loop.pkg import mod\n",
+    ) == ("import pkg.mod\nfrom pkg import mod\n")
+
+
+def test_reverse_replace_all_renders_each_rules_own_template() -> None:
+    digits = Transform(
+        id="d",
+        type="replace",
+        path="m.py",
+        before="x${g}",
+        after="${g}",
+        regex_groups=(("g", "[0-9]+"),),
+    )
+    module = Transform(
+        id="m",
+        type="replace",
+        path="m.py",
+        before="loop.pkg.mod",
+        after="pkg.mod",
+        module=True,
+    )
+
+    assert import_request._reverse_replace_all(
+        transforms=(digits, module, _rule("alpha", "AA")),
+        text="pkg 7\nimport pkg.mod\nfrom pkg import mod\nAA\n",
+    ) == ("pkg x7\nimport loop.pkg.mod\nfrom loop.pkg import mod\nalpha\n")
+
+
+@pytest.mark.parametrize(
+    ("rules", "text", "reversed_text"),
+    [
+        ((("x", "P"), ("y", "PQ")), "PQ", "y"),
+        ((("y", "PQ"), ("x", "P")), "PQ", "y"),
+        ((("x", "PP"), ("y", "PP")), "PP", "x"),
+    ],
+    ids=["longer-later", "longer-first", "tie-keeps-earlier"],
+)
+def test_reverse_replace_all_takes_the_longest_match_then_the_earlier_rule(
+    rules: tuple[tuple[str, str], ...],
+    text: str,
+    reversed_text: str,
+) -> None:
+    assert (
+        import_request._reverse_replace_all(
+            transforms=tuple(_rule(before, after) for before, after in rules),
+            text=text,
+        )
+        == reversed_text
+    )
+
+
+@pytest.mark.parametrize(
+    ("globstar", "exported"),
+    [("zero_or_more", "AA\n"), ("one_or_more", "alpha\n")],
+)
+def test_exported_until_skips_what_export_did_not_apply_to_the_text(
+    globstar: Globstar,
+    exported: str,
+) -> None:
+    transforms = (
+        Transform(id="mv", type="move", path="m.py", destination="n.py"),
+        Transform(id="rf", type="ruff_format", path="m.py"),
+        _rule("alpha", "zzz", path="other.py"),
+        _rule("alpha", "AA", path="**/*.py"),
+        _STRIP,
+    )
+
+    assert (
+        import_request._exported_until(
+            "alpha\n",
+            transforms=transforms,
+            stop=_STRIP,
+            match_path="m.py",
+            globstar=globstar,
+        )
+        == exported
+    )
+
+
+@pytest.mark.parametrize(
+    ("reverse_before", "reverse_after", "explicit"),
+    [("a", "", True), ("", "b", True), ("a", "b", True), ("", "", False)],
+)
+def test_a_reversal_is_explicit_when_either_side_is_given(
+    reverse_before: str,
+    reverse_after: str,
+    *,
+    explicit: bool,
+) -> None:
+    transform = Transform(
+        id="r",
+        type="replace",
+        path="m.py",
+        before="x",
+        after="y",
+        reverse_before=reverse_before,
+        reverse_after=reverse_after,
+    )
+
+    assert import_request._has_explicit_reversal(transform) is explicit
+
+
+@pytest.mark.parametrize(
+    ("exported", "source", "same"),
+    [
+        (["f(\n", "a,\n", ")\n"], ["f(a)\n"], True),
+        (["a\n", "b\n"], ["a b\n"], True),
+        (["Xa\n"], ["a\n"], False),
+        (["a\n"], ["b\n"], False),
+    ],
+    ids=["rewrapped", "joined", "extra-letter", "different-token"],
+)
+def test_same_tokens_ignores_only_wrapping(
+    exported: list[str],
+    source: list[str],
+    *,
+    same: bool,
+) -> None:
+    assert import_request._same_tokens(exported, source=source) is same
+
+
+def _merge_file_returning(
+    returncode: int,
+    *,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """Return a ``subprocess.run`` stand-in whose ``git merge-file`` exits so."""
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            argv,
+            returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("returncode", "conflicted"),
+    [(0, False), (1, True), (127, True)],
+)
+def test_three_way_merge_reports_the_conflicts_git_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    *,
+    conflicted: bool,
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _merge_file_returning(returncode, stdout=b"merged\n"),
+    )
+
+    assert _three_way_merge(current=b"", base=b"", incoming=b"") == (
+        b"merged\n",
+        conflicted,
+    )
+
+
+def test_three_way_merge_raises_when_git_exits_with_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _merge_file_returning(128, stderr=b"bad \xff"),
+    )
+
+    with pytest.raises(ImportRequestError, match="exited 128: bad \ufffd"):
+        _three_way_merge(current=b"", base=b"", incoming=b"")
+
+
+def test_import_text_is_read_as_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "m.txt").write_text("x\n", encoding="utf-8")
+    real = Path.read_text
+    reads: list[str | None] = []
+
+    def spy(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        reads.append(encoding)
+        return real(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+
+    text = import_request._read_import_text(path=tmp_path / "m.txt", label="label")
+
+    assert (text, reads) == ("x\n", ["utf-8"])
+
+
+@pytest.mark.parametrize("relative", ["/etc/hosts", "a/../b"])
+def test_relative_target_refuses_an_absolute_or_a_parent_path(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    with pytest.raises(ImportRequestError, match="Import target escapes destination"):
+        import_request._relative_target(destination=tmp_path, relative_path=relative)
+
+
+def test_import_destination_refuses_the_home_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    with pytest.raises(ImportRequestError, match="Refusing dangerous destination"):
+        import_request._validate_import_destination(tmp_path)
+
+
+def test_write_symlink_creates_the_missing_parent_directories(tmp_path: Path) -> None:
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public/link").symlink_to("target.txt")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+
+    import_request._write_symlink(
+        public_path=tmp_path / "public/link",
+        target=destination / "a/b/link",
+        public_root=tmp_path / "public",
+        destination_root=destination,
+    )
+
+    assert (destination / "a/b/link").readlink() == Path("target.txt")
+
+
+def test_replace_line_spans_takes_adjacent_spans_but_not_one_past_the_end() -> None:
+    lines = ["a\n", "b\n"]
+
+    assert (
+        import_request._replace_line_spans(
+            lines,
+            replacements=[(0, 1, "x\n"), (1, 2, "y\n")],
+        )
+        == "x\ny\n"
+    )
+    with pytest.raises(ImportRequestError, match="overlapping transformed blocks"):
+        import_request._replace_line_spans(lines, replacements=[(0, 4, "x\n")])
+
+
+@pytest.mark.parametrize(
+    ("kept_to_public", "before_index", "after_index", "expected"),
+    [
+        ([3, 4], -1, 0, 3),
+        ([5, 7], 0, 1, 6),
+        ([None, 7], 0, 1, 7),
+        ([5, None], 0, 1, 99),
+    ],
+    ids=["first-run", "after-aligned-line", "rewritten-before", "trailing"],
+)
+def test_placement_index_lands_a_run_by_its_aligned_neighbours(
+    kept_to_public: list[int | None],
+    before_index: int,
+    after_index: int,
+    expected: int,
+) -> None:
+    assert (
+        import_request._placement_index(
+            kept_to_public=kept_to_public,
+            before_index=before_index,
+            after_index=after_index,
+            public_line_count=99,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("whole_export", "public", "start", "length", "expected"),
+    [
+        ("a\nB1\nB2\nB3\nc\n", "a\nX1\nX2\nX3\nc\n", 2, 1, (2, 3)),
+        ("a\nB\nC\nd\n", "a\nX\nC\nd\n", 1, 2, (1, 3)),
+        ("x\nB\nC\nd\n", "y\nB\nZ\nd\n", 1, 2, (0, 3)),
+        ("a\nB\nC\nd\n", "a\nX\nC\ne\n", 1, 2, (1, 4)),
+        ("B\nc\n", "X\nY\nc\n", 0, 1, (0, 2)),
+        ("a\nB\n", "a\nX\nY\n", 1, 1, (1, 3)),
+        ("x\nu\n", "u\n" + "x\n" * 199, 0, 1, (1, 2)),
+    ],
+    ids=[
+        "same-width-rewrite-inside-a-run",
+        "block-half-kept",
+        "rewrite-ends-where-the-block-starts",
+        "rewrite-starts-where-the-block-ends",
+        "block-at-the-top",
+        "block-at-the-bottom",
+        "many-identical-lines",
+    ],
+)
+def test_edited_block_bounds_follow_the_aligned_lines(
+    whole_export: str,
+    public: str,
+    start: int,
+    length: int,
+    expected: tuple[int, int],
+) -> None:
+    bounds = import_request._edited_block_bounds(
+        public_text=public,
+        whole_export=whole_export,
+        exported_start=start,
+        exported_length=length,
+    )
+
+    assert bounds == expected
+
+
+def test_edited_block_bounds_refuses_a_block_cut_by_a_rewrite() -> None:
+    with pytest.raises(ImportRequestError, match="positional boundary"):
+        import_request._edited_block_bounds(
+            public_text="a\nX\nd\n",
+            whole_export="a\nB\nC\nd\n",
+            exported_start=1,
+            exported_length=1,
+        )
+
+
+def test_kept_lines_align_even_among_many_identical_ones() -> None:
+    aligned = import_request._align_kept_to_public(
+        ["x\n", "u\n"],
+        ["u\n", *["x\n"] * 199],
+    )
+
+    assert aligned == [1, None]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("a\n# S\ni\n# E\n", [("# S\ni\n# E\n", 1)]),
+        ("# S\n# E\nx\n", [("# S\n# E\n", 0)]),
+        (
+            "a\n# S\ni\n# E\n# S\nj\n# E\nb\n",
+            [("# S\ni\n# E\n", 1), ("# S\nj\n# E\n", 2)],
+        ),
+        ("# S\nx\n", []),
+    ],
+    ids=["one", "start-at-the-top-and-empty", "adjacent", "unterminated"],
+)
+def test_uncomment_source_blocks_locate_each_block_and_its_export_position(
+    source: str,
+    expected: list[tuple[str, int]],
+) -> None:
+    blocks = import_request._uncomment_source_blocks(source, _UNCOMMENT)
+
+    assert [(block.text, block.exported_start) for block in blocks] == expected
+
+
+def test_uncomment_source_blocks_locate_each_inline_marker() -> None:
+    inline = replace(_UNCOMMENT, end="")
+
+    blocks = import_request._uncomment_source_blocks(
+        "a\n# b = 1  # S\nc\n# d = 2  # S\n",
+        inline,
+    )
+
+    assert [(block.text, block.exported_start) for block in blocks] == [
+        ("# b = 1  # S\n", 1),
+        ("# d = 2  # S\n", 3),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("# IF\n# ENDIF\nx\n", [("# IF\n# ENDIF\n", 0)]),
+        (
+            "a\n# IF\ni\n# ELSE\n# p\n# ENDIF\nb\n# IF\nj\n# ELSE\n# q\n# ENDIF\n",
+            [
+                ("# IF\ni\n# ELSE\n# p\n# ENDIF\n", 1),
+                ("# IF\nj\n# ELSE\n# q\n# ENDIF\n", 3),
+            ],
+        ),
+        ("# IF\nx\n", []),
+    ],
+    ids=["empty", "two", "unterminated"],
+)
+def test_else_source_blocks_locate_each_block_and_its_export_position(
+    source: str,
+    expected: list[tuple[str, int]],
+) -> None:
+    transform = Transform(
+        id="e",
+        type="strip_block",
+        path="m.py",
+        start="# IF",
+        end="# ENDIF",
+        else_marker="# ELSE",
+    )
+
+    blocks = import_request._else_source_blocks(source, transform)
+
+    assert [(block.text, block.exported_start) for block in blocks] == expected
+
+
+def test_reverse_transform_ids_lists_only_the_reversible_content_rules(
+    tmp_path: Path,
+) -> None:
+    importer = _importer(
+        tmp_path,
+        transforms=(
+            _rule("a", "A"),
+            Transform(id="il", type="internal_lines", path="m.py", start="# INT"),
+            _STRIP_BLOCK,
+            Transform(id="rf", type="ruff_format", path="m.py"),
+            Transform(id="mv", type="move", path="m.py", destination="n.py"),
+            _rule("b", "B"),
+            _rule("c", "C", path="other.py"),
+            Transform(
+                id="other",
+                type="replace",
+                path="m.py",
+                before="d",
+                after="D",
+                reversible=False,
+            ),
+        ),
+    )
+
+    assert importer._reverse_transform_ids("m.py") == ("b>B", "a>A")
+
+
+@pytest.mark.parametrize(
+    ("globstar", "ids"),
+    [("zero_or_more", ("a>A",)), ("one_or_more", ())],
+)
+def test_reverse_transform_ids_match_under_the_workflow_globstar(
+    tmp_path: Path,
+    globstar: Globstar,
+    ids: tuple[str, ...],
+) -> None:
+    importer = _importer(tmp_path, transforms=(_rule("a", "A", path="**/*.py"),))
+    importer = replace(importer, config=replace(importer.config, globstar=globstar))
+
+    assert importer._reverse_transform_ids("m.py") == ids
+
+
+@pytest.mark.parametrize("missing", ["public-base", "public-head"])
+def test_plan_names_the_snapshot_root_that_is_missing(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    importer = _importer(tmp_path)
+    shutil.rmtree(tmp_path / missing)
+    label = "Public base" if missing == "public-base" else "Public head"
+
+    with pytest.raises(ImportRequestError, match=f"^{label} root must be an existing"):
+        importer.plan()
+
+
+def test_plan_lists_the_reversible_transforms_of_each_change(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    config = load_config(paths.config)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    importer = ChangeRequestImporter(
+        config=config,
+        public_base=paths.public_base,
+        public_head=public_head,
+        source_base=paths.source_base,
+        destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+    )
+
+    changes = importer.plan().changes
+
+    assert [(change.public, change.transforms) for change in changes] == [
+        ("pkg/module.py", (config.transforms[0].id,)),
+    ]
+
+
+def test_plan_keeps_going_after_a_relocated_deletion(tmp_path: Path) -> None:
+    paths = _relocated_fixture(tmp_path)
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    shutil.rmtree(public_head / "typings")
+    (public_head / "zzz.txt").write_text("z\n", encoding="utf-8")
+    importer = ChangeRequestImporter(
+        config=load_config(paths.config),
+        public_base=paths.public_base,
+        public_head=public_head,
+        source_base=paths.source_base,
+        destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+        merge_import=True,
+    )
+
+    assert [change.public for change in importer.plan().changes] == ["zzz.txt"]
+
+
+def test_path_mapper_selects_files_under_the_workflow_globstar() -> None:
+    config = parse_config(
+        {"workflow": {"source_root": ""}, "files": {"include": ["**/*.py"]}},
+    )
+
+    mapper = PathMapper(config=replace(config, globstar="zero_or_more"))
+    assert mapper.source_path("m.py") == "m.py"
+    mapper = PathMapper(config=replace(config, globstar="one_or_more"))
+    with pytest.raises(ImportRequestError, match="excluded or unmapped"):
+        mapper.source_path("m.py")
+
+
+def test_path_mapper_filters_a_copy_under_the_workflow_globstar() -> None:
+    config = parse_config(
+        {
+            "workflow": {"source_root": ""},
+            "files": {
+                "include": ["**"],
+                "copy": [
+                    {"source": "lib", "destination": "pub", "include": ["**/*.py"]},
+                ],
+            },
+        },
+    )
+    mapper = PathMapper(config=replace(config, globstar="zero_or_more"))
+    assert mapper.source_path("pub/x.py") == "lib/x.py"
+    mapper = PathMapper(config=replace(config, globstar="one_or_more"))
+    with pytest.raises(ImportRequestError, match="excluded or unmapped"):
+        mapper.source_path("pub/x.py")
+
+
+def test_copied_source_path_takes_a_dot_slash_destination_as_the_root() -> None:
+    config = parse_config(
+        {"workflow": {"source_root": ""}, "files": {"include": ["**"]}},
+    )
+    copy = FileCopy(source="lib", destination="./")
+    mapper = PathMapper(
+        config=replace(config, files=replace(config.files, copy=(copy,))),
+    )
+
+    assert mapper._copied_source_path("x.md", root_destination=True) == (
+        "lib/x.md",
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("copies", "public", "root", "expected"),
+    [
+        (
+            [{"source": "lib", "destination": "pub"}],
+            "pub/x.py",
+            False,
+            ("lib/x.py", True),
+        ),
+        (
+            [{"source": "lib/f.py", "destination": "pub/f.py"}],
+            "pub/f.py",
+            False,
+            ("lib/f.py", True),
+        ),
+        ([{"source": "lib", "destination": "."}], "x.md", True, ("lib/x.md", True)),
+        ([{"source": "lib", "destination": "pub"}], "other/x.py", False, ("", False)),
+        (
+            [{"source": "lib", "destination": "pub", "include": ["*.txt"]}],
+            "pub/x.py",
+            False,
+            ("", True),
+        ),
+        (
+            [
+                {"source": "a/f.py", "destination": "pub/f.py", "include": ["*.txt"]},
+                {"source": "b", "destination": "pub"},
+            ],
+            "pub/f.py",
+            False,
+            ("b/f.py", True),
+        ),
+        (
+            [
+                {"source": "r1", "destination": ".", "include": ["*.txt"]},
+                {"source": "r2", "destination": "."},
+            ],
+            "x.md",
+            True,
+            ("r2/x.md", True),
+        ),
+    ],
+    ids=[
+        "subtree",
+        "file",
+        "root-dot",
+        "uncovered",
+        "filtered-out",
+        "filtered-file-then-subtree",
+        "filtered-root-then-root",
+    ],
+)
+def test_copied_source_path_reports_the_copy_that_owns_the_path(
+    copies: list[dict[str, object]],
+    public: str,
+    *,
+    root: bool,
+    expected: tuple[str, bool],
+) -> None:
+    mapper = PathMapper(
+        config=parse_config(
+            {
+                "workflow": {"source_root": ""},
+                "files": {"include": ["**"], "copy": copies},
+            },
+        ),
+    )
+
+    assert mapper._copied_source_path(public, root_destination=root) == expected
+
+
+@pytest.mark.parametrize(
+    ("moves", "relocated"),
+    [
+        ([{"path": "", "destination": "pub"}], "shared/stubs/x.pyi"),
+        (
+            [
+                {"path": "", "destination": "pub"},
+                {"path": "stubs", "destination": "pub/stubs"},
+            ],
+            "",
+        ),
+    ],
+    ids=["whole-tree-move", "back-move-ships-it"],
+)
+def test_relocation_yields_only_to_a_move_that_still_ships_the_tree(
+    moves: list[dict[str, str]],
+    relocated: str,
+) -> None:
+    config = parse_config(
+        {
+            "workflow": {"source_root": ""},
+            "files": {
+                "include": ["**"],
+                "moves": moves,
+                "relocated": [{"public": "pub/stubs", "source": "shared/stubs"}],
+            },
+        },
+    )
+
+    assert PathMapper(config=config).relocated_source_path("pub/stubs/x.pyi") == (
+        relocated
+    )
+
+
+def test_path_mapper_maps_ordinary_paths_beside_a_rendered_pyproject() -> None:
+    config = parse_config(
+        {
+            "workflow": {"source_root": ""},
+            "files": {
+                "include": ["**"],
+                "pyproject": {"delta": ".export/pyproject.delta.toml"},
+            },
+        },
+    )
+
+    assert PathMapper(config=config).source_path("m.py") == "m.py"
+
+
+def test_merge_import_lists_every_conflicting_path_in_order(tmp_path: Path) -> None:
+    source_base = tmp_path / "source-base"
+    public_base = tmp_path / "public-base"
+    public_head = tmp_path / "public-head"
+    for root, text in (
+        (source_base, "LOCAL\n"),
+        (public_base, "base\n"),
+        (public_head, "head\n"),
+    ):
+        root.mkdir()
+        for name in ("b.txt", "a.txt"):
+            (root / name).write_text(text, encoding="utf-8")
+
+    with pytest.raises(
+        ImportRequestError,
+        match=r"^Merge import produced conflicts in: a\.txt, b\.txt$",
+    ):
+        _merge_import(
+            tmp_path,
+            source_base=source_base,
+            public_base=public_base,
+            public_head=public_head,
+        )
+
+
+def test_import_change_request_passes_verify_through(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    (paths.source_base / "internal/demo/pkg/module.py").write_text(
+        "from internal.demo import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+    public_head = _copy_tree(paths.public_base, tmp_path / "public-head")
+    (public_head / "pkg/module.py").write_text(
+        "from copybarista.public import api\nVALUE = 'head'\n",
+        encoding="utf-8",
+    )
+
+    result = import_change_request(
+        ImportRequest(
+            config=load_config(paths.config),
+            public_base=paths.public_base,
+            public_head=public_head,
+            source_base=paths.source_base,
+            destination=_copy_tree(paths.source_base, tmp_path / "destination"),
+            verify=False,
+        ),
+    )
+
+    assert [change.public for change in result.changes] == ["pkg/module.py"]
+
+
+def test_public_base_bytes_are_empty_for_a_missing_path_and_for_a_link(
+    tmp_path: Path,
+) -> None:
+    importer = _importer(tmp_path)
+    (importer.public_base / "f.txt").write_bytes(b"data")
+    (importer.public_base / "link").symlink_to("f.txt")
+
+    assert importer._public_base_bytes("f.txt") == b"data"
+    assert importer._public_base_bytes("missing") == b""
+    assert importer._public_base_bytes("link") == b""
+
+
+@pytest.mark.parametrize(
+    ("before", "source"),
+    [("a.b.pub", "from a.b.pub import x\n"), ("pub.pub", "pub.pub\n")],
+    ids=["one-occurrence", "two-occurrences"],
+)
+def test_check_injective_reverse_accepts_source_text_a_before_explains(
+    tmp_path: Path,
+    before: str,
+    source: str,
+) -> None:
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.py").write_text(source, encoding="utf-8")
+
+    importer._check_injective_reverse(
+        public_path="m.py",
+        source_path="m.py",
+        transform=_rule(before, "pub"),
+        text="x\n",
+    )
+
+
+def test_check_injective_reverse_rejects_exported_text_in_a_new_public_file(
+    tmp_path: Path,
+) -> None:
+    importer = _importer(tmp_path)
+
+    with pytest.raises(ImportRequestError, match="adds exported replacement text"):
+        importer._check_injective_reverse(
+            public_path="n.py",
+            source_path="n.py",
+            transform=_rule("a.b.pub", "pub"),
+            text="pub\n",
+        )
+
+
+@pytest.mark.parametrize(
+    ("side", "message"),
+    [
+        ("source_base", r"^Source base path is not UTF-8: .*m\.py$"),
+        ("public_base", r"^Public base path is not UTF-8: m\.py$"),
+    ],
+)
+def test_check_injective_reverse_names_the_base_that_is_not_utf8(
+    tmp_path: Path,
+    side: str,
+    message: str,
+) -> None:
+    importer = _importer(tmp_path)
+    (tmp_path / side.replace("_", "-") / "m.py").write_bytes(b"\xff\n")
+
+    with pytest.raises(ImportRequestError, match=message):
+        importer._check_injective_reverse(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_rule("a.b.pub", "pub"),
+            text="x\n",
+        )
+
+
+def test_check_injective_reverses_checks_the_rules_the_workflow_globstar_matches(
+    tmp_path: Path,
+) -> None:
+    importer = _importer(tmp_path, transforms=(_rule("a.b.pub", "pub", "**/*.py"),))
+    narrow = replace(
+        importer,
+        config=replace(importer.config, globstar="one_or_more"),
+    )
+    importer = replace(
+        importer,
+        config=replace(importer.config, globstar="zero_or_more"),
+    )
+
+    narrow._check_injective_reverses(
+        public_path="m.py",
+        source_path="m.py",
+        data=b"pub\n",
+    )
+    with pytest.raises(ImportRequestError, match="adds exported replacement text"):
+        importer._check_injective_reverses(
+            public_path="m.py",
+            source_path="m.py",
+            data=b"pub\n",
+        )
+    with pytest.raises(ImportRequestError, match=r"not UTF-8: m\.py$"):
+        importer._check_injective_reverses(
+            public_path="m.py",
+            source_path="m.py",
+            data=b"\xff\n",
+        )
+
+
+def test_recomment_names_a_source_that_is_not_utf8(tmp_path: Path) -> None:
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.py").write_bytes(b"\xff\n")
+
+    with pytest.raises(ImportRequestError, match=r"^Source base path is not UTF-8: "):
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_UNCOMMENT,
+            content=b"x\n",
+        )
+    with pytest.raises(ImportRequestError, match=r"^Source base path is not UTF-8: "):
+        importer._reinsert_source_only_regions(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_STRIP_BLOCK,
+            content=b"x\n",
+            match_path="m.py",
+        )
+
+
+def test_recomment_restores_the_block_after_one_that_exports_nothing(
+    tmp_path: Path,
+) -> None:
+    importer = _importer(tmp_path)
+    (importer.source_base / "m.py").write_text(
+        "# S\n# E\n# S\n# a\n# E\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_UNCOMMENT,
+            content=b"a\n",
+        )
+        == b"# S\n# a\n# E\n"
+    )
+
+
+def test_recomment_keeps_an_unedited_block_byte_for_byte(tmp_path: Path) -> None:
+    importer = _importer(tmp_path)
+    source = "# S\n#a = 1\n#b = 2\n# E\n"
+    (importer.source_base / "m.py").write_text(source, encoding="utf-8")
+
+    assert (
+        importer._recomment_source_blocks(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_UNCOMMENT,
+            content=b"a = 1\nb = 2\n",
+        )
+        == source.encode()
+    )
+
+
+@pytest.mark.parametrize(
+    ("globstar", "rebuilt"),
+    [
+        ("zero_or_more", b"A = x\nnote = 0  # INT\nB = 3\n"),
+        ("one_or_more", b"A = x\nB = 3\nnote = 0  # INT\n"),
+    ],
+)
+def test_reinsertion_offsets_follow_the_rules_the_workflow_globstar_matches(
+    tmp_path: Path,
+    globstar: Globstar,
+    rebuilt: bytes,
+) -> None:
+    importer = _importer(
+        tmp_path,
+        transforms=(_rule("SRCNAME", "x", path="**/*.py"), _INTERNAL_LINES),
+    )
+    importer = replace(importer, config=replace(importer.config, globstar=globstar))
+    (importer.source_base / "m.py").write_text(
+        "A = SRCNAME\nnote = 0  # INT\nB = 2\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        importer._reinsert_source_only_regions(
+            public_path="m.py",
+            source_path="m.py",
+            transform=_INTERNAL_LINES,
+            content=b"A = x\nB = 3\n",
+            match_path="m.py",
+        )
+        == rebuilt
+    )
+
+
+def test_a_conflicting_pyproject_edit_is_reported_as_a_merged_conflict(
+    tmp_path: Path,
+) -> None:
+    source_base, config, public_base = _pyproject_drift_fixture(
+        tmp_path,
+        drift="b = 4\nc = 1\n",
+    )
+    public_head = _copy_tree(public_base, tmp_path / "public-head")
+    (public_head / "pyproject.toml").write_text("b = 3\nc = 1\n", encoding="utf-8")
+    loaded = load_config(config)
+    source_export = tmp_path / "source-export"
+    export_folder(config=loaded, source_ref=source_base, destination=source_export)
+    importer = ChangeRequestImporter(
+        config=loaded,
+        public_base=public_base,
+        public_head=public_head,
+        source_base=source_base,
+        destination=_copy_tree(source_base, tmp_path / "destination"),
+        merge_import=True,
+    )
+    change = ImportChange(
+        public="pyproject.toml",
+        source="internal/demo/pyproject.delta.toml",
+        action="modified",
+    )
+
+    resolved, conflicted = importer._merge_change(
+        change=change,
+        source_export=source_export,
+    )
+
+    assert (resolved.outcome, conflicted) == ("merged", True)
 
 
 if __name__ == "__main__":
