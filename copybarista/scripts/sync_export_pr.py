@@ -937,7 +937,7 @@ def _parser() -> argparse.ArgumentParser:
         "--auto-merge",
         nargs="?",
         # ``_string_bool`` casefolds, so no test can tell "TRUE" from "true".
-        const="true",  # pragma: no mutate[case-insensitive]
+        const="true",  # pragma: no mutate[case-insensitive] -- _string_bool casefolds.
         default=_env_bool("COPYBARISTA_AUTO_MERGE"),
         type=_string_bool,
         help="Enable GitHub PR auto-merge for the generated export branch.",
@@ -1899,7 +1899,7 @@ def _open_or_update_export_pr(*, request: ExportRequest, pr_plan: PrReplayPlan) 
         ),
         # A test cannot change the process locale, so it cannot tell "UTF-8" or
         # the default encoding from "utf-8".
-        encoding="utf-8",  # pragma: no mutate
+        encoding="utf-8",  # pragma: no mutate -- Locale is fixed in tests.
     )
     _write_pr_body_file(request=request, body=pr_plan.body)
     _log(
@@ -2101,7 +2101,7 @@ def _merged_sha(*, request: ExportRequest) -> str:
 def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
     """Wait for ``repo``'s package validation on ``sha``; fail unless it passed."""
     # Any start below one poll makes the same 45 polls, so no test tells 0 from 1.
-    waited = 0.0  # pragma: no mutate
+    waited = 0.0  # pragma: no mutate -- Any start under a poll makes the same 45 polls.
     while True:
         listed = _run_gh(
             [
@@ -2119,7 +2119,7 @@ def _await_ci(*, repo: str, sha: str, cwd: Path) -> None:
             ],
             cwd=cwd,
             capture=True,
-            check=False,  # pragma: no mutate[truthiness]
+            check=False,  # pragma: no mutate[truthiness] -- Only truth is read.
         )
         # GitHub lists a workflow's runs only once it has read the workflow from the
         # new main, so a merge that adds it is answered 404 for a moment: no run yet.

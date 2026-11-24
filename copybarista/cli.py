@@ -342,9 +342,9 @@ def _run_write_public_workflows(flags: _Flags) -> None:
     config = Path(flags.sync_config)
     workflows = workflow_dir(config.parent)
     for name, text in public_workflows(load_sync_settings(config)).items():
-        # A test cannot change the process locale, so it cannot tell "UTF-8" or
-        # the default encoding from "utf-8".
-        (workflows / name).write_text(text, encoding="utf-8")  # pragma: no mutate
+        # pragma: no mutate start -- Tests cannot change the locale's default codec.
+        (workflows / name).write_text(text, encoding="utf-8")
+        # pragma: no mutate end
         sys.stdout.write(f"wrote {workflows / name}\n")
 
 
