@@ -258,7 +258,9 @@ root; replace the example config path with the discovered one:
 
 ```bash
 cli=copybarista  # Replace with the discovered entrypoint.
-exp="$(mktemp -d)/export"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+exp="$tmp/export"
 uv --quiet run --frozen "$cli" export \
   packages/widget/copy.barista.toml . --folder-dir "$exp"
 ```

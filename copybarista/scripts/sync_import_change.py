@@ -829,18 +829,21 @@ def _validate_target(
         runner_temp=runner_temp,
         requirements=requirements,
     )
-    _run(
-        [
-            "bash",
-            "--noprofile",
-            "--norc",
-            "-eo",
-            "pipefail",
-            "-c",
-            "\n".join(request.validation_commands),
-        ],
-        cwd=tree,
-    )
+    try:
+        _run(
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-eo",
+                "pipefail",
+                "-c",
+                "\n".join(request.validation_commands),
+            ],
+            cwd=tree,
+        )
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
 
 
 # Runs ``copybarista export`` (dependency-free) against the post-import source checkout,
@@ -857,51 +860,58 @@ def _export_public_tree(
     tree = runner_temp / "copybarista-validation-tree"
     if tree.exists():
         shutil.rmtree(tree)
-    _run(
-        [
-            *_copybarista_argv(requirements=requirements),
-            "export",
-            str(project / "copy.barista.toml"),
-            str(request.target_dir),
-            "--folder-dir",
-            str(tree),
-            "--force",
-        ],
-        cwd=request.target_dir,
-    )
-    # `copybarista export` writes a plain directory, but the caller then runs
-    # the CI commands here -- `pre-commit run --all-files`, which needs a git
-    # repo: pre-commit resolves `--all-files` through git and
-    # otherwise aborts with "git failed. Is it installed, and are you in a Git
-    # repository directory?". Public CI runs inside a real checkout, so
-    # only this path has to supply one. Staging is what makes the files visible
-    # to `--all-files`; the commit gives HEAD to tests that record their
-    # checkout's commit (craftax ghosts' build provenance), as a real checkout
-    # has one. The tree is discarded after.
-    if request.refresh_public_lockfile:
-        # Seeded from the source lock, as the export's relock is
-        # (``sync_export_pr._refresh_public_lockfile``), so both validate the same pins.
-        seed = request.target_dir / "uv.lock"
-        if seed.is_file():
-            shutil.copy2(seed, tree / "uv.lock")
-        _run(["uv", "lock", *_git_branch_upgrades(tree / "pyproject.toml")], cwd=tree)
-    _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=tree)
-    _run(["git", "add", "--all"], cwd=tree)
-    _run(
-        [
-            "git",
-            "-c",
-            f"user.name={request.sync_user_name}",
-            "-c",
-            f"user.email={request.sync_user_email}",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "Copybarista validation snapshot",
-        ],
-        cwd=tree,
-    )
+    try:
+        _run(
+            [
+                *_copybarista_argv(requirements=requirements),
+                "export",
+                str(project / "copy.barista.toml"),
+                str(request.target_dir),
+                "--folder-dir",
+                str(tree),
+                "--force",
+            ],
+            cwd=request.target_dir,
+        )
+        # `copybarista export` writes a plain directory, but the caller then runs
+        # the CI commands here -- `pre-commit run --all-files`, which needs a git
+        # repo: pre-commit resolves `--all-files` through git and
+        # otherwise aborts with "git failed. Is it installed, and are you in a Git
+        # repository directory?". Public CI runs inside a real checkout, so
+        # only this path has to supply one. Staging is what makes the files visible
+        # to `--all-files`; the commit gives HEAD to tests that record their
+        # checkout's commit (craftax ghosts' build provenance), as a real checkout
+        # has one. The tree is discarded after.
+        if request.refresh_public_lockfile:
+            # Seeded from the source lock, as the export's relock is
+            # (``sync_export_pr._refresh_public_lockfile``), so both validate the same pins.
+            seed = request.target_dir / "uv.lock"
+            if seed.is_file():
+                shutil.copy2(seed, tree / "uv.lock")
+            _run(
+                ["uv", "lock", *_git_branch_upgrades(tree / "pyproject.toml")],
+                cwd=tree,
+            )
+        _run(["git", "init", "--quiet", "--initial-branch=main"], cwd=tree)
+        _run(["git", "add", "--all"], cwd=tree)
+        _run(
+            [
+                "git",
+                "-c",
+                f"user.name={request.sync_user_name}",
+                "-c",
+                f"user.email={request.sync_user_email}",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "Copybarista validation snapshot",
+            ],
+            cwd=tree,
+        )
+    except BaseException:
+        shutil.rmtree(tree, ignore_errors=True)
+        raise
     return tree
 
 
